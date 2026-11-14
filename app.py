@@ -1120,7 +1120,7 @@ h2, h3 { font-weight: 700; }
 
 /* Buttons and form controls */
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
-  border-radius: 11px; border: 1px solid #DCE3F5; font-weight: 650;
+  border-radius: 11px; border: 1px solid #DCE3F5; font-weight: 650; font-size: 14px;
   transition: all .18s ease; box-shadow: 0 2px 7px rgba(35,48,105,.045);
 }
 .stButton > button[kind="primary"] {
@@ -1243,12 +1243,15 @@ if _MY_EMAIL:
 page = st.session_state["page"]
 
 # Stage stepper: one row, six stages, current stage marked ●. Click a stage to jump to it.
+# Short label for stage 5 so the full row fits without "..." truncation.
+_STEP_SHORT = {"5 · Analysis & Reports": "5 · Analysis"}
 _current_stage = PAGE_STAGE.get(page, 0)
+st.markdown('<div style="height: 10px"></div>', unsafe_allow_html=True)
 _step_cols = st.columns(6)
 for _i, (_label, _main) in enumerate(STAGES, start=1):
     with _step_cols[_i - 1]:
         _mark = "● " if _i == _current_stage else ""
-        if st.button(f"{_mark}{_label}", key=f"stage_{_i}", use_container_width=True):
+        if st.button(f"{_mark}{_STEP_SHORT.get(_label, _label)}", key=f"stage_{_i}", use_container_width=True):
             st.session_state["page"] = _main
             st.rerun()
 st.divider()
@@ -1326,31 +1329,34 @@ if page == "Dashboard":
     _pct = round(_done / len(_stages) * 100)
     _icons = ["📋", "🎙️", "👥", "🧹", "📊", "🎤"]
 
-    _left, _right = st.columns([2, 1])
-    with _left:
-        st.subheader("🚀 Research Workflow")
-        st.caption("Follow the complete research process from brief to presentation")
-        _cols = st.columns(6)
-        for _i, (_label, _desc, _d) in enumerate(_stages):
-            with _cols[_i]:
-                _nm = _label.split(" · ", 1)[1]
-                _st = "✅ Done" if _d else "○ Not yet"
-                st.markdown(
-                    f'<div class="rf-step"><div class="ico">{_icons[_i]}</div>'
-                    f'<div class="nm">{_i + 1}. {_nm}</div>'
-                    f'<div class="ds">{_desc}</div>'
-                    f'<div class="st">{_st}</div></div>',
-                    unsafe_allow_html=True,
-                )
-    with _right:
-        st.subheader("💡 Project Progress")
+    st.subheader("🚀 Research Workflow")
+    st.caption("Follow the complete research process from brief to presentation")
+    _cols = st.columns(6)
+    for _i, (_label, _desc, _d) in enumerate(_stages):
+        with _cols[_i]:
+            _nm = _label.split(" · ", 1)[1]
+            _st = "✅ Done" if _d else "○ Not yet"
+            st.markdown(
+                f'<div class="rf-step"><div class="ico">{_icons[_i]}</div>'
+                f'<div class="nm">{_i + 1}. {_nm}</div>'
+                f'<div class="ds">{_desc}</div>'
+                f'<div class="st">{_st}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.subheader("💡 Project Progress")
+    _pc1, _pc2 = st.columns([1, 2])
+    with _pc1:
         st.markdown(
             f'<div class="rf-ring" style="--p:{_pct}"><span>{_pct}%</span></div>',
             unsafe_allow_html=True,
         )
         st.caption(f"{_done} of {len(_stages)} stages have files so far")
-        for _label, _desc, _d in _stages:
-            st.write(("✅ " if _d else "○ ") + _label)
+    with _pc2:
+        _s1, _s2 = st.columns(2)
+        for _i, (_label, _desc, _d) in enumerate(_stages):
+            with (_s1 if _i < 3 else _s2):
+                st.write(("✅ " if _d else "○ ") + _label)
 
     st.subheader("🕐 Recent Activity")
     _act = recent_activity()
