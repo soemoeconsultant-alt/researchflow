@@ -99,7 +99,8 @@ def short_ids_for(names):
 
 # --- Storage: local folders, or Google Drive when credentials exist ---
 # Drive is the source of truth when credentials are configured:
-#   ResearchFlow / Default / {audio, transcripts, notes, reports}
+#   ResearchFlow / <Project> / {audio, transcripts, notes, reports}
+# ("Default" keeps the legacy flat folders on the local PC.)
 # Auth order (v3): OAuth user credentials first — the consultant account
 # itself, so uploaded files belong to him and count against his storage.
 # A service account owns the files it uploads and has no storage quota of
@@ -112,7 +113,6 @@ DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/documents",
 ]
 DRIVE_ROOT_NAME = "ResearchFlow"
-DRIVE_PROJECT = "Default"
 # The ResearchFlow folder in the consultant's Drive (created 2026-11-14, shared
 # with the service account as Editor). A service account cannot find a shared
 # folder via "'root' in parents" — shared items are not in its own root — so
@@ -137,6 +137,105 @@ LOCAL_DIR = {
     "reports": REPORTS_DIR,
     "notes": NOTES_DIR,
 }
+
+
+# --- Projects (v3.4 shell): one Project = one container. "Default" keeps the
+# legacy flat folders; any other project keeps its own folders under
+# projects/<name>/ locally and ResearchFlow/<name>/ on Drive.
+def current_project():
+    """Working project name from session state (default 'Default')."""
+    return st.session_state.get("active_project", "Default")
+
+
+def refresh_project_dirs(project):
+    """Point the local working folders at the project (rebinds the module
+    globals; every page reads them at runtime, so the switch applies
+    immediately). Creates the folders if missing."""
+    global AUDIO_DIR, OUTPUT_DIR, MERGED_DIR, ANALYSIS_DIR, REPORTS_DIR, NOTES_DIR, LOCAL_DIR
+    base = BASE_DIR if project == "Default" else BASE_DIR / "projects" / project
+    AUDIO_DIR = base / "audio"
+    OUTPUT_DIR = base / "output"
+    MERGED_DIR = OUTPUT_DIR / "merged"
+    ANALYSIS_DIR = base / "analysis"
+    REPORTS_DIR = base / "reports"
+    NOTES_DIR = base / "notes"
+    for d in (AUDIO_DIR, OUTPUT_DIR, MERGED_DIR, ANALYSIS_DIR, REPORTS_DIR, NOTES_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    LOCAL_DIR = {
+        "audio": AUDIO_DIR,
+        "transcripts": OUTPUT_DIR,
+        "merged": MERGED_DIR,
+        "analysis": ANALYSIS_DIR,
+        "reports": REPORTS_DIR,
+        "notes": NOTES_DIR,
+    }
+
+
+def _drive_root_id():
+    """The ResearchFlow root folder id (pinned DRIVE_ROOT_ID, else lookup)."""
+    if DRIVE_ROOT_ID:
+        try:
+            info = _drive_service().files().get(fileId=DRIVE_ROOT_ID, fields="id,mimeType").execute()
+            if info.get("mimeType") == "application/vnd.google-apps.folder":
+                return DRIVE_ROOT_ID
+        except Exception:
+            pass
+    return _drive_ensure_folder(DRIVE_ROOT_NAME, "root")
+
+
+def list_drive_projects():
+    """Project folder names under the ResearchFlow root (Drive)."""
+    if not drive_available():
+        return []
+    try:
+        svc = _drive_service()
+        root = _drive_root_id()
+        names, token = [], None
+        while True:
+            res = svc.files().list(
+                q=f"'{root}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                fields="files(name),nextPageToken", pageSize=100, pageToken=token,
+            ).execute()
+            names += [f["name"] for f in res.get("files", [])]
+            token = res.get("nextPageToken")
+            if not token:
+                break
+        return sorted(names)
+    except Exception:
+        return []
+
+
+def list_projects():
+    """All known projects: 'Default' first, then Drive folders + local project dirs."""
+    names = ["Default"]
+    for n in list_drive_projects():
+        if n not in names:
+            names.append(n)
+    local_root = BASE_DIR / "projects"
+    if local_root.exists():
+        for d in sorted(local_root.iterdir()):
+            if d.is_dir() and d.name not in names:
+                names.append(d.name)
+    return names
+
+
+def ensure_project(name):
+    """Create a project's folders (Drive + local). Returns the cleaned name, or None."""
+    clean = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 _-]+", "", (name or "").strip())).strip()
+    if not clean or clean == "Default":
+        return None
+    if drive_available():
+        try:
+            root = _drive_root_id()
+            proj = _drive_ensure_folder(clean, root)
+            for sub in ("audio", "transcripts", "notes", "reports"):
+                _drive_ensure_folder(sub, proj)
+        except Exception:
+            pass
+    base = BASE_DIR / "projects" / clean
+    for sub in ("audio", "output", "output/merged", "analysis", "reports", "notes"):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    return clean
 
 _SA_INFO = None
 _SA_TRIED = False
@@ -390,23 +489,17 @@ def _drive_ensure_folder(name, parent_id):
 
 
 def _drive_folder_id(folder_name):
-    """Folder id for ResearchFlow / Default / <folder_name> (created if missing)."""
-    if folder_name in _FOLDER_IDS:
-        return _FOLDER_IDS[folder_name]
-    svc = _drive_service()
-    root = None
-    if DRIVE_ROOT_ID:
-        try:
-            info = svc.files().get(fileId=DRIVE_ROOT_ID, fields="id,mimeType").execute()
-            if info.get("mimeType") == "application/vnd.google-apps.folder":
-                root = DRIVE_ROOT_ID
-        except Exception:
-            root = None
-    if not root:
-        root = _drive_ensure_folder(DRIVE_ROOT_NAME, "root")
-    proj = _drive_ensure_folder(DRIVE_PROJECT, root)
+    """Folder id for ResearchFlow / <project> / <folder_name> (created if missing).
+    Cache is keyed by (project, folder) so switching projects never returns
+    another project's folder."""
+    project = current_project()
+    key = (project, folder_name)
+    if key in _FOLDER_IDS:
+        return _FOLDER_IDS[key]
+    root = _drive_root_id()
+    proj = _drive_ensure_folder(project, root)
     fid = _drive_ensure_folder(folder_name, proj)
-    _FOLDER_IDS[folder_name] = fid
+    _FOLDER_IDS[key] = fid
     return fid
 
 
@@ -914,19 +1007,71 @@ def analysis_to_docx(analysis_text, title_text, out_path):
 # (e.g. localhost) -> open access, returns "".
 _MY_EMAIL = login_gate()
 
+# --- Shell (v3.4): 6-stage nav, one Project = one container. Modern, professional,
+# minimalist: white, one blue accent, generous spacing, no extra decoration.
+STAGES = [
+    ("1 · Client Brief", "Project Brief"),
+    ("2 · Data Collection", "Audio Transcription"),
+    ("3 · Fieldworks", "FGD Recording"),
+    ("4 · Data Cleansing", "Data Cleansing"),
+    ("5 · Analysis & Reports", "Market Analysis"),
+    ("6 · Presentation", "Presentation"),
+]
+PAGE_STAGE = {
+    "Project Brief": 1,
+    "Audio Transcription": 2, "Batch Processing": 2, "Upload & Split": 2,
+    "FGD Recording": 3, "Transcripts": 3,
+    "Data Cleansing": 4,
+    "Market Analysis": 5, "Quant Analysis": 5, "Reports": 5, "Report Editor": 5,
+    "Presentation": 6,
+}
 NAV_GROUPS = [
     ("🏠 Overview", ["Dashboard"]),
-    ("1 · Data Collection", ["Audio Transcription", "Batch Processing", "FGD Recording", "Upload & Split"]),
-    ("2 · Transcripts", ["Transcripts"]),
-    ("3 · Analysis", ["Market Analysis", "Quant Analysis"]),
-    ("4 · Reports", ["Reports", "Report Editor"]),
+    ("1 · Client Brief", ["Project Brief"]),
+    ("2 · Data Collection", ["Audio Transcription", "Batch Processing", "Upload & Split"]),
+    ("3 · Fieldworks", ["FGD Recording", "Transcripts"]),
+    ("4 · Data Cleansing", ["Data Cleansing"]),
+    ("5 · Analysis & Reports", ["Market Analysis", "Quant Analysis", "Reports", "Report Editor"]),
+    ("6 · Presentation", ["Presentation"]),
 ]
 
 if "page" not in st.session_state:
     st.session_state["page"] = "Dashboard"
 
-st.sidebar.title("📊 Market Research AI")
-st.sidebar.caption("Professional Research Platform")
+st.sidebar.title("📊 ResearchFlow")
+st.sidebar.caption("Market Research AI")
+
+# Project selector: list once per session (Drive call), refresh after creating one.
+if "project_list" not in st.session_state:
+    st.session_state["project_list"] = list_projects()
+projects = st.session_state["project_list"]
+current = st.session_state.get("active_project", "Default")
+if current not in projects:
+    projects = [current] + projects
+if "project_select_target" in st.session_state:
+    st.session_state["project_select"] = st.session_state.pop("project_select_target")
+selected = st.sidebar.selectbox(
+    "Project", projects,
+    index=projects.index(current),
+    key="project_select",
+)
+if selected != current:
+    st.session_state["active_project"] = selected
+    st.session_state["drive_synced"] = False
+    st.rerun()
+refresh_project_dirs(selected)
+
+with st.sidebar.expander("＋ Project အသစ်"):
+    new_name = st.text_input("Project နာမည်", key="new_project_name")
+    if st.button("Project ဖွင့်", key="create_project"):
+        created = ensure_project(new_name)
+        if created:
+            if created not in st.session_state["project_list"]:
+                st.session_state["project_list"].append(created)
+            st.session_state["project_select_target"] = created
+            st.rerun()
+        else:
+            st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
 
 for group, items in NAV_GROUPS:
     st.sidebar.markdown(f"**{group}**")
@@ -948,6 +1093,17 @@ if _MY_EMAIL:
         st.logout()
 
 page = st.session_state["page"]
+
+# Stage stepper: one row, six stages, current stage marked ●. Click a stage to jump to it.
+_current_stage = PAGE_STAGE.get(page, 0)
+_step_cols = st.columns(6)
+for _i, (_label, _main) in enumerate(STAGES, start=1):
+    with _step_cols[_i - 1]:
+        _mark = "● " if _i == _current_stage else ""
+        if st.button(f"{_mark}{_label}", key=f"stage_{_i}", use_container_width=True):
+            st.session_state["page"] = _main
+            st.rerun()
+st.divider()
 
 # Drive is the source of truth: sync once per session, then pages work on local files.
 if DRIVE_MODE and not st.session_state.get("drive_synced"):
@@ -998,6 +1154,51 @@ if page == "Dashboard":
 
         st.info("📊 Market Analysis")
         st.write("Customer Needs နှင့် Pain Points ရှာဖွေရန်။")
+
+elif page == "Project Brief":
+    # Stage 1 shell page: project info now; the Brief form (Scope / Objective /
+    # Methodology / Result Outcome) + Communication + Meetings come in the Stage 1 build.
+    st.title("📋 Project Brief")
+    st.write(f"Project: **{current_project()}**")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Audio Files", len(list(AUDIO_DIR.glob("*"))))
+    col2.metric("Transcripts", len(get_transcript_files()))
+    col3.metric("Research Reports", len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
+
+    st.divider()
+    st.info(
+        "Brief form (Scope / Objective / Methodology / Result Outcome) + "
+        "Communication + Meetings — Stage 1 build မှာ လာမယ်။"
+    )
+
+elif page == "Data Cleansing":
+    # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
+    # status comes in the Stage 4 build.
+    st.title("🧹 Data Cleansing")
+    st.write(f"Project: **{current_project()}**")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Audio Files", len(list(AUDIO_DIR.glob("*"))))
+    col2.metric("Transcripts", len(get_transcript_files()))
+    col3.metric("Notes", len(list(NOTES_DIR.glob("*"))))
+
+    st.divider()
+    st.info(
+        "Raw input တစ်ခုချင်းကို စစ်တာ (checked / clean / unclear / issue) — "
+        "Stage 4 build မှာ လာမယ်။"
+    )
+
+elif page == "Presentation":
+    # Stage 6 shell page: client view + per-project share link come in the Stage 6 build.
+    st.title("🎤 Presentation")
+    st.write(f"Project: **{current_project()}**")
+
+    st.divider()
+    st.info(
+        "Client view + per-project share link — Stage 6 build မှာ လာမယ်။ "
+        "အခု Reports စာမျက်နှာမှာ PPTX / DOCX ထုတ်လို့ရတယ်။"
+    )
 
 elif page == "Audio Transcription":
     st.title("🎙️ Audio Transcription")
