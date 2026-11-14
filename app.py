@@ -2,6 +2,7 @@ import os
 import re
 import time
 import json
+import html
 import datetime
 import hashlib
 import shutil
@@ -792,13 +793,7 @@ def transcribe_audio(audio_path):
         audio_file = client.files.upload(file=str(audio_path))
     except Exception as e:
         return None, f"Upload failed: {e}"
-    prompt = (
-        "Transcribe this audio in Burmese. Separate speakers clearly: "
-        "Speaker 1 = Respondent, Speaker 2 = Moderator. "
-        "Do not summarize. Preserve the original spoken meaning. "
-        "Medicine, brand, and disease names in English. "
-        "Mark unclear parts as [unclear]."
-    )
+    prompt = PROMPT_LIBRARY["transcription"]["template"]
     last_error = None
     for model in MODELS:
         try:
@@ -875,17 +870,243 @@ def split_audio(src_path, chunk_min):
     return None, "ffmpeg မရှိသေးဘူး — mp3/m4a ခွဲဖို့ ffmpeg လိုတယ်"
 
 
+# --- ResearchFlow AI Prompt Library (v3.11) ---
+# One source of truth for every prompt Gemini is given. Pages call the
+# library, never inline prompt text. The 7 engines:
+#   1 Transcription, 2 Research Planning, 3 Qualitative Analysis,
+#   4 Quantitative Analysis, 5 Cross-Interview Intelligence,
+#   6 Report Generation, 7 Executive Summary.
+# Fix 1 (evidence): every finding needs n= count + a verbatim quote with
+# speaker + source file; no evidence -> "No evidence in transcripts".
+# Fix 2 (plan structure): plan_based_prompt() uses the plan's sections exactly.
+# Fix 3 (report format): all analysis output uses "## " headings + "- " bullets
+# so parse_sections() can turn it into PPTX/DOCX automatically.
+
+EVIDENCE_RULES = (
+    "Evidence rules (apply to every finding):\n"
+    "- State how many respondents said it: n=X of Y (single interview: n=1 of 1).\n"
+    "- Support every finding with at least one verbatim quote, written exactly as:\n"
+    '  > "..." — Speaker N, <source file>\n'
+    "- A finding with no evidence in the transcripts must NOT be written. "
+    "If a planned section has no evidence, write exactly this under it:\n"
+    "  No evidence in transcripts\n"
+    "- Mark anything you could not hear or read clearly as [unclear]. "
+    "Never guess a name, number, or brand.\n"
+)
+
+OUTPUT_FORMAT = (
+    "Output format (so the report export can read it automatically):\n"
+    "- Section headings exactly as: ## <Section name> — on their own line, no other heading levels.\n"
+    "- Findings as short paragraphs or \"- \" bullets (one finding per bullet).\n"
+    "- Counts exactly as n=X/Y. Quotes exactly as: > \"...\" — Speaker N, <source file>\n"
+    "- No tables, no bold headings, no extra sections.\n"
+)
+
+CROSS_INTERVIEW_RULES = (
+    "Cross-respondent rules (more than one interview together):\n"
+    "- For each theme, state how many respondents mentioned it: n=X of Y.\n"
+    "- Give one supporting verbatim quote per theme: > \"...\" — Speaker N, <source file>\n"
+    "- Note divergent or contradictory views where they exist — do not hide disagreement.\n"
+    "- A pattern needs at least 2 respondents; one respondent's view is a single view, not a pattern.\n"
+    "- If interviews disagree on a fact (price, brand, place), say so and name the sources.\n"
+)
+
+TRANSCRIPTION_TEMPLATE = (
+    "Transcribe this audio in Burmese. Separate speakers clearly: "
+    "Speaker 1 = Respondent, Speaker 2 = Moderator. "
+    "Do not summarize. Preserve the original spoken meaning. "
+    "Medicine, brand, and disease names in English. "
+    "Mark unclear parts as [unclear]."
+)
+
+PLANNING_TEMPLATE = (
+    "You are a senior market research analyst. Propose an analysis plan for this project. "
+    "Read the client brief, discussion guide, questionnaire, and interview transcripts together. "
+    "Do NOT write findings yet — only the plan.\n"
+    "Rules: Base everything ONLY on the brief, guide, questionnaire, and transcripts. Do not invent objectives or questions. "
+    "Use the questionnaire to know what was asked and how the data was collected, and match analysis sections to both the guide topics and the survey questions. "
+    "Write in English.\n\n"
+    "Structure your answer exactly like this:\n"
+    "## Project Type\n"
+    "(e.g. IDI consumer, FGD persona, survey, marketing)\n"
+    "## Objective\n"
+    "(restate what the client wants to know, from the brief)\n"
+    "## Recommended Framework\n"
+    "(framework name + WHY it fits this brief and guide)\n"
+    "## Questionnaire & Data Collection\n"
+    "(what survey questions were asked, which tool collected the data, and how the survey data links to the analysis)\n"
+    "## Analysis Sections\n"
+    "(each section: title + what question it answers)\n"
+    "## Report Outline\n"
+    "(what goes in the PPTX/DOCX report, in order)\n"
+    "## Gaps & Notes\n"
+    "(guide or questionnaire topics with no or little evidence in the transcripts; anything missing)\n\n"
+)
+
+PLAN_APPLY_TEMPLATE = (
+    "You are a senior market research analyst. Follow this approved analysis plan exactly. "
+    "Use ONLY information from the transcripts. Do not invent findings, numbers, or quotes. "
+    "Write in English. Medicine, brand, and disease names in English. Findings in short paragraphs.\n\n"
+    "Structure control (follow strictly):\n"
+    "- Use the plan's \"## Analysis Sections\" headings EXACTLY, in the plan's order, word for word. "
+    "Do not add, rename, merge, or drop a section.\n"
+    "- The plan's \"## Report Outline\" is a report plan, not an analysis section — do not write findings under it.\n"
+    "- If a section has no evidence in the transcripts, write exactly this under its heading:\n"
+    "  No evidence in transcripts\n\n"
+    + EVIDENCE_RULES + "\n" + OUTPUT_FORMAT + "\n"
+    "Approved analysis plan:\n{plan}\n\n"
+)
+
+QUALITATIVE_SINGLE_TEMPLATE = (
+    "You are a senior market research analyst. Analyze the interview transcript below in depth, at a professional level.\n"
+    "Rules: Use ONLY information from the transcript. Do not invent findings, "
+    "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
+    "Findings in short paragraphs. Go beyond surface summary: explain WHY behind behaviours, "
+    "note drivers and barriers, and distinguish what is said by one respondent from what is a pattern.\n\n"
+    + EVIDENCE_RULES + "\n" + OUTPUT_FORMAT + "\n"
+    "Structure your answer exactly like this:\n"
+    "## Key Findings\n"
+    "## Customer Needs\n"
+    "## Market Needs\n"
+    "## Pain Points\n"
+    "## Behaviour & Journey\n"
+    "(the purchase/usage journey step by step, with what triggers each step)\n"
+    "## Brand & Market View\n"
+    "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
+    "## Persona\n"
+    "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
+    "## Key Quotes\n"
+    "(for each quote: > \"...\" — Speaker N, <source file>)\n"
+    "## Recommendations\n"
+    "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
+)
+
+QUALITATIVE_MULTI_TEMPLATE = (
+    "You are a senior market research analyst. Analyze these {count} interview transcripts together in depth, at a professional level.\n"
+    "Rules: Use ONLY information from the transcripts. Do not invent findings, "
+    "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
+    "Findings in short paragraphs. Go beyond surface summary: explain WHY behind behaviours, note drivers and barriers.\n\n"
+    + CROSS_INTERVIEW_RULES + "\n" + EVIDENCE_RULES + "\n" + OUTPUT_FORMAT + "\n"
+    "Structure your answer exactly like this:\n"
+    "## Key Findings\n"
+    "## Cross-Respondent Themes\n"
+    "(for each theme: the theme, then n=X of Y, one supporting quote, and any divergent view)\n"
+    "## Customer Needs\n"
+    "## Market Needs\n"
+    "## Pain Points\n"
+    "## Behaviour & Journey\n"
+    "(the purchase/usage journey step by step, with what triggers each step)\n"
+    "## Brand & Market View\n"
+    "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
+    "## Persona\n"
+    "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
+    "## Key Quotes\n"
+    "(for each quote: > \"...\" — Speaker N, <source file>)\n"
+    "## Recommendations\n"
+    "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
+)
+
+QUANT_INTERPRET_TEMPLATE = (
+    "You are a senior market research analyst. Interpret the survey results below. "
+    "Use ONLY the numbers given. Do not invent counts, percentages, or findings. "
+    "Write in English.\n\n"
+    "Rules: quote every number exactly as given (count, %, n=). A pattern needs a clear "
+    "difference in the numbers — do not over-claim from a small sample. "
+    "If the survey cannot answer something, say so under \"What Needs a Follow-up\" — do not guess.\n\n"
+    "Structure your answer exactly like this:\n"
+    "## Key Patterns\n"
+    "(the 3-5 clearest patterns, each with its exact count and % from the data)\n"
+    "## Notable Differences\n"
+    "(where groups or answers differ clearly, with exact numbers)\n"
+    "## What Needs a Follow-up\n"
+    "(questions the survey cannot answer — suggest what to ask in interviews)\n\n"
+)
+
+REPORT_FORMAT_TEMPLATE = (
+    "Report export contract (how Gemini output becomes PPTX/DOCX automatically):\n"
+    + OUTPUT_FORMAT +
+    "- The export reads \"## \" headings as slide/section titles and \"- \" bullets as points.\n"
+    "- Anything outside that format (tables, bold headings, other heading levels) is dropped by the export.\n"
+    "- Templates: Business Clean, Topline, Dark Navy.\n"
+)
+
+EXEC_SUMMARY_TEMPLATE = (
+    "You are a senior market research analyst. Write a one-page executive summary (topline) "
+    "of the analysis below, for a client who has 2 minutes. "
+    "Use ONLY information from the analysis. Do not invent findings, numbers, or quotes. "
+    "Write in English. Medicine, brand, and disease names in English.\n\n"
+    "Structure your answer exactly like this:\n"
+    "## Objective\n"
+    "(one paragraph — what the client wanted to know)\n"
+    "## Key Findings\n"
+    "(3-5 findings only, each with n=X/Y and one short quote)\n"
+    "## Recommendations\n"
+    "(3 recommendations maximum, each with priority High, Medium or Low)\n\n"
+    + EVIDENCE_RULES + "\n" + OUTPUT_FORMAT + "\n"
+    "Analysis:\n"
+)
+
+PROMPT_LIBRARY = {
+    "transcription": {
+        "name": "1. Transcription Engine",
+        "icon": "🎙️",
+        "purpose": "Turns audio into a Burmese transcript with speakers separated (Respondent / Moderator). No summary, no invention — unclear parts marked [unclear].",
+        "used_by": "Data Collection page (transcribe_audio)",
+        "template": TRANSCRIPTION_TEMPLATE,
+    },
+    "planning": {
+        "name": "2. Research Planning Engine",
+        "icon": "🗺️",
+        "purpose": "Reads brief + discussion guide + questionnaire + transcripts and proposes an analysis plan (sections + report outline). Findings are NOT written here — only the plan. The apply variant runs an approved plan with strict structure control.",
+        "used_by": "Market Analysis page (Analysis Planner, plan_based_prompt)",
+        "template": PLANNING_TEMPLATE,
+        "variants": {"Apply an approved plan": PLAN_APPLY_TEMPLATE},
+    },
+    "qualitative": {
+        "name": "3. Qualitative Analysis Engine",
+        "icon": "🔍",
+        "purpose": "Deep analysis of interviews — findings, needs, pain points, journey, brand view, persona, quotes, recommendations. Evidence rules (n= + verbatim quote + speaker) and the fixed report format apply to every finding.",
+        "used_by": "Market Analysis page (Analyze / Analyze multi)",
+        "template": QUALITATIVE_SINGLE_TEMPLATE,
+        "variants": {"Multi-interview": QUALITATIVE_MULTI_TEMPLATE},
+    },
+    "quantitative": {
+        "name": "4. Quantitative Analysis Engine",
+        "icon": "📈",
+        "purpose": "Survey numbers (counts, %, means, cross-tabs) are computed from the data in Python — never generated by AI. This prompt only interprets the computed numbers, quoting them exactly.",
+        "used_by": "Quantitative Analysis page (Interpret with AI)",
+        "template": QUANT_INTERPRET_TEMPLATE,
+    },
+    "cross_interview": {
+        "name": "5. Cross-Interview Intelligence",
+        "icon": "🔀",
+        "purpose": "Compares interviews: themes with n=X of Y, one quote per theme, divergent views named, patterns need 2+ respondents. Used inside the multi-interview analysis prompt.",
+        "used_by": "Market Analysis page (Analyze multi)",
+        "template": CROSS_INTERVIEW_RULES,
+    },
+    "report_generation": {
+        "name": "6. Report Generation Engine",
+        "icon": "📑",
+        "purpose": "The format contract between Gemini output and the PPTX/DOCX export: \"## \" headings become slides/sections, \"- \" bullets become points. Anything outside the format is dropped by the export.",
+        "used_by": "Reports page (Export PPTX / DOCX, parse_sections)",
+        "template": REPORT_FORMAT_TEMPLATE,
+    },
+    "executive_summary": {
+        "name": "7. Executive Summary Engine",
+        "icon": "📝",
+        "purpose": "Turns a saved analysis into a one-page client topline: objective, 3-5 key findings with n= and quotes, max 3 recommendations. Same evidence rules and format as the analysis engines.",
+        "used_by": "Reports page (Create executive summary)",
+        "template": EXEC_SUMMARY_TEMPLATE,
+    },
+}
+
+
 def plan_based_prompt(plan_text, combined_text, count):
-    base = (
-        "You are a senior market research analyst. Follow this approved analysis plan exactly. "
-        "Use ONLY information from the transcripts. Do not invent findings, numbers, or quotes. "
-        "Write in English. Medicine, brand, and disease names in English. Findings in short paragraphs.\n\n"
-        "Approved analysis plan:\n" + plan_text + "\n\n"
-    )
+    base = PLAN_APPLY_TEMPLATE.format(plan=plan_text)
     if count > 1:
         base += (
-            f"Analyze these {count} interview transcripts together, following the plan. "
-            "For each theme, say how many respondents mentioned it (n=).\n\nTranscripts:\n" + combined_text
+            f"Analyze these {count} interview transcripts together, following the plan.\n\n"
+            "Transcripts:\n" + combined_text
         )
     else:
         base += "Transcript:\n" + combined_text
@@ -1015,36 +1236,75 @@ CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 .stApp, .stApp * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 :root {
-  --rf-navy: #101638;
-  --rf-navy-2: #171f4d;
-  --rf-blue: #3978F6;
-  --rf-purple: #7955E8;
-  --rf-cyan: #26D5E8;
-  --rf-text: #18213D;
-  --rf-muted: #74809B;
-  --rf-border: #E7EAF4;
+  --rf-navy: #071B3A;
+  --rf-navy-2: #0B2A52;
+  --rf-blue: #1264C5;
+  --rf-cyan: #18C6D9;
+  --rf-teal: #16B89A;
+  --rf-text: #10264A;
+  --rf-muted: #64748B;
+  --rf-border: #E5ECF5;
   --rf-surface: #FFFFFF;
 }
 
 /* App canvas */
 .stApp {
-  background: radial-gradient(ellipse at 85% 0%, rgba(121,85,232,.07), transparent 32%),
-              radial-gradient(ellipse at 5% 12%, rgba(57,120,246,.06), transparent 28%),
-              #F6F7FC;
+  background: radial-gradient(ellipse at 85% 0%, rgba(24,198,217,.07), transparent 32%),
+              radial-gradient(ellipse at 5% 12%, rgba(18,100,197,.06), transparent 28%),
+              #F4F8FF;
   color: var(--rf-text);
 }
-.block-container { padding-top: 1.2rem; padding-bottom: 3rem; padding-left: 2.5rem; padding-right: 2.5rem; max-width: 1600px; }
+.block-container {
+  width: 100%;
+  max-width: 1540px;
+  padding: 1.35rem clamp(1.2rem, 2.2vw, 2.25rem) 2.5rem;
+}
 
-/* Dark AI sidebar — narrow and compact */
-[data-testid="stSidebar"][aria-expanded="true"] { width: 248px; }
-[data-testid="stSidebar"][aria-expanded="true"] > div:first-child { width: 248px; }
-[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #111735 0%, #171D49 55%, #20205A 100%);
+/* Compact sidebar: reserve more screen space for the workspace */
+section[data-testid="stSidebar"] {
+  width: 250px !important;
+  min-width: 250px !important;
+  max-width: 250px !important;
+  background: linear-gradient(180deg, #071B3A 0%, #0B2A52 55%, #0E3A6E 100%);
   border-right: 1px solid rgba(255,255,255,.08);
 }
-[data-testid="stSidebar"] h1 { font-size: 20px; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.4rem; }
-.rf-nav-group { font-size: 11px !important; letter-spacing: .09em; text-transform: uppercase; color: #8A94B8 !important; font-weight: 700; margin: 14px 0 2px; }
+section[data-testid="stSidebar"] > div {
+  width: 250px !important;
+}
+@media (min-width: 901px) {
+  section[data-testid="stSidebar"][aria-expanded="true"] {
+    width: 250px !important;
+    min-width: 250px !important;
+    max-width: 250px !important;
+  }
+}
+
+/* Dark AI sidebar */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #071B3A 0%, #0B2A52 55%, #0E3A6E 100%);
+  border-right: 1px solid rgba(255,255,255,.08);
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+  gap: .45rem;
+}
+[data-testid="stSidebar"] h1 {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin-bottom: .15rem;
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+  font-size: .76rem;
+}
+[data-testid="stSidebar"] .stButton > button {
+  min-height: 2.15rem;
+  padding: .28rem .65rem;
+  border-radius: 8px;
+  font-size: .84rem;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary {
+  padding-top: .45rem;
+  padding-bottom: .45rem;
+}
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3,
@@ -1054,13 +1314,12 @@ CUSTOM_CSS = """
 [data-testid="stSidebar"] button {
   background: rgba(255,255,255,.055); color: #F5F7FF;
   border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
-  padding: 6px 10px; font-size: 13px;
   transition: all .18s ease;
 }
 [data-testid="stSidebar"] button p { color: #F5F7FF; }
 [data-testid="stSidebar"] button:hover {
-  background: linear-gradient(100deg, rgba(57,120,246,.32), rgba(121,85,232,.30));
-  border-color: rgba(115,153,255,.55); color: #FFFFFF;
+  background: linear-gradient(100deg, rgba(18,100,197,.32), rgba(24,198,217,.30));
+  border-color: rgba(24,198,217,.55); color: #FFFFFF;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] {
   background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
@@ -1069,56 +1328,70 @@ CUSTOM_CSS = """
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
 
 /* Typography and section headings */
-h1, h2, h3 { color: #172044; letter-spacing: -.025em; }
+h1, h2, h3 { color: #10264A; letter-spacing: -.025em; }
 h1 { font-weight: 800; }
 h2, h3 { font-weight: 700; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
 
-/* Hero banner */
+/* Hero banner — light blue-to-cyan gradient */
 .rf-hero {
   position: relative; overflow: hidden;
-  background: linear-gradient(115deg, #11183D 0%, #202A70 48%, #5139A8 100%);
-  border: 1px solid rgba(132,151,255,.24); border-radius: 22px;
-  padding: 34px 38px; margin: 4px 0 18px;
-  box-shadow: 0 16px 38px rgba(30,39,105,.18);
+  background: linear-gradient(115deg, #EAF3FF 0%, #DDF3F8 55%, #D9F5EF 100%);
+  border: 1px solid #D5E5F7; border-radius: 18px;
+  padding: 28px 32px; margin: 4px 0 16px;
+  box-shadow: 0 10px 28px rgba(16,38,74,.08);
 }
 .rf-hero:after {
   content: ""; position: absolute; width: 300px; height: 300px; right: -70px; top: -170px;
-  border-radius: 50%; background: radial-gradient(circle, rgba(38,213,232,.34), rgba(38,213,232,0) 68%);
+  border-radius: 50%; background: radial-gradient(circle, rgba(24,198,217,.22), rgba(24,198,217,0) 68%);
   pointer-events: none;
 }
-.rf-hero h1 { color: #FFFFFF; font-size: clamp(30px, 3.4vw, 44px); margin: 0 0 8px; font-weight: 800; }
-.rf-hero h1 span { color: #70E4F2; }
-.rf-hero p { color: #D7DDFB; font-size: 16px; margin: 0; max-width: 760px; }
+.rf-hero h1 { color: #10264A; font-size: clamp(30px, 3.4vw, 44px); margin: 0 0 8px; font-weight: 800; }
+.rf-hero h1 span.b { color: #1264C5; }
+.rf-hero h1 span.t { color: #16B89A; }
+.rf-hero p { color: #475569; font-size: 16px; margin: 0; max-width: 760px; }
 
 /* Modern metric cards */
-.rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(28,39,87,.055); }
-.rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #3978F6, #7955E8, #26D5E8); }
+.rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(16,38,74,.06); }
+.rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #1264C5, #18C6D9, #16B89A); }
 .rf-metric-ico { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin-bottom: 10px; }
-.rf-metric-label { color: #7883A0; font-size: 13px; font-weight: 600; }
-.rf-metric-value { color: #18234B; font-size: 30px; font-weight: 800; line-height: 1.1; }
+.rf-metric-label { color: #64748B; font-size: 13px; font-weight: 600; }
+.rf-metric-value { color: #10264A; font-size: 30px; font-weight: 800; line-height: 1.1; }
 
 /* Workflow cards and progress ring */
 .rf-step {
-  background: linear-gradient(160deg, #FFFFFF 0%, #F8F9FF 100%);
-  border: 1px solid #E5E9F7; border-radius: 15px; padding: 17px 9px;
-  text-align: center; min-height: 158px;
-  box-shadow: 0 5px 16px rgba(35,48,105,.055);
+  background: linear-gradient(160deg, #FFFFFF 0%, #F8FAFF 100%);
+  border: 1px solid #E5E9F7; border-radius: 15px; padding: 14px 8px;
+  text-align: center; min-height: 142px;
+  box-shadow: 0 5px 16px rgba(16,38,74,.05);
   transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
-.rf-step:hover { transform: translateY(-3px); border-color: #B9C8FF; box-shadow: 0 10px 24px rgba(57,82,180,.12); }
-.rf-step .ico { font-size: 29px; margin-bottom: 5px; }
-.rf-step .nm { font-weight: 750; color: #202A58; font-size: 13px; }
-.rf-step .ds { color: #7B86A3; font-size: 11px; margin-top: 5px; }
-.rf-step .st { color: #5369C8; font-size: 12px; font-weight: 700; margin-top: 8px; }
+.rf-step:hover { transform: translateY(-3px); border-color: #BFD9F2; box-shadow: 0 10px 24px rgba(18,100,197,.12); }
+.rf-step .ico { width: 52px; height: 52px; border-radius: 50%; margin: 0 auto 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+.rf-step .nm { font-weight: 750; color: #10264A; font-size: 13px; }
+.rf-step .ds { color: #64748B; font-size: 11px; margin-top: 5px; }
+.rf-step .st { color: #1264C5; font-size: 12px; font-weight: 700; margin-top: 8px; }
 .rf-ring {
   width: 126px; height: 126px; border-radius: 50%; margin: 12px auto;
-  background: conic-gradient(from 220deg, #3978F6 calc(var(--p)*1%), #7955E8 0, #E9ECF7 0);
+  background: conic-gradient(from 220deg, #1264C5 calc(var(--p)*1%), #18C6D9 0, #E9ECF7 0);
   display: flex; align-items: center; justify-content: center; position: relative;
-  box-shadow: 0 8px 22px rgba(69,86,190,.12);
+  box-shadow: 0 8px 22px rgba(18,100,197,.12);
 }
 .rf-ring:before { content: ""; position: absolute; width: 94px; height: 94px; border-radius: 50%; background: #FFFFFF; }
-.rf-ring span { position: relative; z-index: 1; font-size: 25px; font-weight: 800; color: #202A58; }
+.rf-ring span { position: relative; z-index: 1; font-size: 25px; font-weight: 800; color: #10264A; }
+
+/* Recent activity table with status badges */
+.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); }
+.rf-table td { padding: 11px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; }
+.rf-table tr:last-child td { border-bottom: none; }
+.rf-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; }
+
+/* Guide + system architecture */
+.rf-guide { background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 5px 18px rgba(16,38,74,.05); margin: 0 0 16px; }
+.rf-arch { background: #F4F8FF; border: 1px solid var(--rf-border); border-radius: 12px; padding: 14px 16px; text-align: center; font-weight: 700; color: #10264A; }
+.rf-arch small { display: block; font-weight: 500; color: #64748B; font-size: 12px; margin-top: 2px; }
+.rf-arch-arrow { text-align: center; color: #94A3B8; font-size: 18px; line-height: 1.2; padding: 2px 0; }
 
 /* Buttons and form controls */
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
@@ -1127,31 +1400,37 @@ h2, h3 { font-weight: 700; }
 }
 .stButton > button[kind="primary"] {
   color: #FFFFFF; border: 0;
-  background: linear-gradient(105deg, #3978F6 0%, #6855E8 100%);
-  box-shadow: 0 6px 16px rgba(79,91,214,.22);
+  background: linear-gradient(105deg, #1264C5 0%, #18C6D9 100%);
+  box-shadow: 0 6px 16px rgba(18,100,197,.22);
 }
-.stButton > button:hover, .stDownloadButton > button:hover { border-color: #8CA7F7; transform: translateY(-1px); }
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: #7FB8E8; transform: translateY(-1px); }
 [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stNumberInput"] input {
   border-radius: 10px; border-color: #DDE3F1; background: #FFFFFF;
 }
 [data-testid="stFileUploader"] section {
-  border: 1.5px dashed #B9C7EF; border-radius: 15px; background: #FAFBFF;
+  border: 1.5px dashed #BFD9F2; border-radius: 15px; background: #FAFBFF;
 }
 
 /* Tables, tabs, expanders, alerts */
 [data-testid="stDataFrame"] { border: 1px solid var(--rf-border); border-radius: 13px; overflow: hidden; }
 [data-testid="stTabs"] button[role="tab"] { font-weight: 650; }
-[data-testid="stTabs"] button[aria-selected="true"] { color: #4B61D1; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: #1264C5; }
 [data-testid="stExpander"] { border: 1px solid var(--rf-border); border-radius: 13px; background: #FFFFFF; }
 [data-testid="stAlert"] { border-radius: 12px; }
 hr { border-color: #E5E9F3; }
 
 @media (max-width: 900px) {
-  .block-container { padding-left: 1rem; padding-right: 1rem; }
-  .rf-hero { padding: 25px 22px; }
-  .rf-step { min-height: 140px; }
+  section[data-testid="stSidebar"],
+  section[data-testid="stSidebar"] > div {
+    width: min(82vw, 280px) !important;
+    min-width: min(82vw, 280px) !important;
+    max-width: min(82vw, 280px) !important;
+  }
+  .block-container { padding: 1rem 1rem 2rem; }
+  .rf-hero { padding: 23px 20px; }
+  .rf-step { min-height: 132px; }
 }
 </style>
 """
@@ -1160,30 +1439,21 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # --- Shell (v3.4): 6-stage nav, one Project = one container. Modern, professional,
 # minimalist: white, one blue accent, generous spacing, no extra decoration.
 STAGES = [
-    ("1 · Client Brief", "Project Brief"),
-    ("2 · Data Collection", "Audio Transcription"),
-    ("3 · Fieldworks", "FGD Recording"),
+    ("1 · Client Brief", "Client Brief"),
+    ("2 · Data Collection", "Data Collection"),
+    ("3 · Fieldworks", "Fieldworks"),
     ("4 · Data Cleansing", "Data Cleansing"),
     ("5 · Analysis & Reports", "Market Analysis"),
     ("6 · Presentation", "Presentation"),
 ]
 PAGE_STAGE = {
-    "Project Brief": 1,
-    "Audio Transcription": 2, "Batch Processing": 2, "Upload & Split": 2,
-    "FGD Recording": 3, "Transcripts": 3,
+    "Client Brief": 1,
+    "Data Collection": 2, "Batch Processing": 2, "Upload & Split": 2,
+    "Fieldworks": 3, "Transcripts": 3,
     "Data Cleansing": 4,
-    "Market Analysis": 5, "Quant Analysis": 5, "Reports": 5, "Report Editor": 5,
+    "Market Analysis": 5, "Quantitative Analysis": 5, "Reports": 5, "Report Editor": 5,
     "Presentation": 6,
 }
-NAV_GROUPS = [
-    ("🏠 Overview", ["Dashboard"]),
-    ("1 · Client Brief", ["Project Brief"]),
-    ("2 · Data Collection", ["Audio Transcription", "Batch Processing", "Upload & Split"]),
-    ("3 · Fieldworks", ["FGD Recording", "Transcripts"]),
-    ("4 · Data Cleansing", ["Data Cleansing"]),
-    ("5 · Analysis & Reports", ["Market Analysis", "Quant Analysis", "Reports", "Report Editor"]),
-    ("6 · Presentation", ["Presentation"]),
-]
 
 if "page" not in st.session_state:
     st.session_state["page"] = "Dashboard"
@@ -1224,23 +1494,28 @@ with st.sidebar.expander("＋ Project အသစ်"):
             st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
 
 _PAGE_ICONS = {
-    "Dashboard": "🏠", "Project Brief": "📋",
-    "Audio Transcription": "🎙️", "Batch Processing": "📁", "Upload & Split": "✂️",
-    "FGD Recording": "🔴", "Transcripts": "📝", "Data Cleansing": "🧹",
-    "Market Analysis": "📊", "Quant Analysis": "📈", "Reports": "📑",
-    "Report Editor": "✏️", "Presentation": "🎤",
+    "Dashboard": "🏠", "Client Brief": "📋",
+    "Data Collection": "🎙️", "Batch Processing": "📁", "Upload & Split": "✂️",
+    "Fieldworks": "🔴", "Transcripts": "📝", "Data Cleansing": "🧹",
+    "Market Analysis": "📊", "Quantitative Analysis": "📈", "Reports": "📑",
+    "Report Editor": "✏️", "Presentation": "🎤", "Prompt Library": "📚",
 }
+_PAGE_ORDER = [
+    "Dashboard", "Client Brief",
+    "Data Collection", "Batch Processing", "Upload & Split",
+    "Fieldworks", "Transcripts", "Data Cleansing",
+    "Market Analysis", "Quantitative Analysis", "Reports", "Report Editor",
+    "Presentation", "Prompt Library",
+]
 
-for group, items in NAV_GROUPS:
-    st.sidebar.markdown(f'<p class="rf-nav-group">{group}</p>', unsafe_allow_html=True)
-    for item in items:
-        _active = st.session_state["page"] == item
-        if st.sidebar.button(
-            f"{_PAGE_ICONS.get(item, '•')} {item}", key=f"nav_{item}",
-            use_container_width=True, type="primary" if _active else "secondary",
-        ):
-            st.session_state["page"] = item
-            st.rerun()
+for item in _PAGE_ORDER:
+    _active = st.session_state["page"] == item
+    if st.sidebar.button(
+        f"{_PAGE_ICONS.get(item, '•')} {item}", key=f"nav_{item}",
+        use_container_width=True, type="primary" if _active else "secondary",
+    ):
+        st.session_state["page"] = item
+        st.rerun()
 
 st.sidebar.caption(
     "💾 Storage: Google Drive (OAuth)" if DRIVE_AUTH == "oauth"
@@ -1255,19 +1530,35 @@ if _MY_EMAIL:
 
 page = st.session_state["page"]
 
-# Stage stepper: one row, six stages, current stage marked ●. Click a stage to jump to it.
-# Short label for stage 5 so the full row fits without "..." truncation.
-_STEP_SHORT = {"5 · Analysis & Reports": "5 · Analysis"}
-_current_stage = PAGE_STAGE.get(page, 0)
-st.markdown('<div style="height: 10px"></div>', unsafe_allow_html=True)
-_step_cols = st.columns(6)
-for _i, (_label, _main) in enumerate(STAGES, start=1):
-    with _step_cols[_i - 1]:
-        _mark = "● " if _i == _current_stage else ""
-        if st.button(f"{_mark}{_STEP_SHORT.get(_label, _label)}", key=f"stage_{_i}", use_container_width=True):
-            st.session_state["page"] = _main
-            st.rerun()
-st.divider()
+# Top bar: functional global search across this project's files + projects.
+_search_q = st.text_input(
+    "Search", key="global_search", label_visibility="collapsed",
+    placeholder="🔍 Search projects, files, or features...",
+)
+if _search_q:
+    _q = _search_q.strip().lower()
+    _hits = []
+    for _p in st.session_state.get("project_list", ["Default"]):
+        if _q in _p.lower():
+            _hits.append((f"📁 Project: {_p}", _p, "project"))
+    _scan = ((AUDIO_DIR, "Data Collection"), (OUTPUT_DIR, "Transcripts"),
+             (ANALYSIS_DIR, "Market Analysis"), (REPORTS_DIR, "Reports"))
+    for _folder, _target in _scan:
+        for _f in _folder.glob("*"):
+            if _f.is_file() and _q in _f.name.lower():
+                _hits.append((f"📄 {_f.name}", _target, "file"))
+    if _hits:
+        for _i, (_label, _target, _kind) in enumerate(_hits[:6]):
+            if st.button(_label, key=f"search_hit_{_i}"):
+                if _kind == "project":
+                    st.session_state["project_select_target"] = _target
+                else:
+                    st.session_state["page"] = _target
+                st.rerun()
+    else:
+        st.caption("No matches in this project.")
+
+# Navigation lives in the sidebar only (the top stepper row was removed in v3.9).
 
 def stage_status():
     """(label, description, done) per stage, from real file counts only.
@@ -1318,24 +1609,61 @@ if DRIVE_MODE and not st.session_state.get("drive_synced"):
 if page == "Dashboard":
 
     st.markdown(
-        '<div class="rf-hero"><h1>Welcome to <span>ResearchFlow AI</span></h1>'
+        '<div class="rf-hero"><h1>Welcome to<br><span class="b">Research</span>'
+        '<span class="t">Flow</span></h1>'
         "<p>Transform your interview data into actionable insights with our "
-        "Turn interview data into powerful insights with AI-driven market research.</p></div>",
+        "professional market research platform.</p></div>",
         unsafe_allow_html=True,
     )
-    if st.button("▶ Start New Project", key="hero_new_project"):
-        st.session_state["page"] = "Project Brief"
-        st.rerun()
+    _hc1, _hc2, _hc3 = st.columns([1, 1, 4])
+    with _hc1:
+        if st.button("▶ Start New Project", key="hero_new_project", type="primary"):
+            st.session_state["page"] = "Client Brief"
+            st.rerun()
+    with _hc2:
+        if st.button("📖 View Guide", key="hero_view_guide"):
+            st.session_state["show_guide"] = not st.session_state.get("show_guide", False)
+            st.rerun()
+    if st.session_state.get("show_guide"):
+        st.markdown(
+            '<div class="rf-guide"><h3>📖 How ResearchFlow works</h3>'
+            "<p>One project flows through 6 stages — brief, collect, fieldwork, "
+            "cleanse, analyse, present. Files live in Google Drive "
+            "(ResearchFlow / project / audio, transcripts, notes, reports) and "
+            "this app works on those same files.</p></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("**System Architecture**")
+        st.markdown(
+            '<div class="rf-arch">Research Project Management<small>Client Brief • Project Setup • Objectives</small></div>'
+            '<div class="rf-arch-arrow">↓</div>',
+            unsafe_allow_html=True,
+        )
+        _ac1, _ac2 = st.columns(2)
+        with _ac1:
+            st.markdown('<div class="rf-arch">Data Collection<small>Interviews • Surveys • FGDs</small></div>', unsafe_allow_html=True)
+        with _ac2:
+            st.markdown('<div class="rf-arch">Batch Processing<small>Audio • Video • Documents</small></div>', unsafe_allow_html=True)
+        st.markdown('<div class="rf-arch-arrow">↓</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="rf-arch">AI Processing Engine<small>Transcription • Data Cleansing • Coding</small></div>'
+            '<div class="rf-arch-arrow">↓</div>'
+            '<div class="rf-arch">Research Intelligence<small>Qualitative • Quantitative • Market Analysis</small></div>'
+            '<div class="rf-arch-arrow">↓</div>'
+            '<div class="rf-arch">AI Reports &amp; Presentation<small>Insights • Recommendations • Client Reports</small></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Coding, Surveys and Video are part of the target architecture — not yet built.")
 
     _projects = st.session_state.get("project_list", ["Default"])
     _transcripts = get_transcript_files()
     _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
     _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
     _cards = [
-        ("📁", "Total Projects", len(_projects), "#3978F6"),
-        ("📝", "Transcripts", len(_transcripts), "#7955E8"),
-        ("📊", "Research Reports", len(_reports), "#26D5E8"),
-        ("🎙️", "Audio Files", len(_audio), "#0070C0"),
+        ("📁", "Total Projects", len(_projects), "#1264C5"),
+        ("📝", "Transcripts", len(_transcripts), "#16B89A"),
+        ("📊", "Research Reports", len(_reports), "#18C6D9"),
+        ("🎙️", "Audio Files", len(_audio), "#071B3A"),
     ]
     _cols = st.columns(4)
     for _i, (_ico, _lbl, _val, _c) in enumerate(_cards):
@@ -1351,21 +1679,32 @@ if page == "Dashboard":
     _done = sum(1 for _, _, d in _stages if d)
     _pct = round(_done / len(_stages) * 100)
     _icons = ["📋", "🎙️", "👥", "🧹", "📊", "🎤"]
+    _step_colors = ["#1264C5", "#18C6D9", "#16B89A", "#1264C5", "#18C6D9", "#16B89A"]
 
     st.subheader("🚀 Research Workflow")
     st.caption("Follow the complete research process from brief to presentation")
-    _cols = st.columns(6)
+    _cols = st.columns([3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3])
+    _ci = 0
     for _i, (_label, _desc, _d) in enumerate(_stages):
-        with _cols[_i]:
+        with _cols[_ci]:
             _nm = _label.split(" · ", 1)[1]
             _st = "✅ Done" if _d else "○ Not yet"
             st.markdown(
-                f'<div class="rf-step"><div class="ico">{_icons[_i]}</div>'
+                f'<div class="rf-step"><div class="ico" style="background:{_step_colors[_i]}1A">{_icons[_i]}</div>'
                 f'<div class="nm">{_i + 1}. {_nm}</div>'
                 f'<div class="ds">{_desc}</div>'
                 f'<div class="st">{_st}</div></div>',
                 unsafe_allow_html=True,
             )
+        _ci += 1
+        if _i < len(_stages) - 1:
+            with _cols[_ci]:
+                st.markdown(
+                    '<div style="text-align:center; font-size:22px; color:#94A3B8;'
+                    ' padding-top:55px;">→</div>',
+                    unsafe_allow_html=True,
+                )
+            _ci += 1
 
     st.subheader("💡 Project Progress")
     _pc1, _pc2 = st.columns([1, 2])
@@ -1384,15 +1723,23 @@ if page == "Dashboard":
     st.subheader("🕐 Recent Activity")
     _act = recent_activity()
     if _act:
-        _df = pd.DataFrame(_act, columns=["Date & Time", "File / Project", "Activity", "Status"])
-        st.dataframe(_df, use_container_width=True, hide_index=True)
+        _rows = "".join(
+            f"<tr><td>{html.escape(_t)}</td><td>{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
+            f'<td><span class="rf-badge">{html.escape(_s)}</span></td></tr>'
+            for _t, _f, _a, _s in _act
+        )
+        st.markdown(
+            '<table class="rf-table"><tr><th>Date &amp; Time</th><th>File / Project</th>'
+            "<th>Activity</th><th>Status</th></tr>" + _rows + "</table>",
+            unsafe_allow_html=True,
+        )
     else:
         st.info("No activity yet — record or upload audio to begin.")
 
-elif page == "Project Brief":
+elif page == "Client Brief":
     # Stage 1 shell page: project info now; the Brief form (Scope / Objective /
     # Methodology / Result Outcome) + Communication + Meetings come in the Stage 1 build.
-    st.title("📋 Project Brief")
+    st.title("📋 Client Brief")
     st.write(f"Project: **{current_project()}**")
 
     col1, col2, col3 = st.columns(3)
@@ -1446,8 +1793,8 @@ elif page == "Presentation":
         "အခု Reports စာမျက်နှာမှာ PPTX / DOCX ထုတ်လို့ရတယ်။"
     )
 
-elif page == "Audio Transcription":
-    st.title("🎙️ Audio Transcription")
+elif page == "Data Collection":
+    st.title("🎙️ Data Collection")
 
     uploaded = st.file_uploader("Audio file တင်ပါ (mp3 / wav / m4a)", type=["mp3", "wav", "m4a"])
     audio_path = None
@@ -1479,7 +1826,7 @@ elif page == "Batch Processing":
 
     audio_files = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
     if not audio_files:
-        st.info("Audio file မရှိသေးပါ — Audio Transcription page မှာ upload လုပ်ပါ။")
+        st.info("Audio file မရှိသေးပါ — Data Collection page မှာ upload လုပ်ပါ။")
     else:
         pending = []
         done = []
@@ -1515,8 +1862,8 @@ elif page == "Batch Processing":
         elif not pending:
             st.success("Audio အားလုံး transcript ပြီးပြီ။")
 
-elif page == "FGD Recording":
-    st.title("🎙️ FGD Recording")
+elif page == "Fieldworks":
+    st.title("🎙️ Fieldworks")
     st.caption("Browser mic နဲ့ chunk တစ်ခုချင်း record လုပ် → auto-transcribe. 15 မိနစ် တစ်ပိုင်း. 1 chunk = 1 request (2h FGD ≈ 8 chunks).")
     st.info("Browser က mic ခွင့်တောင်းရင် Allow နှိပ်ပါ. လူအများ တစ်ပြိုင်နက် ပြောရင် speaker ခွဲတာ တိကျမှု လျော့နိုင်တယ် — [unclear] လို့ မှတ်ထားတာကို ပြန်စစ်ပါ.")
 
@@ -1719,28 +2066,8 @@ elif page == "Market Analysis":
                     combined_plan += f"\n\n=== {name} ===\n"
                     combined_plan += file_map[name].read_text(encoding="utf-8")
                 plan_prompt = (
-                    "You are a senior market research analyst. Propose an analysis plan for this project. "
-                    "Read the client brief, discussion guide, questionnaire, and interview transcripts together. "
-                    "Do NOT write findings yet — only the plan.\n"
-                    "Rules: Base everything ONLY on the brief, guide, questionnaire, and transcripts. Do not invent objectives or questions. "
-                    "Use the questionnaire to know what was asked and how the data was collected, and match analysis sections to both the guide topics and the survey questions. "
-                    "Write in English.\n\n"
-                    "Structure your answer exactly like this:\n"
-                    "## Project Type\n"
-                    "(e.g. IDI consumer, FGD persona, survey, marketing)\n"
-                    "## Objective\n"
-                    "(restate what the client wants to know, from the brief)\n"
-                    "## Recommended Framework\n"
-                    "(framework name + WHY it fits this brief and guide)\n"
-                    "## Questionnaire & Data Collection\n"
-                    "(what survey questions were asked, which tool collected the data, and how the survey data links to the analysis)\n"
-                    "## Analysis Sections\n"
-                    "(each section: title + what question it answers)\n"
-                    "## Report Outline\n"
-                    "(what goes in the PPTX/DOCX report, in order)\n"
-                    "## Gaps & Notes\n"
-                    "(guide or questionnaire topics with no or little evidence in the transcripts; anything missing)\n\n"
-                    "Client Brief / Objective:\n" + brief_text + "\n\nDiscussion Guide:\n" + dg_text + "\n\nQuestionnaire:\n" + questionnaire_text + "\n\nData collection tool: " + collection_tool + "\n\nTranscripts:\n" + combined_plan
+                    PROMPT_LIBRARY["planning"]["template"]
+                    + "\n\nClient Brief / Objective:\n" + brief_text + "\n\nDiscussion Guide:\n" + dg_text + "\n\nQuestionnaire:\n" + questionnaire_text + "\n\nData collection tool: " + collection_tool + "\n\nTranscripts:\n" + combined_plan
                 )
                 with st.spinner("Planning... (transcript များရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
                     plan_result, plan_model = ask_gemini(plan_prompt)
@@ -1784,29 +2111,7 @@ elif page == "Market Analysis":
                 if use_plan and st.session_state.get("current_plan"):
                     prompt = plan_based_prompt(st.session_state["current_plan"], text, 1)
                 else:
-                    prompt = (
-                        "You are a senior market research analyst. Analyze the interview transcript below in depth, at a professional level.\n"
-                        "Rules: Use ONLY information from the transcript. Do not invent findings, "
-                        "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
-                        "Findings in short paragraphs. Go beyond surface summary: explain WHY behind behaviours, "
-                        "note drivers and barriers, and distinguish what is said by one respondent from what is a pattern.\n\n"
-                        "Structure your answer exactly like this:\n"
-                        "## Key Findings\n"
-                        "## Customer Needs\n"
-                        "## Market Needs\n"
-                        "## Pain Points\n"
-                        "## Behaviour & Journey\n"
-                        "(the purchase/usage journey step by step, with what triggers each step)\n"
-                        "## Brand & Market View\n"
-                        "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
-                        "## Persona\n"
-                        "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
-                        "## Key Quotes\n"
-                        "(for each quote: the quote, then — Speaker)\n"
-                        "## Recommendations\n"
-                        "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
-                        "Transcript:\n" + text
-                    )
+                    prompt = PROMPT_LIBRARY["qualitative"]["template"] + "\n\nTranscript:\n" + text
                 with st.spinner("Analyzing... (ခဏစောင့်ပါ)"):
                     result, model = ask_gemini(prompt)
                 if result:
@@ -1830,30 +2135,8 @@ elif page == "Market Analysis":
                     prompt = plan_based_prompt(st.session_state["current_plan"], combined, len(selected_multi))
                 else:
                     prompt = (
-                        f"You are a senior market research analyst. Analyze these {len(selected_multi)} interview transcripts together in depth, at a professional level.\n"
-                        "Rules: Use ONLY information from the transcripts. Do not invent findings, "
-                        "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
-                        "Findings in short paragraphs. For each theme, say how many respondents mentioned it (n=), "
-                        "give one supporting quote, and note divergent or contradictory views where they exist. "
-                        "Go beyond surface summary: explain WHY behind behaviours, note drivers and barriers.\n\n"
-                        "Structure your answer exactly like this:\n"
-                        "## Key Findings\n"
-                        "## Cross-Respondent Themes\n"
-                        "(for each theme: the theme, then n= how many respondents, one supporting quote, and any divergent view)\n"
-                        "## Customer Needs\n"
-                        "## Market Needs\n"
-                        "## Pain Points\n"
-                        "## Behaviour & Journey\n"
-                        "(the purchase/usage journey step by step, with what triggers each step)\n"
-                        "## Brand & Market View\n"
-                        "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
-                        "## Persona\n"
-                        "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
-                        "## Key Quotes\n"
-                        "(for each quote: the quote, then — Speaker, source file)\n"
-                        "## Recommendations\n"
-                        "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
-                        "Transcripts:\n" + combined
+                        PROMPT_LIBRARY["qualitative"]["variants"]["Multi-interview"].format(count=len(selected_multi))
+                        + "\n\nTranscripts:\n" + combined
                     )
                 with st.spinner("Analyzing... (transcript များရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
                     result, model = ask_gemini(prompt)
@@ -1887,8 +2170,8 @@ elif page == "Market Analysis":
         else:
             st.info("သိမ်းထားတဲ့ analysis မရှိသေးပါ။")
 
-elif page == "Quant Analysis":
-    st.title("📊 Quant Analysis")
+elif page == "Quantitative Analysis":
+    st.title("📊 Quantitative Analysis")
     st.caption("Survey data (Google Forms / SurveyMonkey / Kobo Collect export — CSV / XLSX) → counts, %, charts, cross-tab.")
 
     uploaded = st.file_uploader("Survey file တင်ပါ (CSV / XLSX)", type=["csv", "xlsx"])
@@ -1959,6 +2242,15 @@ elif page == "Quant Analysis":
                 file_name=out_file.name,
                 mime="text/plain",
             )
+        if st.button("📈 Interpret with AI"):
+            _qprompt = PROMPT_LIBRARY["quantitative"]["template"] + "\n\nSurvey results:\n" + "\n".join(summary_lines)
+            with st.spinner("Interpreting..."):
+                _qres, _qmodel = ask_gemini(_qprompt)
+            if _qres:
+                _qfile = store_write_text("analysis", f"quant_{Path(uploaded.name).stem}_interpretation.txt", _qres)
+                st.success(f"Done — model: {_qmodel} — Saved: {_qfile.name}")
+            else:
+                st.error(f"Failed: {_qmodel}")
 
 elif page == "Reports":
     st.title("📑 Research Reports")
@@ -2003,6 +2295,26 @@ elif page == "Reports":
                 file_name=out_path.name,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
+
+        st.divider()
+        if st.button("📝 Create executive summary (topline)"):
+            analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+            if looks_like_html(analysis_text):
+                analysis_text = html_to_text(analysis_text)
+            _sprompt = PROMPT_LIBRARY["executive_summary"]["template"] + analysis_text
+            with st.spinner("Summarizing..."):
+                _sres, _smodel = ask_gemini(_sprompt)
+            if _sres:
+                _sfile = store_write_text("analysis", selected.replace("_analysis.txt", "_topline.txt"), _sres)
+                st.success(f"Done — model: {_smodel} — Saved: {_sfile.name}")
+                st.download_button(
+                    "Download topline (.txt)",
+                    data=_sfile.read_bytes(),
+                    file_name=_sfile.name,
+                    mime="text/plain",
+                )
+            else:
+                st.error(f"Failed: {_smodel}")
 
         st.divider()
         st.subheader("📁 Saved reports")
@@ -2107,3 +2419,15 @@ elif page == "Report Editor":
                         st.rerun()
         else:
             st.caption("Version အသစ် မရှိသေးဘူး။")
+
+elif page == "Prompt Library":
+    st.title("📚 Prompt Library")
+    st.caption("Every prompt Gemini is given, in one place. Prompts live in the code — to change one, ask SM.")
+    for _key, _eng in PROMPT_LIBRARY.items():
+        with st.expander(f"{_eng['icon']} {_eng['name']}"):
+            st.write(_eng["purpose"])
+            st.caption(f"Used by: {_eng['used_by']}")
+            st.code(_eng["template"], language="text")
+            for _vname, _vtext in _eng.get("variants", {}).items():
+                st.markdown(f"**Variant: {_vname}**")
+                st.code(_vtext, language="text")
