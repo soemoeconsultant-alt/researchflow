@@ -2,9 +2,11 @@ import os
 import re
 import time
 import json
+import datetime
 import hashlib
 import shutil
 import subprocess
+from zoneinfo import ZoneInfo
 from html.parser import HTMLParser
 import pandas as pd
 import streamlit as st
@@ -1007,6 +1009,36 @@ def analysis_to_docx(analysis_text, title_text, out_path):
 # (e.g. localhost) -> open access, returns "".
 _MY_EMAIL = login_gate()
 
+# --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
+CUSTOM_CSS = """
+<style>
+[data-testid="stSidebar"] { background-color: #10283B; }
+[data-testid="stSidebar"] h1 { color: #FFFFFF; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #FFFFFF; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #B9C6D3; }
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #FFFFFF; }
+[data-testid="stSidebar"] button { background-color: rgba(255,255,255,0.08); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.12); }
+[data-testid="stSidebar"] button:hover { background-color: rgba(255,255,255,0.18); color: #FFFFFF; }
+[data-testid="stSidebar"] button p { color: #FFFFFF; }
+[data-testid="stSidebar"] [data-testid="stExpander"] { background-color: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); }
+[data-testid="stSidebar"] [data-testid="stExpander"] p { color: #FFFFFF; }
+[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #E6EAF0; border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 4px rgba(16,40,59,0.08); }
+.rf-hero { background: linear-gradient(120deg, #E8F1FA 0%, #D6E9FB 55%, #CDEFEA 100%); border-radius: 16px; padding: 28px 32px; margin-bottom: 8px; }
+.rf-hero h1 { color: #10283B; font-size: 40px; margin: 0 0 4px 0; }
+.rf-hero h1 span { color: #0070C0; }
+.rf-hero p { color: #33475B; font-size: 17px; margin: 0; }
+.rf-step { background-color: #FFFFFF; border: 1px solid #E6EAF0; border-radius: 12px; padding: 16px 8px; text-align: center; box-shadow: 0 1px 4px rgba(16,40,59,0.06); min-height: 150px; }
+.rf-step .ico { font-size: 30px; }
+.rf-step .nm { font-weight: 700; color: #10283B; font-size: 14px; }
+.rf-step .ds { color: #5A6B7C; font-size: 12px; }
+.rf-step .st { font-size: 13px; font-weight: 600; }
+.rf-ring { width: 120px; height: 120px; border-radius: 50%; margin: 8px auto; background: conic-gradient(#0070C0 calc(var(--p)*1%), #E6EAF0 0); display: flex; align-items: center; justify-content: center; position: relative; }
+.rf-ring::before { content: ""; position: absolute; width: 88px; height: 88px; border-radius: 50%; background: #FFFFFF; }
+.rf-ring span { position: relative; z-index: 1; font-size: 24px; font-weight: 700; color: #10283B; }
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
 # --- Shell (v3.4): 6-stage nav, one Project = one container. Modern, professional,
 # minimalist: white, one blue accent, generous spacing, no extra decoration.
 STAGES = [
@@ -1105,6 +1137,46 @@ for _i, (_label, _main) in enumerate(STAGES, start=1):
             st.rerun()
 st.divider()
 
+def stage_status():
+    """(label, description, done) per stage, from real file counts only.
+    A stage counts as done when its output files exist in this project."""
+    audio_n = len([f for f in AUDIO_DIR.glob("*") if f.is_file()])
+    tr_n = len(get_transcript_files())
+    an_n = len(list(ANALYSIS_DIR.glob("*_analysis.txt")))
+    rep_n = len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx")))
+    return [
+        ("1 · Client Brief", "Define objectives & scope", False),
+        ("2 · Data Collection", "Gather audio & secondary data", audio_n > 0),
+        ("3 · Fieldworks", "Conduct interviews & FGDs", tr_n > 0),
+        ("4 · Data Cleansing", "Clean & prepare data", False),
+        ("5 · Analysis & Reports", "Generate insights & reports", an_n > 0),
+        ("6 · Presentation", "Present to clients", rep_n > 0),
+    ]
+
+
+def recent_activity(limit=5):
+    """Most recent files across the project folders: (time, file, activity, status)."""
+    rows = []
+    for folder, kind in ((AUDIO_DIR, "audio"), (OUTPUT_DIR, "transcript"),
+                         (ANALYSIS_DIR, "analysis"), (REPORTS_DIR, "report")):
+        for f in folder.glob("*"):
+            if not f.is_file() or f.name == "failed_files.txt":
+                continue
+            rows.append((f.stat().st_mtime, f.name, kind))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    out = []
+    for mtime, name, kind in rows[:limit]:
+        dt = datetime.datetime.fromtimestamp(mtime, tz=ZoneInfo("Asia/Rangoon"))
+        label = {
+            "audio": "Audio file added",
+            "transcript": "Transcription completed",
+            "analysis": "Analysis saved",
+            "report": "Report exported",
+        }[kind]
+        out.append((dt.strftime("%b %d, %Y %I:%M %p"), name, label, "Completed"))
+    return out
+
+
 # Drive is the source of truth: sync once per session, then pages work on local files.
 if DRIVE_MODE and not st.session_state.get("drive_synced"):
     with st.spinner("Google Drive နဲ့ sync လုပ်နေပါတယ်..."):
@@ -1113,47 +1185,64 @@ if DRIVE_MODE and not st.session_state.get("drive_synced"):
 
 if page == "Dashboard":
 
-    st.title("📊 Market Research AI")
-    st.subheader("Myanmar Interview Research Platform")
-
-    st.write(
-        "မြန်မာ Interview အသံဖိုင်များကို "
-        "စာသားပြောင်းခြင်း၊ ခွဲခြမ်းစိတ်ဖြာခြင်းနှင့် "
-        "Research Report ထုတ်လုပ်ခြင်းတို့ကို "
-        "တစ်နေရာတည်းတွင် စီမံနိုင်ပါသည်။"
+    st.markdown(
+        '<div class="rf-hero"><h1>Welcome to <span>ResearchFlow</span></h1>'
+        "<p>Transform your interview data into actionable insights with our "
+        "professional market research platform.</p></div>",
+        unsafe_allow_html=True,
     )
+    if st.button("▶ Start New Project", key="hero_new_project"):
+        st.session_state["page"] = "Project Brief"
+        st.rerun()
 
-    st.divider()
+    _projects = st.session_state.get("project_list", ["Default"])
+    _transcripts = get_transcript_files()
+    _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
+    _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _m1.metric("Total Projects", len(_projects))
+    _m2.metric("Transcripts", len(_transcripts))
+    _m3.metric("Research Reports", len(_reports))
+    _m4.metric("Audio Files", len(_audio))
 
-    audio_files = list(AUDIO_DIR.glob("*"))
-    transcript_files = get_transcript_files()
-    report_files = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
+    _stages = stage_status()
+    _done = sum(1 for _, _, d in _stages if d)
+    _pct = round(_done / len(_stages) * 100)
+    _icons = ["📋", "🎙️", "👥", "🧹", "📊", "🎤"]
 
-    col1, col2, col3 = st.columns(3)
+    _left, _right = st.columns([2, 1])
+    with _left:
+        st.subheader("🚀 Research Workflow")
+        st.caption("Follow the complete research process from brief to presentation")
+        _cols = st.columns(6)
+        for _i, (_label, _desc, _d) in enumerate(_stages):
+            with _cols[_i]:
+                _nm = _label.split(" · ", 1)[1]
+                _st = "✅ Done" if _d else "○ Not yet"
+                st.markdown(
+                    f'<div class="rf-step"><div class="ico">{_icons[_i]}</div>'
+                    f'<div class="nm">{_i + 1}. {_nm}</div>'
+                    f'<div class="ds">{_desc}</div>'
+                    f'<div class="st">{_st}</div></div>',
+                    unsafe_allow_html=True,
+                )
+    with _right:
+        st.subheader("💡 Project Progress")
+        st.markdown(
+            f'<div class="rf-ring" style="--p:{_pct}"><span>{_pct}%</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(f"{_done} of {len(_stages)} stages have files so far")
+        for _label, _desc, _d in _stages:
+            st.write(("✅ " if _d else "○ ") + _label)
 
-    col1.metric("Audio Files", len(audio_files))
-    col2.metric("Transcripts", len(transcript_files))
-    col3.metric("Research Reports", len(report_files))
-
-    st.divider()
-
-    st.subheader("🚀 Research Workflow")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.info("🎙️ Audio Transcription")
-        st.write("Interview အသံဖိုင်များကို စာသားပြောင်းရန်။")
-
-        st.info("📁 Batch Processing")
-        st.write("Audio ဖိုင်အများအပြားကို စီမံရန်။")
-
-    with col2:
-        st.info("📝 Transcript Management")
-        st.write("Transcript ဖိုင်များကို စီမံရန်။")
-
-        st.info("📊 Market Analysis")
-        st.write("Customer Needs နှင့် Pain Points ရှာဖွေရန်။")
+    st.subheader("🕐 Recent Activity")
+    _act = recent_activity()
+    if _act:
+        _df = pd.DataFrame(_act, columns=["Date & Time", "File / Project", "Activity", "Status"])
+        st.dataframe(_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No activity yet — record or upload audio to begin.")
 
 elif page == "Project Brief":
     # Stage 1 shell page: project info now; the Brief form (Scope / Objective /
@@ -1171,6 +1260,18 @@ elif page == "Project Brief":
         "Brief form (Scope / Objective / Methodology / Result Outcome) + "
         "Communication + Meetings — Stage 1 build မှာ လာမယ်။"
     )
+
+    st.subheader("＋ Project အသစ်")
+    _new = st.text_input("Project နာမည်", key="brief_new_project_name")
+    if st.button("Project ဖွင့်", key="brief_create_project"):
+        _created = ensure_project(_new)
+        if _created:
+            if _created not in st.session_state["project_list"]:
+                st.session_state["project_list"].append(_created)
+            st.session_state["project_select_target"] = _created
+            st.rerun()
+        else:
+            st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
 
 elif page == "Data Cleansing":
     # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
