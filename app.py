@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.19"
+APP_VERSION = "3.20"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -368,7 +368,7 @@ def docs_available():
 # --- Login (v3.3): Google sign-in + allowlist ---
 # Config lives in Streamlit secrets (never in the repo):
 #   [auth]
-#   redirect_uri = "https://researchflowmaster.streamlit.app/"
+#   redirect_uri = "https://researchflowmaster.streamlit.app/oauth2callback"
 #   cookie_secret = "<random string>"
 #   client_id = "<Web OAuth client id>"
 #   client_secret = "<Web OAuth client secret>"
@@ -1152,6 +1152,54 @@ def ask_gemini(prompt):
     return None, f"All models failed: {last_error}"
 
 
+def check_gemini_models():
+    """List the models this API key can use. Listing is not a generation
+    request, so it does not use the daily request quota.
+    Returns (sorted model names, error)."""
+    client = get_gemini_client()
+    if client is None:
+        return None, "GEMINI_API_KEY not set"
+    try:
+        names = []
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if actions and "generateContent" not in actions:
+                continue
+            n = str(getattr(m, "name", ""))
+            names.append(n[len("models/"):] if n.startswith("models/") else n)
+        return sorted(set(names)), None
+    except Exception as e:
+        return None, str(e)[:300]
+
+
+def run_system_check():
+    """Setup checks only (no Gemini generation). Returns a list of
+    (ok, label, detail) where ok is True / False / None (= warning)."""
+    import importlib.util
+    rows = []
+    key_ok = get_gemini_client() is not None
+    rows.append((key_ok, "Gemini API key", "set" if key_ok else "GEMINI_API_KEY not found (env or secrets)"))
+    names, err = check_gemini_models()
+    if err:
+        rows.append((False, "Gemini model list", err))
+    else:
+        for m in MODELS:
+            rows.append((m in names, f"Model {m}",
+                         "available" if m in names else "NOT in this key's model list — change MODELS in the app"))
+        flash = [n for n in names if "flash" in n][:15]
+        rows.append((None, "Flash models this key can use", ", ".join(flash) if flash else "none found"))
+    ff = shutil.which("ffmpeg")
+    rows.append((bool(ff), "ffmpeg", "found" if ff else "missing — mp3/m4a splitting will not work (WAV still works)"))
+    fp = shutil.which("ffprobe")
+    rows.append((bool(fp), "ffprobe", "found" if fp else "missing — audio duration cannot be read"))
+    ox = importlib.util.find_spec("openpyxl") is not None
+    rows.append((ox, "openpyxl", "installed" if ox else "missing — Quantitative Analysis cannot read XLSX"))
+    rows.append((True if DRIVE_MODE else None, "Storage",
+                 f"Google Drive ({DRIVE_AUTH})" if DRIVE_MODE else "Local folders only"))
+    rows.append((_auth_configured(), "Login ([auth] secrets)", "configured" if _auth_configured() else "not configured"))
+    return rows
+
+
 def is_rate_limit_error(e):
     error_text = str(e).lower()
     status = getattr(getattr(e, "response", None), "status_code", None)
@@ -1435,7 +1483,7 @@ PROMPT_LIBRARY = {
         "name": "1. Transcription Engine",
         "icon": "🎙️",
         "purpose": "Turns audio into a Burmese transcript with speakers separated (Respondent / Moderator). No summary, no invention — unclear parts marked [unclear].",
-        "used_by": "Data Collection page (transcribe_audio)",
+        "used_by": "Upload & Transcribe page (transcribe_audio)",
         "template": TRANSCRIPTION_TEMPLATE,
     },
     "planning": {
@@ -1883,23 +1931,23 @@ hr { border-color: var(--rf-line); }
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- Shell (v3.4): 6-stage nav, one Project = one container. Modern, professional,
+# --- Shell (v3.4): 5-stage nav, one Project = one container. Modern, professional,
 # minimalist: white, one blue accent, generous spacing, no extra decoration.
 STAGES = [
     ("1 · Client Brief", "Client Brief"),
-    ("2 · Data Collection", "Data Collection"),
+    ("2 · Research Design", "Research Design"),
     ("3 · Fieldworks", "Fieldworks"),
     ("4 · Data Cleansing", "Data Cleansing"),
     ("5 · Analysis & Reports", "Market Analysis"),
-    ("6 · Presentation", "Presentation"),
 ]
 PAGE_STAGE = {
     "Client Brief": 1,
-    "Data Collection": 2, "Batch Processing": 2, "Upload & Split": 2,
-    "Fieldworks": 3, "Transcripts": 3,
-    "Data Cleansing": 4,
+    "Research Design": 2,
+    "Fieldworks": 3,
+    "Upload & Transcribe": 4, "Batch Processing": 4, "Upload & Split": 4,
+    "Transcripts": 4, "Data Cleansing": 4,
     "Market Analysis": 5, "Quantitative Analysis": 5, "Reports": 5, "Report Editor": 5,
-    "Presentation": 6,
+    "Presentation": 5,
 }
 
 if "page" not in st.session_state:
@@ -1963,7 +2011,8 @@ with st.sidebar.expander(T("＋ New project", "＋ Project အသစ်")):
 
 _PAGE_ICONS = {
     "Dashboard": ":material/home:", "Client Brief": ":material/description:",
-    "Data Collection": ":material/database:", "Batch Processing": ":material/layers:",
+    "Research Design": ":material/design_services:",
+    "Upload & Transcribe": ":material/database:", "Batch Processing": ":material/layers:",
     "Upload & Split": ":material/content_cut:",
     "Fieldworks": ":material/groups:", "Transcripts": ":material/article:",
     "Data Cleansing": ":material/cleaning_services:",
@@ -1973,16 +2022,18 @@ _PAGE_ICONS = {
     "Prompt Library": ":material/library_books:",
 }
 _PAGE_ORDER = [
-    "Dashboard", "Client Brief",
-    "Data Collection", "Batch Processing", "Upload & Split",
-    "Fieldworks", "Transcripts", "Data Cleansing",
+    "Dashboard", "Client Brief", "Research Design",
+    "Fieldworks",
+    "Upload & Transcribe", "Batch Processing", "Upload & Split",
+    "Transcripts", "Data Cleansing",
     "Market Analysis", "Quantitative Analysis", "Reports", "Report Editor",
     "Presentation", "Prompt Library",
 ]
 
 _PAGE_MM = {
     "Dashboard": "ပင်မစာမျက်နှာ", "Client Brief": "Client Brief",
-    "Data Collection": "ဒေတာ စုဆောင်းခြင်း", "Batch Processing": "Batch လုပ်ဆောင်ခြင်း",
+    "Research Design": "သုတေသန ဒီဇိုင်း",
+    "Upload & Transcribe": "Upload နဲ့ Transcript လုပ်ခြင်း", "Batch Processing": "Batch လုပ်ဆောင်ခြင်း",
     "Upload & Split": "Upload နဲ့ ခွဲခြင်း", "Fieldworks": "ကွင်းဆင်းလုပ်ငန်း",
     "Transcripts": "Transcript များ", "Data Cleansing": "ဒေတာ သန့်စင်ခြင်း",
     "Market Analysis": "ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု",
@@ -1991,7 +2042,8 @@ _PAGE_MM = {
     "Presentation": "တင်ပြမှု", "Prompt Library": "Prompt Library",
 }
 _STAGE_MM = {
-    "Client Brief": "Client Brief", "Data Collection": "ဒေတာ စုဆောင်းခြင်း",
+    "Client Brief": "Client Brief", "Research Design": "သုတေသန ဒီဇိုင်း",
+    "Data Collection": "ဒေတာ စုဆောင်းခြင်း",
     "Fieldworks": "ကွင်းဆင်းလုပ်ငန်း", "Data Cleansing": "ဒေတာ သန့်စင်ခြင်း",
     "Analysis & Reports": "ခွဲခြမ်းစိတ်ဖြာမှုနဲ့ Report", "Presentation": "တင်ပြမှု",
 }
@@ -2012,11 +2064,10 @@ def _sl(label):
 _NAV_GROUPS = [
     (None, ["Dashboard"]),
     (1, ["Client Brief"]),
-    (2, ["Data Collection", "Batch Processing", "Upload & Split"]),
-    (3, ["Fieldworks", "Transcripts"]),
-    (4, ["Data Cleansing"]),
-    (5, ["Market Analysis", "Quantitative Analysis", "Reports", "Report Editor"]),
-    (6, ["Presentation"]),
+    (2, ["Research Design"]),
+    (3, ["Fieldworks"]),
+    (4, ["Upload & Transcribe", "Batch Processing", "Upload & Split", "Transcripts", "Data Cleansing"]),
+    (5, ["Market Analysis", "Quantitative Analysis", "Reports", "Report Editor", "Presentation"]),
     (None, ["Prompt Library"]),
 ]
 assert sorted(p for _, g in _NAV_GROUPS for p in g) == sorted(_PAGE_ORDER)
@@ -2084,7 +2135,7 @@ if _search_q:
     for _p in st.session_state.get("project_list", ["Default"]):
         if _q in _p.lower():
             _hits.append((f"📁 Project: {_p}", _p, "project"))
-    _scan = ((AUDIO_DIR, "Data Collection"), (OUTPUT_DIR, "Transcripts"),
+    _scan = ((AUDIO_DIR, "Upload & Transcribe"), (OUTPUT_DIR, "Transcripts"),
              (ANALYSIS_DIR, "Market Analysis"), (REPORTS_DIR, "Reports"))
     for _folder, _target in _scan:
         for _f in _folder.glob("*"):
@@ -2112,11 +2163,10 @@ def stage_status():
     rep_n = len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx")))
     return [
         (_sl("1 · Client Brief"), T("Define objectives & scope", "ရည်ရွယ်ချက်နဲ့ scope သတ်မှတ်ခြင်း"), False),
-        (_sl("2 · Data Collection"), T("Gather audio & secondary data", "Audio နဲ့ secondary data စုဆောင်းခြင်း"), audio_n > 0),
-        (_sl("3 · Fieldworks"), T("Conduct interviews & FGDs", "Interview နဲ့ FGD ကောက်ယူခြင်း"), tr_n > 0),
-        (_sl("4 · Data Cleansing"), T("Clean & prepare data", "ဒေတာ သန့်စင်ပြီး ပြင်ဆင်ခြင်း"), False),
-        (_sl("5 · Analysis & Reports"), T("Generate insights & reports", "Insight နဲ့ report ထုတ်လုပ်ခြင်း"), an_n > 0),
-        (_sl("6 · Presentation"), T("Present to clients", "Client ကို တင်ပြခြင်း"), rep_n > 0),
+        (_sl("2 · Research Design"), T("Design methodology, sampling & instruments", "နည်းလမ်း၊ sampling နဲ့ tool တွေ ဒီဇိုင်းဆွဲခြင်း"), False),
+        (_sl("3 · Fieldworks"), T("Conduct interviews & FGDs", "Interview နဲ့ FGD ကောက်ယူခြင်း"), audio_n > 0),
+        (_sl("4 · Data Cleansing"), T("Clean & prepare data", "ဒေတာ သန့်စင်ပြီး ပြင်ဆင်ခြင်း"), tr_n > 0),
+        (_sl("5 · Analysis & Reports"), T("Generate insights & reports", "Insight နဲ့ report ထုတ်လုပ်ခြင်း"), an_n > 0 or rep_n > 0),
     ]
 
 
@@ -2174,12 +2224,12 @@ if page == "Dashboard":
     if st.session_state.get("show_guide"):
         st.markdown(
             '<div class="rf-guide"><h3>' + T("📖 How ResearchFlow works", "📖 ResearchFlow အလုပ်လုပ်ပုံ") + '</h3><p>'
-            + T("One project flows through 6 stages — brief, collect, fieldwork, "
-                "cleanse, analyse, present. Files live in Google Drive "
+            + T("One project flows through 5 stages — brief, design, fieldwork, "
+                "cleanse, analyse & report. Files live in Google Drive "
                 "(ResearchFlow / project / audio, transcripts, notes, reports) and "
                 "this app works on those same files.",
-                "Project တစ်ခုက အဆင့် ၆ ဆင့် ဖြတ်သန်းတယ် — brief, data စုဆောင်း, ကွင်းဆင်း, "
-                "သန့်စင်, ခွဲခြမ်းစိတ်ဖြာ, တင်ပြ။ ဖိုင်တွေက Google Drive "
+                "Project တစ်ခုက အဆင့် ၅ ဆင့် ဖြတ်သန်းတယ် — brief, ဒီဇိုင်း, ကွင်းဆင်း, "
+                "သန့်စင်, ခွဲခြမ်းစိတ်ဖြာပြီး report ထုတ်လုပ်ခြင်း။ ဖိုင်တွေက Google Drive "
                 "(ResearchFlow / project / audio, transcripts, notes, reports) ထဲမှာ ရှိပြီး "
                 "ဒီ app က အဲဒီဖိုင်တွေပေါ်မှာပဲ အလုပ်လုပ်တယ်။")
             + "</p></div>",
@@ -2324,6 +2374,16 @@ if page == "Dashboard":
                 with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
                     _restore_report(restore_backup_zip(_rdata))
 
+    with st.expander(T("🩺 System check", "🩺 စနစ် စစ်ဆေးမှု")):
+        st.caption(T("Checks setup only — no Gemini request quota is used.",
+                     "Setup ကိုပဲ စစ်တာ — Gemini request quota မကုန်ဘူး။"))
+        if st.button(T("Run check", "စစ်မယ်"), key="run_system_check"):
+            with st.spinner(T("Checking...", "စစ်နေပါတယ်...")):
+                st.session_state["sys_check"] = run_system_check()
+        for _ok, _lab, _det in st.session_state.get("sys_check", []):
+            _icon = "✅" if _ok else ("⚠️" if _ok is None else "❌")
+            st.write(f"{_icon} **{_lab}** — {_det}")
+
 elif page == "Client Brief":
     # Stage 1 shell page: project info now; the Brief form (Scope / Objective /
     # Methodology / Result Outcome) + Communication + Meetings come in the Stage 1 build.
@@ -2355,6 +2415,25 @@ elif page == "Client Brief":
         else:
             st.warning(T("Please type a valid project name.", "Project နာမည် မှန်မှန်ရိုက်ပါ။"))
 
+elif page == "Research Design":
+    # Stage 2 shell page: approach / methodology / sampling / instruments /
+    # fieldwork plan come in the Stage 2 build.
+    st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
+    st.write(f"Project: **{current_project()}**")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
+    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
+    col3.metric(T("Research Reports", "သုတေသန Report များ"), len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
+
+    st.divider()
+    st.info(
+        T("Approach, methodology, sampling, instruments (Discussion Guide / "
+          "questionnaire / screener) + fieldwork plan — coming in the Stage 2 build.",
+          "Approach, methodology, sampling, instruments (Discussion Guide / "
+          "questionnaire / screener) + fieldwork plan — Stage 2 build မှာ လာမယ်။")
+    )
+
 elif page == "Data Cleansing":
     # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
     # status comes in the Stage 4 build.
@@ -2375,20 +2454,21 @@ elif page == "Data Cleansing":
     )
 
 elif page == "Presentation":
-    # Stage 6 shell page: client view + per-project share link come in the Stage 6 build.
+    # Stage 5 shell page: presentation is part of Stage 5 — the PPTX comes
+    # from the report on the Reports page.
     st.title(T("🎤 Presentation", "🎤 တင်ပြမှု"))
     st.write(f"Project: **{current_project()}**")
 
     st.divider()
     st.info(
-        T("Client view + per-project share link — coming in the Stage 6 build. "
-          "For now you can export PPTX / DOCX on the Reports page.",
-          "Client view + per-project share link — Stage 6 build မှာ လာမယ်။ "
-          "အခု Reports စာမျက်နှာမှာ PPTX / DOCX ထုတ်လို့ရတယ်။")
+        T("Presentation is part of Stage 5 — export the PPTX from the report "
+          "on the Reports page.",
+          "Presentation က Stage 5 ထဲမှာ ပါတယ် — Reports စာမျက်နှာမှာ report ကနေ "
+          "PPTX ထုတ်လို့ရတယ်။")
     )
 
-elif page == "Data Collection":
-    st.title(T("🎙️ Data Collection", "🎙️ ဒေတာ စုဆောင်းခြင်း"))
+elif page == "Upload & Transcribe":
+    st.title(T("🎙️ Upload & Transcribe", "🎙️ Upload နဲ့ Transcript လုပ်ခြင်း"))
 
     uploaded = st.file_uploader(T("Upload an audio file (mp3 / wav / m4a)", "Audio file တင်ပါ (mp3 / wav / m4a)"), type=["mp3", "wav", "m4a"], key="dc_audio_upload")
     audio_path = None
@@ -2428,7 +2508,7 @@ elif page == "Batch Processing":
 
     audio_files = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
     if not audio_files:
-        st.info("Audio file မရှိသေးပါ — Data Collection page မှာ upload လုပ်ပါ။")
+        st.info("Audio file မရှိသေးပါ — Upload & Transcribe page မှာ upload လုပ်ပါ။")
     else:
         pending = []
         done = []
