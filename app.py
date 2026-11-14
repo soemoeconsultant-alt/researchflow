@@ -24,6 +24,22 @@ st.set_page_config(
     layout="wide"
 )
 
+# App version — shown in the sidebar and written into backup manifests, so the
+# running version can always be verified from the code itself (v3.15 had none).
+APP_VERSION = "3.18"
+
+# --- v3.18 language switch (EN / MM) ---
+# T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
+# If no Myanmar text is given it falls back to English. Page ids stay English.
+if "lang" not in st.session_state:
+    st.session_state["lang"] = "EN"
+
+
+def T(en, mm=None):
+    if mm is not None and st.session_state.get("lang") == "MM":
+        return mm
+    return en
+
 APP_DIR = Path(__file__).resolve().parent
 # Localhost layout: app.py lives in <BASE>/website/, data in <BASE>/.
 # Online layout: app.py at the repo root, data in the repo root.
@@ -47,7 +63,8 @@ NOTES_DIR.mkdir(exist_ok=True)
 
 
 def get_transcript_files():
-    files = [f for f in OUTPUT_DIR.glob("*.txt") if f.name != "failed_files.txt"]
+    files = [f for f in OUTPUT_DIR.glob("*.txt")
+             if f.name != "failed_files.txt" and "_conflict_" not in f.name]
     return sorted(files, key=lambda f: f.name)
 
 
@@ -224,7 +241,7 @@ def list_projects():
 
 def ensure_project(name):
     """Create a project's folders (Drive + local). Returns the cleaned name, or None."""
-    clean = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 _-]+", "", (name or "").strip())).strip()
+    clean = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 _\-\u1000-\u109F]+", "", (name or "").strip())).strip()
     if not clean or clean == "Default":
         return None
     if drive_available():
@@ -359,7 +376,8 @@ def docs_available():
 #   [access]
 #   owners = ["soemoe.consultant@gmail.com"]
 #   allowed = ["soemoekyawww@gmail.com"]
-# No [auth] in secrets (e.g. localhost) -> no login, open access as before.
+# Production fails closed if [auth] is missing. Localhost can be opened explicitly
+# with RESEARCHFLOW_ALLOW_LOCAL_OPEN_ACCESS=1.
 # NOTE: the consent screen is in Testing mode, so Google only lets test users
 # sign in — add every allowed email as a test user (or switch to Production).
 
@@ -395,23 +413,37 @@ def current_user_is_owner():
     return current_user_email() in owners
 
 
+def _is_local_request():
+    """Return True only for loopback hostnames; unknown hosts are not local."""
+    try:
+        host = str(st.context.headers.get("host", "")).split(":", 1)[0].strip().lower()
+        return host in {"localhost", "127.0.0.1", "::1"}
+    except Exception:
+        return False
+
+
 def login_gate():
-    """Require Google sign-in + allowlist when [auth] is configured.
-    Call before any page renders. Returns the logged-in email (or "")."""
+    """Require Google sign-in + allowlist. Open access is opt-in on localhost only."""
     if not _auth_configured():
-        return ""
+        local_open = os.environ.get("RESEARCHFLOW_ALLOW_LOCAL_OPEN_ACCESS", "").strip() == "1"
+        if local_open and _is_local_request():
+            return ""
+        st.title(T("🔐 ResearchFlow — Authentication required", "🔐 ResearchFlow — Log in ဝင်ဖို့ လိုပါတယ်"))
+        st.error(T("[auth] configuration is missing. Online deployment is closed for security.", "[auth] configuration မရှိပါ။ Online deployment ကို လုံခြုံရေးအတွက် ပိတ်ထားပါတယ်။"))
+        st.info(T("For local development, set RESEARCHFLOW_ALLOW_LOCAL_OPEN_ACCESS=1 on localhost. For online use, add [auth] and [access] to the Streamlit secrets.", "Local development အတွက် localhost မှာ RESEARCHFLOW_ALLOW_LOCAL_OPEN_ACCESS=1 ကို သတ်မှတ်ပါ။ Online အသုံးပြုရန် Streamlit secrets ထဲတွင် [auth] နှင့် [access] ကို ထည့်ပါ။"))
+        st.stop()
     if not st.user.is_logged_in:
-        st.title("🔐 ResearchFlow — Log in")
-        st.write("Google account နဲ့ log in ဝင်ပါ။")
+        st.title(T("🔐 ResearchFlow — Log in", "🔐 ResearchFlow — Log in ဝင်ပါ"))
+        st.write(T("Log in with your Google account.", "Google account နဲ့ log in ဝင်ပါ။"))
         st.login()
         st.stop()
     email = current_user_email()
     owners, allowed = _allowed_emails()
     if email not in owners + allowed:
-        st.title("🔐 ResearchFlow — Log in")
-        st.error("ဒီ account နဲ့ ဝင်လို့ မရဘူး — owner က ခွင့်ပြုထားတဲ့ account ပဲ ဝင်ရတယ်။")
-        st.write(f"Signed in as: {email}")
-        if st.button("Log out"):
+        st.title(T("🔐 ResearchFlow — Log in", "🔐 ResearchFlow — Log in ဝင်ပါ"))
+        st.error(T("This account cannot sign in — only accounts approved by the owner can.", "ဒီ account နဲ့ ဝင်လို့ မရဘူး — owner က ခွင့်ပြုထားတဲ့ account ပဲ ဝင်ရတယ်။"))
+        st.write(T(f"Signed in as: {email}", f"ဝင်ထားတဲ့ account: {email}"))
+        if st.button(T("Log out", "Log out ထွက်မယ်")):
             st.logout()
         st.stop()
     return email
@@ -583,10 +615,297 @@ def _drive_name_belongs(dir_key, name):
     return True
 
 
+# --- v3.16 data safety: atomic save, versioned backup, retry queue, backup/restore ---
+SYNC_QUEUE_PATH = BASE_DIR / "sync_queue.json"
+VERSIONS_KEEP = 5
+BACKUP_DIRS = ("audio", "transcripts", "merged", "analysis", "reports", "notes")
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _atomic_write_bytes(path, data):
+    """Write via a temp file in the same folder + os.replace, so a crash or a
+    closed app mid-write can never leave a half-written file behind."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    return path
+
+
+def _atomic_write_text(path, text):
+    return _atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def _backup_version(path):
+    """Before overwriting a text file, keep a timestamped copy in a `.versions`
+    subfolder (newest 5 kept). Audio/binary files are NOT versioned (too big)
+    — atomic write only. Returns the backup path or None."""
+    path = Path(path)
+    if not path.exists() or path.suffix.lower() not in (".txt", ".md"):
+        return None
+    vdir = path.parent / ".versions"
+    vdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    bak = vdir / f"{path.stem}.{stamp}.bak"
+    n = 1
+    while bak.exists():  # two saves in the same microsecond must not collide
+        n += 1
+        bak = vdir / f"{path.stem}.{stamp}-{n}.bak"
+    try:
+        shutil.copy2(path, bak)
+    except Exception:
+        return None
+    olds = sorted(vdir.glob(f"{path.stem}.*.bak"), key=lambda f: f.name)
+    for old in olds[:-VERSIONS_KEEP]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    return bak
+
+
+def _load_sync_queue():
+    try:
+        items = json.loads(SYNC_QUEUE_PATH.read_text(encoding="utf-8"))
+        return items if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _save_sync_queue(items):
+    try:
+        _atomic_write_text(SYNC_QUEUE_PATH, json.dumps(items, ensure_ascii=False, indent=1))
+    except Exception:
+        pass
+
+
+def queue_upload(dir_key, name, error=""):
+    """Remember a failed Drive upload so it is retried automatically.
+    De-duplicated by (project, dir_key, name). Returns True if newly queued."""
+    items = _load_sync_queue()
+    project = st.session_state.get("active_project", "Default")
+    path = str(LOCAL_DIR[dir_key] / name)
+    if any(i.get("project") == project and i.get("dir_key") == dir_key
+           and i.get("name") == name for i in items):
+        return False
+    items.append({
+        "project": project, "dir_key": dir_key, "name": name, "path": path,
+        "queued_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "attempts": 0, "error": str(error)[:200],
+    })
+    _save_sync_queue(items)
+    return True
+
+
+def retry_sync_queue():
+    """Re-upload every queued file for the current project.
+    Returns (uploaded, still_pending). Entries whose local file is gone are dropped."""
+    if not drive_available():
+        return 0, len(_load_sync_queue())
+    items = _load_sync_queue()
+    project = st.session_state.get("active_project", "Default")
+    remaining, done = [], 0
+    for it in items:
+        if it.get("project", "Default") != project:
+            remaining.append(it)
+            continue
+        path = Path(it.get("path") or (LOCAL_DIR[it["dir_key"]] / it["name"]))
+        try:
+            if path.exists():
+                drive_upload(path, DIR_TO_DRIVE[it["dir_key"]], it["name"])
+                done += 1
+            # local file gone: drop the entry silently
+        except Exception as e:
+            it["error"] = str(e)[:200]
+            it["attempts"] = it.get("attempts", 0) + 1
+            remaining.append(it)
+    _save_sync_queue(remaining)
+    return done, len(remaining)
+
+
+def build_backup_zip():
+    """Zip the current project's local folders + a manifest (version, project,
+    time, file list with sha256). Skips .versions history and temp files.
+    Returns (filename, bytes)."""
+    import io
+    import zipfile
+    project = current_project()
+    buf = io.BytesIO()
+    manifest_files = []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for dir_key in BACKUP_DIRS:
+            d = LOCAL_DIR[dir_key]
+            if not d.exists():
+                continue
+            for p in sorted(d.rglob("*")):
+                if not p.is_file():
+                    continue
+                if ".versions" in p.parts or p.name.startswith("."):
+                    continue
+                arc = f"{dir_key}/{p.relative_to(d).as_posix()}"
+                zf.write(p, arc)
+                manifest_files.append({"path": arc, "sha256": _file_sha256(p),
+                                       "size": p.stat().st_size})
+    manifest = {
+        "app": "ResearchFlow", "app_version": APP_VERSION, "project": project,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "files": manifest_files,
+    }
+    with zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1))
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"researchflow-backup-{project}-{stamp}.zip", buf.getvalue()
+
+
+# --- v3.17 restore safety limits (zip-bomb + traversal protection) ---
+RESTORE_MAX_COMPRESSED = 1024 * 1024 * 1024      # 1 GB uploaded ZIP
+RESTORE_MAX_TOTAL = 4 * 1024 * 1024 * 1024        # 4 GB uncompressed total
+RESTORE_MAX_FILE = 1024 * 1024 * 1024             # 1 GB single file
+RESTORE_MAX_ENTRIES = 10000
+
+
+def read_backup_manifest(data):
+    """Read just the manifest from a backup ZIP. Returns (manifest, error)."""
+    import io
+    import zipfile
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception as e:
+        return None, T(f"Cannot open ZIP: {e}", f"ZIP ဖွင့်လို့ မရဘူး: {e}")
+    try:
+        return json.loads(zf.read("manifest.json").decode("utf-8")), None
+    except Exception:
+        return None, T("manifest.json not found — this may not be a ResearchFlow backup.", "manifest.json မတွေ့ဘူး — ResearchFlow backup မဟုတ်နိုင်ဘူး။")
+
+
+def _restore_report(rep):
+    if rep.get("restored"):
+        st.success(T(f"Restored {len(rep['restored'])} file(s) ✓", f"Restored {len(rep['restored'])} ဖိုင် ✓"))
+    if rep.get("skipped"):
+        st.warning(T("Skipped: ", "ကျော်သွားတာ: ") + "; ".join(rep["skipped"][:5]))
+    if rep.get("errors"):
+        st.error("; ".join(rep["errors"]))
+
+
+def restore_backup_zip(data, force=False):
+    """Restore a validated ResearchFlow backup into the active project."""
+    import io
+    import zipfile
+    report = {"restored": [], "skipped": [], "errors": []}
+    if len(data) > RESTORE_MAX_COMPRESSED:
+        report["errors"].append(T("Backup ZIP is too large (over 1 GB).", "Backup ZIP ကြီးလွန်းတယ် (1 GB ထက် ကြီးတယ်)။"))
+        return report
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        infos = zf.infolist()
+    except Exception as e:
+        report["errors"].append(T(f"Cannot open ZIP: {e}", f"ZIP ဖွင့်လို့ မရဘူး: {e}"))
+        return report
+    if len(infos) > RESTORE_MAX_ENTRIES:
+        report["errors"].append(T("Too many files in the backup.", "Backup ထဲမှာ ဖိုင်များလွန်းတယ်။"))
+        return report
+    if sum(i.file_size for i in infos) > RESTORE_MAX_TOTAL:
+        report["errors"].append(T("Backup would expand to over 4 GB — not accepted.", "Backup ဖြည်ရင် 4 GB ထက် ကြီးမယ် — လက်မခံဘူး။"))
+        return report
+    names = [i.filename for i in infos]
+    if len(names) != len(set(names)):
+        report["errors"].append(T("Duplicate file name in the ZIP.", "ZIP ထဲတွင် ဖိုင်အမည် ထပ်နေသည်။"))
+        return report
+    manifest_info = next((i for i in infos if i.filename == "manifest.json"), None)
+    if not manifest_info or manifest_info.file_size > 5 * 1024 * 1024:
+        report["errors"].append(T("manifest.json is missing or has an invalid size.", "manifest.json မတွေ့ဘူး သို့မဟုတ် အရွယ်အစား မမှန်ပါ။"))
+        return report
+    try:
+        manifest = json.loads(zf.read(manifest_info).decode("utf-8"))
+    except Exception:
+        report["errors"].append(T("Cannot read manifest.json.", "manifest.json ကို ဖတ်မရပါ။"))
+        return report
+    if not isinstance(manifest, dict) or manifest.get("app") != "ResearchFlow":
+        report["errors"].append(T("Not a ResearchFlow backup manifest.", "ResearchFlow backup manifest မဟုတ်ပါ။"))
+        return report
+    if not isinstance(manifest.get("project"), str) or not isinstance(manifest.get("files"), list):
+        report["errors"].append(T("Backup manifest structure is invalid.", "Backup manifest structure မမှန်ပါ။"))
+        return report
+    backup_project = manifest["project"]
+    if backup_project != current_project() and not force:
+        report["project_mismatch"] = (backup_project, current_project())
+        return report
+    manifest_files = {}
+    for entry in manifest["files"]:
+        if not isinstance(entry, dict):
+            report["errors"].append(T("Invalid manifest file entry.", "Manifest file entry မမှန်ပါ။"))
+            return report
+        path, digest, size = entry.get("path"), entry.get("sha256"), entry.get("size")
+        if (not isinstance(path, str) or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
+                or not isinstance(size, int) or size < 0 or size > RESTORE_MAX_FILE
+                or path in manifest_files):
+            report["errors"].append(T("Invalid file path/hash/size in the manifest.", "Manifest ထဲက file path/hash/size မမှန်ပါ။"))
+            return report
+        manifest_files[path] = entry
+    zip_files = {n for n in names if n != "manifest.json" and not n.endswith("/")}
+    if zip_files != set(manifest_files):
+        report["errors"].append(T("ZIP file list does not match the manifest file list.", "ZIP ဖိုင်စာရင်းနှင့် manifest ဖိုင်စာရင်း မကိုက်ညီပါ။"))
+        return report
+    for info in infos:
+        name = info.filename
+        if name == "manifest.json" or name.endswith("/"):
+            continue
+        entry = manifest_files[name]
+        # ZIP paths must be canonical POSIX relative paths; reject Windows and POSIX traversal.
+        if "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+            report["skipped"].append(f"{name} (unsafe path)")
+            continue
+        parts = name.split("/")
+        if len(parts) < 2 or parts[0] not in BACKUP_DIRS or any(x in ("", ".", "..") for x in parts):
+            report["skipped"].append(f"{name} (unsafe or unknown folder)")
+            continue
+        dir_key, rel = parts[0], "/".join(parts[1:])
+        if info.file_size > RESTORE_MAX_FILE or info.file_size != entry["size"]:
+            report["skipped"].append(T(f"{name} (file size mismatch)", f"{name} (file size မကိုက်)"))
+            continue
+        dest = LOCAL_DIR[dir_key] / rel
+        try:
+            if not dest.resolve().is_relative_to(LOCAL_DIR[dir_key].resolve()):
+                report["skipped"].append(f"{name} (unsafe path)")
+                continue
+            raw = zf.read(info)
+        except Exception:
+            report["skipped"].append(T(f"{name} (cannot read)", f"{name} (ဖတ်မရပါ)"))
+            continue
+        if hashlib.sha256(raw).hexdigest().lower() != entry["sha256"].lower():
+            report["skipped"].append(T(f"{name} (checksum mismatch)", f"{name} (checksum မကိုက်)"))
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _backup_version(dest)
+        _atomic_write_bytes(dest, raw)
+        report["restored"].append(name)
+        if drive_available():
+            try:
+                drive_upload(dest, DIR_TO_DRIVE[dir_key], dest.name)
+            except Exception as e:
+                queue_upload(dir_key, dest.name, e)
+    return report
+
+
 def sync_from_drive():
-    """Drive is the source of truth: download Drive files into the local working folders.
-    Text files are always refreshed from Drive; audio is downloaded only when missing
-    or when the Drive copy is newer (audio files are big)."""
+    """Drive -> local sync that NEVER silently overwrites a newer local file.
+    - Same content: skip.
+    - Local newer: keep local, queue it for upload, save Drive's copy aside as
+      <stem>_conflict_<timestamp><suffix> so nothing is lost.
+    - Drive newer: back up the local file first, then replace it.
+    - Audio: download only when missing or Drive is newer (big files)."""
     if not drive_available():
         return
     import datetime
@@ -604,51 +923,116 @@ def sync_from_drive():
                 continue
             dest = local_dir / name
             try:
-                if name.endswith((".mp3", ".wav", ".m4a")) and dest.exists():
-                    dt = f.get("modifiedTime", "")
-                    if dt:
-                        drv = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00")).timestamp()
-                        if drv <= dest.stat().st_mtime:
-                            continue
-                drive_download(f["id"], dest)
+                drv_ts = 0
+                dt = f.get("modifiedTime", "")
+                if dt:
+                    drv_ts = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00")).timestamp()
+                is_audio = name.endswith((".mp3", ".wav", ".m4a"))
+                if dest.exists() and is_audio and drv_ts and drv_ts <= dest.stat().st_mtime:
+                    continue  # local audio is newer — keep it, no download
+                tmp = dest.with_name(f".{dest.name}.{os.getpid()}.dl")
+                try:
+                    drive_download(f["id"], tmp)
+                except Exception:
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
+                    continue
+                if dest.exists():
+                    if _file_sha256(tmp) == _file_sha256(dest):
+                        tmp.unlink()
+                        continue
+                    if is_audio:
+                        os.replace(tmp, dest)  # Drive audio newer; no versioning (big)
+                        continue
+                    if dest.stat().st_mtime >= drv_ts:
+                        # Local is newer: keep local, queue upload, keep Drive copy aside.
+                        # If an identical conflict copy already exists, don't pile up another.
+                        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+                        conflict = dest.with_name(f"{dest.stem}_conflict_{stamp}{dest.suffix}")
+                        _existing = [c for c in dest.parent.glob(f"{dest.stem}_conflict_*{dest.suffix}")]
+                        if any(_file_sha256(c) == _file_sha256(tmp) for c in _existing):
+                            tmp.unlink()
+                        else:
+                            os.replace(tmp, conflict)
+                        queue_upload(dir_key, name, "local newer than Drive — kept local")
+                    else:
+                        # Drive is newer: back up local first, then replace.
+                        _backup_version(dest)
+                        os.replace(tmp, dest)
+                else:
+                    os.replace(tmp, dest)
             except Exception:
                 continue
 
 
+def _safe_storage_path(dir_key, name):
+    """Resolve a single safe filename inside an approved project storage folder."""
+    if dir_key not in LOCAL_DIR:
+        raise ValueError("Unknown storage folder")
+    if not isinstance(name, str) or not name or name in {".", ".."}:
+        raise ValueError("Invalid filename")
+    if Path(name).name != name or "/" in name or "\\" in name or "\x00" in name:
+        raise ValueError("Filename must not contain path components")
+    if any(ord(ch) < 32 for ch in name):
+        raise ValueError("Filename contains control characters")
+    base = LOCAL_DIR[dir_key].resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base):
+        raise ValueError("Storage path escapes project folder")
+    return path
+
+
 def store_write_text(dir_key, name, text):
-    """Write a text file locally, then upload it to Drive when Drive mode is on."""
-    path = LOCAL_DIR[dir_key] / name
-    path.write_text(text, encoding="utf-8")
+    """Write a text file locally (atomic + versioned backup), then upload it to
+    Drive when Drive mode is on. A failed upload goes into the retry queue.
+    Unchanged content is skipped entirely (stops rerun duplicate uploads)."""
+    path = _safe_storage_path(dir_key, name)
+    data = text.encode("utf-8")
+    if path.exists() and _file_sha256(path) == hashlib.sha256(data).hexdigest():
+        return path  # same content: nothing to write or upload
+    _backup_version(path)
+    _atomic_write_bytes(path, data)
     if drive_available():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
+            queue_upload(dir_key, name, e)
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
     return path
 
 
 def store_write_bytes(dir_key, name, data):
-    """Write a binary file locally, then upload it to Drive when Drive mode is on."""
-    path = LOCAL_DIR[dir_key] / name
-    path.write_bytes(data)
+    """Write a binary file locally (atomic), then upload it to Drive when Drive
+    mode is on. A failed upload goes into the retry queue.
+    Unchanged content is skipped entirely (stops rerun duplicate uploads)."""
+    path = _safe_storage_path(dir_key, name)
+    if path.exists() and _file_sha256(path) == hashlib.sha256(data).hexdigest():
+        return path  # same content: nothing to write or upload
+    _backup_version(path)
+    _atomic_write_bytes(path, data)
     if drive_available():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
+            queue_upload(dir_key, name, e)
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
     return path
 
 
 def store_upload_existing(dir_key, name):
-    """Upload a local file created by another tool (ffmpeg split, PPTX/DOCX export)."""
+    """Upload a local file created by another tool (ffmpeg split, PPTX/DOCX export).
+    A failed upload goes into the retry queue."""
     if not drive_available():
         return
-    path = LOCAL_DIR[dir_key] / name
+    path = _safe_storage_path(dir_key, name)
     if path.exists():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
+            queue_upload(dir_key, name, e)
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
 
 def next_version_number(stem):
     existing = sorted(ANALYSIS_DIR.glob(f"{stem}_v*_analysis.txt"), key=lambda f: f.name)
@@ -1122,18 +1506,28 @@ TEMPLATES = {
 
 
 def parse_sections(text):
+    """Parse Markdown H2 sections while retaining any preamble or plain text."""
     sections = []
     current = None
-    for line in text.splitlines():
-        if line.startswith("## "):
-            current = {"title": line[3:].strip(), "lines": []}
+    preamble = []
+    for raw_line in str(text or "").splitlines():
+        if raw_line.startswith("## "):
+            if current is None and any(x.strip() for x in preamble):
+                sections.append({"title": "Overview", "lines": [x.strip() for x in preamble if x.strip()]})
+            current = {"title": raw_line[3:].strip() or "Section", "lines": []}
             sections.append(current)
-        elif current is not None:
-            line = line.strip()
-            if line:
-                if line.startswith(("- ", "* ")):
-                    line = line[2:]
+        else:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(("- ", "* ")):
+                line = line[2:]
+            if current is None:
+                preamble.append(line)
+            else:
                 current["lines"].append(line)
+    if current is None and any(x.strip() for x in preamble):
+        sections.append({"title": "Analysis", "lines": [x.strip() for x in preamble if x.strip()]})
     return sections
 
 
@@ -1196,18 +1590,30 @@ def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Cle
     slide.placeholders[1].text = "Market Research AI — ResearchFlow"
     _color_runs(slide.placeholders[1].text_frame.paragraphs, t["body"])
     for section in parse_sections(analysis_text):
-        slide = prs.slides.add_slide(prs.slide_layouts[1])
-        _set_bg(slide, t["bg"])
-        slide.shapes.title.text = section["title"]
-        _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
-        tf = slide.placeholders[1].text_frame
-        tf.clear()
-        for i, line in enumerate(section["lines"]):
-            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-            p.text = line
-            p.level = 0
-            for run in p.runs:
-                run.font.color.rgb = RGBColor.from_string(t["body"])
+        # Keep slides readable: split long sections instead of overflowing one slide.
+        chunks, current, char_count = [], [], 0
+        for line in section["lines"]:
+            if current and (len(current) >= 14 or char_count + len(line) > 1500):
+                chunks.append(current)
+                current, char_count = [], 0
+            current.append(line)
+            char_count += len(line)
+        if current or not chunks:
+            chunks.append(current)
+        for part_index, lines in enumerate(chunks, start=1):
+            slide = prs.slides.add_slide(prs.slide_layouts[1])
+            _set_bg(slide, t["bg"])
+            slide_title = section["title"] if part_index == 1 else f"{section['title']} (continued {part_index})"
+            slide.shapes.title.text = slide_title
+            _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
+            tf = slide.placeholders[1].text_frame
+            tf.clear()
+            for i, line in enumerate(lines):
+                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                p.text = line
+                p.level = 0
+                for run in p.runs:
+                    run.font.color.rgb = RGBColor.from_string(t["body"])
     prs.save(out_path)
     return out_path
 
@@ -1226,8 +1632,7 @@ def analysis_to_docx(analysis_text, title_text, out_path):
     return out_path
 
 
-# Login gate (v3.3): runs before any page renders. No [auth] in secrets
-# (e.g. localhost) -> open access, returns "".
+# Login gate: authentication is mandatory unless explicit local-only opt-in is set.
 _MY_EMAIL = login_gate()
 
 # --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
@@ -1286,6 +1691,15 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
     min-width: 250px !important;
     max-width: 250px !important;
   }
+}
+
+/* Sidebar content sits too low — pull it up (v3.16.1). Streamlit leaves a big
+   gap at the top of the sidebar; tighten the container + block top padding. */
+[data-testid="stSidebar"] > div {
+  padding-top: .5rem !important;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+  padding-top: 0 !important;
 }
 
 /* Dark AI sidebar */
@@ -1354,7 +1768,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
 
 /* Sidebar logo + user card */
-.rf-logo { display: flex; align-items: center; gap: 10px; padding: 4px 4px 14px; }
+.rf-logo { display: flex; align-items: center; gap: 10px; padding: 0 4px 14px; }
 .rf-logo-tx { color: #FFFFFF; font-size: 19px; font-weight: 800; letter-spacing: -.01em; line-height: 1.1; }
 .rf-logo-sub { color: #AAB4D2; font-size: 11px; margin-top: 2px; }
 .rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,.10); }
@@ -1505,6 +1919,18 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+# v3.18 language switch. The value is kept in session_state["lang"] (a plain key,
+# not a widget key) so it survives the login screen and page changes.
+_LANG_CODES = ["EN", "MM"]
+_LANG_NAMES = {"EN": "English", "MM": "မြန်မာ"}
+_lang_pick = st.sidebar.radio(
+    "Language", _LANG_CODES,
+    index=_LANG_CODES.index(st.session_state.get("lang", "EN")),
+    format_func=lambda c: _LANG_NAMES[c],
+    horizontal=True, key="lang_widget", label_visibility="collapsed",
+)
+st.session_state["lang"] = _lang_pick
+
 # Project selector: list once per session (Drive call), refresh after creating one.
 if "project_list" not in st.session_state:
     st.session_state["project_list"] = list_projects()
@@ -1525,9 +1951,9 @@ if selected != current:
     st.rerun()
 refresh_project_dirs(selected)
 
-with st.sidebar.expander("＋ Project အသစ်"):
-    new_name = st.text_input("Project နာမည်", key="new_project_name")
-    if st.button("Project ဖွင့်", key="create_project"):
+with st.sidebar.expander(T("＋ New project", "＋ Project အသစ်")):
+    new_name = st.text_input(T("Project name", "Project နာမည်"), key="new_project_name")
+    if st.button(T("Create project", "Project ဖွင့်"), key="create_project"):
         created = ensure_project(new_name)
         if created:
             if created not in st.session_state["project_list"]:
@@ -1535,7 +1961,7 @@ with st.sidebar.expander("＋ Project အသစ်"):
             st.session_state["project_select_target"] = created
             st.rerun()
         else:
-            st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
+            st.warning(T("Please type a valid project name.", "Project နာမည် မှန်မှန်ရိုက်ပါ။"))
 
 _PAGE_ICONS = {
     "Dashboard": ":material/home:", "Client Brief": ":material/description:",
@@ -1556,21 +1982,61 @@ _PAGE_ORDER = [
     "Presentation", "Prompt Library",
 ]
 
+_PAGE_MM = {
+    "Dashboard": "ပင်မစာမျက်နှာ", "Client Brief": "Client Brief",
+    "Data Collection": "ဒေတာ စုဆောင်းခြင်း", "Batch Processing": "Batch လုပ်ဆောင်ခြင်း",
+    "Upload & Split": "Upload နဲ့ ခွဲခြင်း", "Fieldworks": "ကွင်းဆင်းလုပ်ငန်း",
+    "Transcripts": "Transcript များ", "Data Cleansing": "ဒေတာ သန့်စင်ခြင်း",
+    "Market Analysis": "ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု",
+    "Quantitative Analysis": "ပမာဏ ခွဲခြမ်းစိတ်ဖြာမှု",
+    "Reports": "Report များ", "Report Editor": "Report ပြင်ဆင်ရန်",
+    "Presentation": "တင်ပြမှု", "Prompt Library": "Prompt Library",
+}
+_STAGE_MM = {
+    "Client Brief": "Client Brief", "Data Collection": "ဒေတာ စုဆောင်းခြင်း",
+    "Fieldworks": "ကွင်းဆင်းလုပ်ငန်း", "Data Cleansing": "ဒေတာ သန့်စင်ခြင်း",
+    "Analysis & Reports": "ခွဲခြမ်းစိတ်ဖြာမှုနဲ့ Report", "Presentation": "တင်ပြမှု",
+}
+
+
+def page_label(page_id):
+    return T(page_id, _PAGE_MM.get(page_id))
+
+
+def _sl(label):
+    """Translate a stage label like '1 · Client Brief' (number kept)."""
+    num, nm = label.split(" · ", 1)
+    return f"{num} · {T(nm, _STAGE_MM.get(nm))}"
+
+
 for item in _PAGE_ORDER:
     _active = st.session_state["page"] == item
     if st.sidebar.button(
-        item, key=f"nav_{item}",
+        page_label(item), key=f"nav_{item}",
         use_container_width=True, type="primary" if _active else "secondary",
         icon=_PAGE_ICONS.get(item),
     ):
         st.session_state["page"] = item
         st.rerun()
 
-st.sidebar.caption(
-    "💾 Storage: Google Drive (OAuth)" if DRIVE_AUTH == "oauth"
-    else "💾 Storage: Google Drive" if DRIVE_AUTH == "service"
-    else "💾 Storage: Local (PC)"
+_storage_label = (
+    T("💾 Storage: Google Drive (OAuth)", "💾 သိမ်းဆည်းမှု: Google Drive (OAuth)") if DRIVE_AUTH == "oauth"
+    else T("💾 Storage: Google Drive", "💾 သိမ်းဆည်းမှု: Google Drive") if DRIVE_AUTH == "service"
+    else T("💾 Storage: Local (PC)", "💾 သိမ်းဆည်းမှု: Local (PC)")
 )
+st.sidebar.caption(f"{_storage_label} · v{APP_VERSION}")
+
+_pending_q = [i for i in _load_sync_queue()
+              if i.get("project", "Default") == st.session_state.get("active_project", "Default")]
+if _pending_q:
+    st.sidebar.warning(T(f"⏳ Sync queue: {len(_pending_q)} file(s) waiting to upload to Drive", f"⏳ Sync queue: {len(_pending_q)} ဖိုင် Drive ကို တင်ဖို့ စောင့်နေတယ်"))
+    if st.sidebar.button(T("↻ Retry upload", "↻ ပြန်တင်မယ်"), key="retry_queue"):
+        _done, _left = retry_sync_queue()
+        if _left:
+            st.sidebar.warning(T(f"{_done} file(s) uploaded, {_left} left", f"{_done} ဖိုင် တင်ပြီးပြီ၊ {_left} ဖိုင် ကျန်သေးတယ်"))
+        else:
+            st.sidebar.success(T(f"{_done} file(s) uploaded ✓", f"{_done} ဖိုင် တင်ပြီးပြီ ✓"))
+        st.rerun()
 
 st.sidebar.markdown(
     '<div class="rf-user"><div class="rf-user-av">S</div>'
@@ -1580,7 +2046,7 @@ st.sidebar.markdown(
 )
 
 if _MY_EMAIL:
-    if st.sidebar.button("Log out"):
+    if st.sidebar.button(T("Log out", "Log out ထွက်မယ်")):
         st.logout()
 
 page = st.session_state["page"]
@@ -1588,7 +2054,7 @@ page = st.session_state["page"]
 # Top bar: functional global search across this project's files + projects.
 _search_q = st.text_input(
     "Search", key="global_search", label_visibility="collapsed",
-    placeholder="🔍 Search projects, files, or features...",
+    placeholder=T("🔍 Search projects, files, or features...", "🔍 Project, ဖိုင်၊ feature ရှာပါ..."),
 )
 if _search_q:
     _q = _search_q.strip().lower()
@@ -1611,7 +2077,7 @@ if _search_q:
                     st.session_state["page"] = _target
                 st.rerun()
     else:
-        st.caption("No matches in this project.")
+        st.caption(T("No matches in this project.", "ဒီ project ထဲမှာ မတွေ့ဘူး။"))
 
 # Navigation lives in the sidebar only (the top stepper row was removed in v3.9).
 
@@ -1623,12 +2089,12 @@ def stage_status():
     an_n = len(list(ANALYSIS_DIR.glob("*_analysis.txt")))
     rep_n = len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx")))
     return [
-        ("1 · Client Brief", "Define objectives & scope", False),
-        ("2 · Data Collection", "Gather audio & secondary data", audio_n > 0),
-        ("3 · Fieldworks", "Conduct interviews & FGDs", tr_n > 0),
-        ("4 · Data Cleansing", "Clean & prepare data", False),
-        ("5 · Analysis & Reports", "Generate insights & reports", an_n > 0),
-        ("6 · Presentation", "Present to clients", rep_n > 0),
+        (_sl("1 · Client Brief"), T("Define objectives & scope", "ရည်ရွယ်ချက်နဲ့ scope သတ်မှတ်ခြင်း"), False),
+        (_sl("2 · Data Collection"), T("Gather audio & secondary data", "Audio နဲ့ secondary data စုဆောင်းခြင်း"), audio_n > 0),
+        (_sl("3 · Fieldworks"), T("Conduct interviews & FGDs", "Interview နဲ့ FGD ကောက်ယူခြင်း"), tr_n > 0),
+        (_sl("4 · Data Cleansing"), T("Clean & prepare data", "ဒေတာ သန့်စင်ပြီး ပြင်ဆင်ခြင်း"), False),
+        (_sl("5 · Analysis & Reports"), T("Generate insights & reports", "Insight နဲ့ report ထုတ်လုပ်ခြင်း"), an_n > 0),
+        (_sl("6 · Presentation"), T("Present to clients", "Client ကို တင်ပြခြင်း"), rep_n > 0),
     ]
 
 
@@ -1646,79 +2112,92 @@ def recent_activity(limit=5):
     for mtime, name, kind in rows[:limit]:
         dt = datetime.datetime.fromtimestamp(mtime, tz=ZoneInfo("Asia/Rangoon"))
         label = {
-            "audio": "Audio file added",
-            "transcript": "Transcription completed",
-            "analysis": "Analysis saved",
-            "report": "Report exported",
+            "audio": T("Audio file added", "Audio ဖိုင် ထည့်ပြီး"),
+            "transcript": T("Transcription completed", "Transcription ပြီးပြီ"),
+            "analysis": T("Analysis saved", "Analysis သိမ်းပြီး"),
+            "report": T("Report exported", "Report ထုတ်ပြီး"),
         }[kind]
-        out.append((dt.strftime("%b %d, %Y %I:%M %p"), name, label, "Completed"))
+        out.append((dt.strftime("%b %d, %Y %I:%M %p"), name, label, T("Completed", "ပြီးပြီ")))
     return out
 
 
 # Drive is the source of truth: sync once per session, then pages work on local files.
 if DRIVE_MODE and not st.session_state.get("drive_synced"):
-    with st.spinner("Google Drive နဲ့ sync လုပ်နေပါတယ်..."):
+    with st.spinner(T("Syncing with Google Drive...", "Google Drive နဲ့ sync လုပ်နေပါတယ်...")):
         sync_from_drive()
+        retry_sync_queue()
     st.session_state["drive_synced"] = True
 
 if page == "Dashboard":
 
     st.markdown(
-        '<div class="rf-hero"><h1>Welcome to<br><span class="b">Research</span>'
-        '<span class="t">Flow</span></h1>'
-        "<p>Transform your interview data into actionable insights with our "
-        "professional market research platform.</p></div>",
+        '<div class="rf-hero"><h1>' + T("Welcome to", "ကြိုဆိုပါတယ်") + '<br><span class="b">Research</span>'
+        '<span class="t">Flow</span></h1><p>'
+        + T("Transform your interview data into actionable insights with our "
+            "professional market research platform.",
+            "Interview data တွေကို အသုံးဝင်တဲ့ insight အဖြစ် ပြောင်းလဲပေးတဲ့ "
+            "ပရော်ဖက်ရှင်နယ် ဈေးကွက်သုတေသန platform ပါ။")
+        + "</p></div>",
         unsafe_allow_html=True,
     )
     _hc1, _hc2, _hc3 = st.columns([1, 1, 4])
     with _hc1:
-        if st.button("▶ Start New Project", key="hero_new_project", type="primary"):
+        if st.button(T("▶ Start New Project", "▶ Project အသစ် စမယ်"), key="hero_new_project", type="primary"):
             st.session_state["page"] = "Client Brief"
             st.rerun()
     with _hc2:
-        if st.button("📖 View Guide", key="hero_view_guide"):
+        if st.button(T("📖 View Guide", "📖 လမ်းညွှန်ကြည့်မယ်"), key="hero_view_guide"):
             st.session_state["show_guide"] = not st.session_state.get("show_guide", False)
             st.rerun()
     if st.session_state.get("show_guide"):
         st.markdown(
-            '<div class="rf-guide"><h3>📖 How ResearchFlow works</h3>'
-            "<p>One project flows through 6 stages — brief, collect, fieldwork, "
-            "cleanse, analyse, present. Files live in Google Drive "
-            "(ResearchFlow / project / audio, transcripts, notes, reports) and "
-            "this app works on those same files.</p></div>",
+            '<div class="rf-guide"><h3>' + T("📖 How ResearchFlow works", "📖 ResearchFlow အလုပ်လုပ်ပုံ") + '</h3><p>'
+            + T("One project flows through 6 stages — brief, collect, fieldwork, "
+                "cleanse, analyse, present. Files live in Google Drive "
+                "(ResearchFlow / project / audio, transcripts, notes, reports) and "
+                "this app works on those same files.",
+                "Project တစ်ခုက အဆင့် ၆ ဆင့် ဖြတ်သန်းတယ် — brief, data စုဆောင်း, ကွင်းဆင်း, "
+                "သန့်စင်, ခွဲခြမ်းစိတ်ဖြာ, တင်ပြ။ ဖိုင်တွေက Google Drive "
+                "(ResearchFlow / project / audio, transcripts, notes, reports) ထဲမှာ ရှိပြီး "
+                "ဒီ app က အဲဒီဖိုင်တွေပေါ်မှာပဲ အလုပ်လုပ်တယ်။")
+            + "</p></div>",
             unsafe_allow_html=True,
         )
-        st.markdown("**System Architecture**")
+        st.markdown(T("**System Architecture**", "**စနစ်ဖွဲ့စည်းပုံ**"))
         st.markdown(
-            '<div class="rf-arch">Research Project Management<small>Client Brief • Project Setup • Objectives</small></div>'
+            '<div class="rf-arch">' + T("Research Project Management", "Research Project စီမံခန့်ခွဲမှု")
+            + '<small>' + T("Client Brief • Project Setup • Objectives", "Client Brief • Project သတ်မှတ်ခြင်း • ရည်ရွယ်ချက်များ") + '</small></div>'
             '<div class="rf-arch-arrow">↓</div>',
             unsafe_allow_html=True,
         )
         _ac1, _ac2 = st.columns(2)
         with _ac1:
-            st.markdown('<div class="rf-arch">Data Collection<small>Interviews • Surveys • FGDs</small></div>', unsafe_allow_html=True)
+            st.markdown('<div class="rf-arch">' + T("Data Collection", "ဒေတာ စုဆောင်းခြင်း") + '<small>' + T("Interviews • Surveys • FGDs", "Interview • Survey • FGD") + '</small></div>', unsafe_allow_html=True)
         with _ac2:
-            st.markdown('<div class="rf-arch">Batch Processing<small>Audio • Video • Documents</small></div>', unsafe_allow_html=True)
+            st.markdown('<div class="rf-arch">' + T("Batch Processing", "Batch လုပ်ဆောင်ခြင်း") + '<small>' + T("Audio • Video • Documents", "Audio • Video • စာရွက်စာတမ်းများ") + '</small></div>', unsafe_allow_html=True)
         st.markdown('<div class="rf-arch-arrow">↓</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="rf-arch">AI Processing Engine<small>Transcription • Data Cleansing • Coding</small></div>'
+            '<div class="rf-arch">' + T("AI Processing Engine", "AI လုပ်ဆောင်စနစ်")
+            + '<small>' + T("Transcription • Data Cleansing • Coding", "Transcription • ဒေတာ သန့်စင်ခြင်း • Coding") + '</small></div>'
             '<div class="rf-arch-arrow">↓</div>'
-            '<div class="rf-arch">Research Intelligence<small>Qualitative • Quantitative • Market Analysis</small></div>'
+            '<div class="rf-arch">' + T("Research Intelligence", "သုတေသန Intelligence")
+            + '<small>' + T("Qualitative • Quantitative • Market Analysis", "Qualitative • Quantitative • ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု") + '</small></div>'
             '<div class="rf-arch-arrow">↓</div>'
-            '<div class="rf-arch">AI Reports &amp; Presentation<small>Insights • Recommendations • Client Reports</small></div>',
+            '<div class="rf-arch">' + T("AI Reports &amp; Presentation", "AI Report နဲ့ တင်ပြမှု")
+            + '<small>' + T("Insights • Recommendations • Client Reports", "Insight • အကြံပြုချက်များ • Client Report များ") + '</small></div>',
             unsafe_allow_html=True,
         )
-        st.caption("Coding, Surveys and Video are part of the target architecture — not yet built.")
+        st.caption(T("Coding, Surveys and Video are part of the target architecture — not yet built.", "Coding, Survey နဲ့ Video က ရည်မှန်းထားတဲ့ စနစ်ထဲမှာ ပါပေမယ့် မတည်ဆောက်ရသေးဘူး။"))
 
     _projects = st.session_state.get("project_list", ["Default"])
     _transcripts = get_transcript_files()
     _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
     _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
     _cards = [
-        ("📁", "Total Projects", len(_projects), "#1264C5"),
-        ("📝", "Transcripts", len(_transcripts), "#16B89A"),
-        ("📊", "Research Reports", len(_reports), "#18C6D9"),
-        ("🎙️", "Audio Files", len(_audio), "#071B3A"),
+        ("📁", T("Total Projects", "Project စုစုပေါင်း"), len(_projects), "#1264C5"),
+        ("📝", T("Transcripts", "Transcript များ"), len(_transcripts), "#16B89A"),
+        ("📊", T("Research Reports", "သုတေသန Report များ"), len(_reports), "#18C6D9"),
+        ("🎙️", T("Audio Files", "Audio ဖိုင်များ"), len(_audio), "#071B3A"),
     ]
     _cols = st.columns(4)
     for _i, (_ico, _lbl, _val, _c) in enumerate(_cards):
@@ -1736,14 +2215,14 @@ if page == "Dashboard":
     _icons = ["📋", "🎙️", "👥", "🧹", "📊", "🎤"]
     _step_colors = ["#1264C5", "#18C6D9", "#16B89A", "#1264C5", "#18C6D9", "#16B89A"]
 
-    st.subheader("🚀 Research Workflow")
-    st.caption("Follow the complete research process from brief to presentation")
+    st.subheader(T("🚀 Research Workflow", "🚀 သုတေသန လုပ်ငန်းစဉ်"))
+    st.caption(T("Follow the complete research process from brief to presentation", "Brief ကနေ တင်ပြမှုအထိ သုတေသနလုပ်ငန်းစဉ် အပြည့်အစုံကို လိုက်ကြည့်ပါ"))
     _cols = st.columns([3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3])
     _ci = 0
     for _i, (_label, _desc, _d) in enumerate(_stages):
         with _cols[_ci]:
             _nm = _label.split(" · ", 1)[1]
-            _st = "✅ Done" if _d else "○ Not yet"
+            _st = T("✅ Done", "✅ ပြီးပြီ") if _d else T("○ Not yet", "○ မပြီးသေး")
             st.markdown(
                 f'<div class="rf-step"><div class="ico" style="background:{_step_colors[_i]}1A">{_icons[_i]}</div>'
                 f'<div class="nm">{_i + 1}. {_nm}</div>'
@@ -1761,21 +2240,21 @@ if page == "Dashboard":
                 )
             _ci += 1
 
-    st.subheader("💡 Project Progress")
+    st.subheader(T("💡 Project Progress", "💡 Project တိုးတက်မှု"))
     _pc1, _pc2 = st.columns([1, 2])
     with _pc1:
         st.markdown(
             f'<div class="rf-ring" style="--p:{_pct}"><span>{_pct}%</span></div>',
             unsafe_allow_html=True,
         )
-        st.caption(f"{_done} of {len(_stages)} stages have files so far")
+        st.caption(T(f"{_done} of {len(_stages)} stages have files so far", f"အဆင့် {len(_stages)} ခုအနက် {_done} ခုမှာ ဖိုင်ရှိပြီ"))
     with _pc2:
         _s1, _s2 = st.columns(2)
         for _i, (_label, _desc, _d) in enumerate(_stages):
             with (_s1 if _i < 3 else _s2):
                 st.write(("✅ " if _d else "○ ") + _label)
 
-    st.subheader("🕐 Recent Activity")
+    st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
     _act = recent_activity()
     if _act:
         _rows = "".join(
@@ -1784,33 +2263,67 @@ if page == "Dashboard":
             for _t, _f, _a, _s in _act
         )
         st.markdown(
-            '<table class="rf-table"><tr><th>Date &amp; Time</th><th>File / Project</th>'
-            "<th>Activity</th><th>Status</th></tr>" + _rows + "</table>",
+            '<table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
+            + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
+            + "</th><th>" + T("Status", "အခြေအနေ") + "</th></tr>" + _rows + "</table>",
             unsafe_allow_html=True,
         )
     else:
-        st.info("No activity yet — record or upload audio to begin.")
+        st.info(T("No activity yet — record or upload audio to begin.", "လုပ်ဆောင်ချက် မရှိသေးဘူး — စဖို့ audio record လုပ်ပါ၊ ဒါမှမဟုတ် upload လုပ်ပါ။"))
+
+    st.subheader(T("💾 Backup & Restore", "💾 Backup နဲ့ Restore"))
+    _b1, _b2 = st.columns(2)
+    with _b1:
+        st.write(T("You can save the whole project to your PC as a ZIP.", "Project တခုလုံး ZIP အဖြစ် PC မှာ သိမ်းထားလို့ရတယ်။"))
+        if st.button(T("📦 Create backup ZIP", "📦 Backup ZIP လုပ်မယ်"), key="create_backup"):
+            with st.spinner(T("Creating backup ZIP...", "Backup ZIP လုပ်နေပါတယ်...")):
+                _bname, _bdata = build_backup_zip()
+                st.session_state["backup_zip"] = (_bname, _bdata)
+        if "backup_zip" in st.session_state:
+            _bname, _bdata = st.session_state["backup_zip"]
+            st.download_button(T("⬇️ Download backup", "⬇️ Backup ဒေါင်းလုတ်"), data=_bdata, file_name=_bname,
+                               mime="application/zip", key="download_backup")
+            st.caption(f"{_bname} — {len(_bdata) / 1024 / 1024:.1f} MB")
+    with _b2:
+        st.write(T("You can restore from a backup ZIP. Existing files are backed up first, then replaced.", "Backup ZIP ကနေ ပြန်ထည့်လို့ရတယ်။ ရှိပြီးသားဖိုင်တွေကို အရင် backup ယူပြီးမှ အစားထိုးမယ်။"))
+        _up = st.file_uploader(T("Choose a backup ZIP", "Backup ZIP ရွေးပါ"), type=["zip"], key="restore_upload")
+        if _up is not None:
+            _rdata = _up.getvalue()
+            _rman, _rerr = read_backup_manifest(_rdata)
+            if _rerr:
+                st.error(_rerr)
+            elif _rman.get("project", "Default") != current_project():
+                _bproj = _rman.get("project", "Default")
+                st.warning(T(f"⚠️ This backup is from project **{_bproj}**. Restore it into **{current_project()}** now? If this is a mistake, Project A's data will end up in Project B.", f"⚠️ ဒီ Backup က **{_bproj}** Project ကပါ။ အခု **{current_project()}** Project မှာ restore လုပ်မလား? မှားရင် Project B မှာ Project A data ရောက်သွားမယ်။"))
+                if st.button(T(f"↩️ Restore anyway ({_bproj} → {current_project()})", f"↩️ ဒါပေမယ့် Restore လုပ်မယ် ({_bproj} → {current_project()})"), key="confirm_restore"):
+                    with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
+                        _restore_report(restore_backup_zip(_rdata, force=True))
+            elif st.button(T("↩️ Restore backup", "↩️ Backup ပြန်ထည့်မယ်"), key="do_restore"):
+                with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
+                    _restore_report(restore_backup_zip(_rdata))
 
 elif page == "Client Brief":
     # Stage 1 shell page: project info now; the Brief form (Scope / Objective /
     # Methodology / Result Outcome) + Communication + Meetings come in the Stage 1 build.
-    st.title("📋 Client Brief")
+    st.title(T("📋 Client Brief", "📋 Client Brief"))
     st.write(f"Project: **{current_project()}**")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Audio Files", len(list(AUDIO_DIR.glob("*"))))
-    col2.metric("Transcripts", len(get_transcript_files()))
-    col3.metric("Research Reports", len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
+    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
+    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
+    col3.metric(T("Research Reports", "သုတေသန Report များ"), len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
 
     st.divider()
     st.info(
-        "Brief form (Scope / Objective / Methodology / Result Outcome) + "
-        "Communication + Meetings — Stage 1 build မှာ လာမယ်။"
+        T("Brief form (Scope / Objective / Methodology / Result Outcome) + "
+          "Communication + Meetings — coming in the Stage 1 build.",
+          "Brief form (Scope / Objective / Methodology / Result Outcome) + "
+          "Communication + Meetings — Stage 1 build မှာ လာမယ်။")
     )
 
-    st.subheader("＋ Project အသစ်")
-    _new = st.text_input("Project နာမည်", key="brief_new_project_name")
-    if st.button("Project ဖွင့်", key="brief_create_project"):
+    st.subheader(T("＋ New project", "＋ Project အသစ်"))
+    _new = st.text_input(T("Project name", "Project နာမည်"), key="brief_new_project_name")
+    if st.button(T("Create project", "Project ဖွင့်"), key="brief_create_project"):
         _created = ensure_project(_new)
         if _created:
             if _created not in st.session_state["project_list"]:
@@ -1818,61 +2331,73 @@ elif page == "Client Brief":
             st.session_state["project_select_target"] = _created
             st.rerun()
         else:
-            st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
+            st.warning(T("Please type a valid project name.", "Project နာမည် မှန်မှန်ရိုက်ပါ။"))
 
 elif page == "Data Cleansing":
     # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
     # status comes in the Stage 4 build.
-    st.title("🧹 Data Cleansing")
+    st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
     st.write(f"Project: **{current_project()}**")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Audio Files", len(list(AUDIO_DIR.glob("*"))))
-    col2.metric("Transcripts", len(get_transcript_files()))
-    col3.metric("Notes", len(list(NOTES_DIR.glob("*"))))
+    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
+    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
+    col3.metric(T("Notes", "မှတ်စုများ"), len(list(NOTES_DIR.glob("*"))))
 
     st.divider()
     st.info(
-        "Raw input တစ်ခုချင်းကို စစ်တာ (checked / clean / unclear / issue) — "
-        "Stage 4 build မှာ လာမယ်။"
+        T("Checking each raw input (checked / clean / unclear / issue) — "
+          "coming in the Stage 4 build.",
+          "Raw input တစ်ခုချင်းကို စစ်တာ (checked / clean / unclear / issue) — "
+          "Stage 4 build မှာ လာမယ်။")
     )
 
 elif page == "Presentation":
     # Stage 6 shell page: client view + per-project share link come in the Stage 6 build.
-    st.title("🎤 Presentation")
+    st.title(T("🎤 Presentation", "🎤 တင်ပြမှု"))
     st.write(f"Project: **{current_project()}**")
 
     st.divider()
     st.info(
-        "Client view + per-project share link — Stage 6 build မှာ လာမယ်။ "
-        "အခု Reports စာမျက်နှာမှာ PPTX / DOCX ထုတ်လို့ရတယ်။"
+        T("Client view + per-project share link — coming in the Stage 6 build. "
+          "For now you can export PPTX / DOCX on the Reports page.",
+          "Client view + per-project share link — Stage 6 build မှာ လာမယ်။ "
+          "အခု Reports စာမျက်နှာမှာ PPTX / DOCX ထုတ်လို့ရတယ်။")
     )
 
 elif page == "Data Collection":
-    st.title("🎙️ Data Collection")
+    st.title(T("🎙️ Data Collection", "🎙️ ဒေတာ စုဆောင်းခြင်း"))
 
-    uploaded = st.file_uploader("Audio file တင်ပါ (mp3 / wav / m4a)", type=["mp3", "wav", "m4a"])
+    uploaded = st.file_uploader(T("Upload an audio file (mp3 / wav / m4a)", "Audio file တင်ပါ (mp3 / wav / m4a)"), type=["mp3", "wav", "m4a"], key="dc_audio_upload")
     audio_path = None
     if uploaded is not None:
-        audio_path = AUDIO_DIR / uploaded.name
-        store_write_bytes("audio", uploaded.name, uploaded.getbuffer())
-        st.caption(f"Saved: {uploaded.name}")
+        safe_name = Path(uploaded.name).name
+        if safe_name != uploaded.name or safe_name in {"", ".", ".."}:
+            st.error(T("Invalid file name.", "ဖိုင်အမည် မမှန်ပါ။"))
+            st.stop()
+        audio_path = _safe_storage_path("audio", safe_name)
+        _uhash = hashlib.sha256(uploaded.getbuffer()).hexdigest()
+        upload_key = (current_project(), safe_name, _uhash)
+        if st.session_state.get("last_audio_upload") != upload_key:
+            store_write_bytes("audio", safe_name, uploaded.getbuffer())
+            st.session_state["last_audio_upload"] = upload_key
+        st.caption(T(f"Saved: {uploaded.name}", f"သိမ်းပြီး: {uploaded.name}"))
     else:
         existing = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
         if existing:
             audio_names = [f.name for f in existing]
-            audio_selected = st.selectbox("ရှိပြီးသား audio ရွေးပါ", audio_names)
+            audio_selected = st.selectbox(T("Choose an existing audio file", "ရှိပြီးသား audio ရွေးပါ"), audio_names, key="dc_audio_existing")
             audio_path = AUDIO_DIR / audio_selected
         else:
-            st.info("Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။")
+            st.info(T("No audio file yet — upload one first.", "Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။"))
 
     if audio_path is not None and st.button("Transcribe"):
-        with st.spinner("Transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
+        with st.spinner(T("Transcribing... (long audio can take a few minutes)", "Transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)")):
             text, model = transcribe_audio(audio_path)
         if text:
             out_file = store_write_text("transcripts", audio_path.stem + ".txt", text)
             st.success(f"Done — model: {model}")
-            st.caption(f"Saved: {out_file.name} — Transcripts page မှာ ပြန်ဖွင့်လို့ရတယ်။")
+            st.caption(T(f"Saved: {out_file.name} — you can reopen it on the Transcripts page.", f"Saved: {out_file.name} — Transcripts page မှာ ပြန်ဖွင့်လို့ရတယ်။"))
         else:
             st.error(f"Failed: {model}")
 
@@ -1946,13 +2471,14 @@ elif page == "Fieldworks":
     audio_data = st.audio_input("🎙️ Record a chunk (15 မိနစ် လောက်)")
     if audio_data is not None:
         audio_bytes = audio_data.read()
-        audio_hash = hashlib.md5(audio_bytes).hexdigest()
-        if st.session_state.get("last_recorded_hash") != audio_hash:
+        audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+        record_key = (current_project(), session_name, audio_hash)
+        if st.session_state.get("last_recorded_key") != record_key:
             next_n = (chunks[-1][0] + 1) if chunks else 1
             chunk_path = AUDIO_DIR / f"{session_name}({next_n}).wav"
             store_write_bytes("audio", chunk_path.name, audio_bytes)
-            st.session_state["last_recorded_hash"] = audio_hash
-            st.session_state["last_chunk"] = chunk_path.name
+            st.session_state["last_recorded_key"] = record_key
+            st.session_state["last_chunk"] = (current_project(), session_name, chunk_path.name)
             st.success(f"Saved: {chunk_path.name}")
             txt_path = OUTPUT_DIR / (chunk_path.stem + ".txt")
             with st.spinner(f"Transcribing chunk {next_n}... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
@@ -1965,8 +2491,9 @@ elif page == "Fieldworks":
             st.rerun()
         else:
             st.caption(f"ဒီ chunk က သိမ်းပြီးသား: {st.session_state.get('last_chunk')}")
-            last_name = st.session_state.get("last_chunk", "")
-            txt_path = OUTPUT_DIR / (Path(last_name).stem + ".txt")
+            last_info = st.session_state.get("last_chunk", ())
+            last_name = last_info[2] if len(last_info) == 3 and last_info[:2] == (current_project(), session_name) else ""
+            txt_path = OUTPUT_DIR / (Path(last_name).stem + ".txt") if last_name else None
             if last_name and txt_path.exists():
                 with st.expander("Transcript ကြည့်ပါ"):
                     st.text(txt_path.read_text(encoding="utf-8"))
@@ -2008,7 +2535,7 @@ elif page == "Upload & Split":
             sel = st.selectbox("Audio ရွေးပါ", [f.name for f in existing], key="split_existing")
             src_path = AUDIO_DIR / sel
         else:
-            st.info("Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။")
+            st.info(T("No audio file yet — upload one first.", "Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။"))
 
     if src_path is not None:
         dur = audio_duration(src_path)
