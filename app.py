@@ -1266,15 +1266,18 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
   padding: 1.35rem clamp(1.2rem, 2.2vw, 2.25rem) 2.5rem;
 }
 
-/* Compact sidebar: reserve more screen space for the workspace */
-section[data-testid="stSidebar"] {
+/* Compact sidebar: reserve more screen space for the workspace.
+   Width rules apply ONLY while expanded — an unqualified min-width: 250px
+   !important stops the sidebar collapsing (the page stays pushed right,
+   "left behind"). When collapsed, Streamlit's own rules must apply untouched. */
+section[data-testid="stSidebar"][aria-expanded="true"] {
   width: 250px !important;
   min-width: 250px !important;
   max-width: 250px !important;
   background: linear-gradient(180deg, #071B3A 0%, #0B2A52 55%, #0E3A6E 100%);
   border-right: 1px solid rgba(255,255,255,.08);
 }
-section[data-testid="stSidebar"] > div {
+section[data-testid="stSidebar"][aria-expanded="true"] > div {
   width: 250px !important;
 }
 @media (min-width: 901px) {
@@ -1454,8 +1457,8 @@ h2, h3 { font-weight: 700; }
 hr { border-color: #E5E9F3; }
 
 @media (max-width: 900px) {
-  section[data-testid="stSidebar"],
-  section[data-testid="stSidebar"] > div {
+  section[data-testid="stSidebar"][aria-expanded="true"],
+  section[data-testid="stSidebar"][aria-expanded="true"] > div {
     width: min(82vw, 280px) !important;
     min-width: min(82vw, 280px) !important;
     max-width: min(82vw, 280px) !important;
