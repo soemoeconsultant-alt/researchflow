@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.18"
+APP_VERSION = "3.19"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1638,13 +1638,17 @@ _MY_EMAIL = login_gate()
 # --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
 CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700&display=swap');
 /* Inter for text only — never force it onto every element: Streamlit's own
    icons are Material Symbols ligatures (e.g. keyboard_double_arrow_right for
    the collapsed-sidebar button) and render as literal text if their font is
    overridden. Setting the font on .stApp alone lets text inherit Inter while
    icon spans keep their own font. */
-.stApp { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+.stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; }
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp button,
+.stApp input, .stApp textarea { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; }
+/* Myanmar script needs open line height; tight tracking breaks stacked marks. */
+[data-testid="stMarkdownContainer"] p { line-height: 1.65; }
 span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Material Symbols Rounded', sans-serif !important; }
 :root {
   --rf-navy: #071B3A;
@@ -1652,17 +1656,22 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
   --rf-blue: #1264C5;
   --rf-cyan: #18C6D9;
   --rf-teal: #16B89A;
-  --rf-text: #10264A;
-  --rf-muted: #64748B;
-  --rf-border: #E5ECF5;
+  --rf-text: #16222E;
+  --rf-muted: #5E6B78;
+  --rf-border: #D9DEE4;
   --rf-surface: #FFFFFF;
+  /* v3.19 tokens */
+  --rf-ground: #F3F5F7;
+  --rf-ink: #16222E;
+  --rf-line: #D9DEE4;
+  --rf-accent: #0E8F7E;
+  --rf-accent-soft: #E4F2F0;
+  --rf-attn: #C26A00;
 }
 
 /* App canvas */
 .stApp {
-  background: radial-gradient(ellipse at 85% 0%, rgba(24,198,217,.07), transparent 32%),
-              radial-gradient(ellipse at 5% 12%, rgba(18,100,197,.06), transparent 28%),
-              #F4F8FF;
+  background: var(--rf-ground);
   color: var(--rf-text);
 }
 .block-container {
@@ -1679,8 +1688,8 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
   width: 250px !important;
   min-width: 250px !important;
   max-width: 250px !important;
-  background: linear-gradient(180deg, #071B3A 0%, #0B2A52 55%, #0E3A6E 100%);
-  border-right: 1px solid rgba(255,255,255,.08);
+  background: var(--rf-surface);
+  border-right: 1px solid var(--rf-line);
 }
 section[data-testid="stSidebar"][aria-expanded="true"] > div {
   width: 250px !important;
@@ -1702,84 +1711,73 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
   padding-top: 0 !important;
 }
 
-/* Dark AI sidebar */
+/* v3.19 light sidebar: hairline border, no gradient. The active page is marked
+   by an accent bar on its left edge. Stage entries carry the stage number;
+   the other pages of a stage are indented under it. */
 [data-testid="stSidebar"] {
-  background: linear-gradient(180deg, #071B3A 0%, #0B2A52 55%, #0E3A6E 100%);
-  border-right: 1px solid rgba(255,255,255,.08);
+  background: var(--rf-surface);
+  border-right: 1px solid var(--rf-line);
 }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-  gap: .45rem;
-}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .3rem; }
 [data-testid="stSidebar"] h1 {
   font-size: 1.35rem;
   line-height: 1.25;
   margin-bottom: .15rem;
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-  font-size: .76rem;
+  font-size: .76rem; color: var(--rf-muted);
 }
 [data-testid="stSidebar"] .stButton > button {
-  min-height: 2.4rem;
-  padding: .42rem .75rem;
-  border-radius: 10px;
-  font-size: .9rem;
-  justify-content: flex-start;
-  gap: .6rem;
+  min-height: 2.25rem; padding: .35rem .75rem; border-radius: 6px;
+  font-size: .9rem; font-weight: 500; justify-content: flex-start; gap: .6rem;
+  background: transparent; color: var(--rf-ink); border: none; box-shadow: none;
+  transform: none;
 }
-/* Streamlit centers nav content in an inner full-width div INSIDE the button,
-   so justify-content on the button alone cannot move it (v3.13 lesson — the
-   button-level rule + !important still showed centered text). Target the inner
-   div too. */
-[data-testid="stSidebar"] .stButton button div {
-  justify-content: flex-start !important;
+/* Streamlit centers nav content in an inner div INSIDE the button, so
+   justify-content on the button alone cannot move it (v3.13 lesson). */
+[data-testid="stSidebar"] .stButton button div { justify-content: flex-start !important; }
+[data-testid="stSidebar"] .stButton > button p { color: var(--rf-ink); text-align: left; }
+[data-testid="stSidebar"] .stButton > button:hover {
+  background: #EEF1F4; border: none; color: var(--rf-ink); transform: none;
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"],
+[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
+  background: var(--rf-accent-soft); border: none; color: var(--rf-ink);
+  font-weight: 600; box-shadow: inset 3px 0 0 var(--rf-accent);
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"] p,
+[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] p {
+  color: var(--rf-ink); font-weight: 600;
+}
+[data-testid="stSidebar"] [class*="st-key-navsub"] button {
+  padding-left: 2.3rem; font-size: .84rem;
+}
+[data-testid="stSidebar"] [class*="st-key-navsub"] button p { color: var(--rf-muted); }
+[data-testid="stSidebar"] [class*="st-key-navsub"] button[kind="primary"] p,
+[data-testid="stSidebar"] [class*="st-key-navsub"] button[data-testid="stBaseButton-primary"] p {
+  color: var(--rf-ink);
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  background: transparent; border: none; border-radius: 6px;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] details summary {
-  padding-top: .45rem;
-  padding-bottom: .45rem;
+  padding-top: .45rem; padding-bottom: .45rem;
 }
-[data-testid="stSidebar"] h1,
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3,
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #F5F7FF; }
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #AAB4D2; }
-/* Borderless nav: inactive items are plain icon + label (no box); only the
-   active page gets the blue gradient pill. */
-[data-testid="stSidebar"] .stButton > button {
-  background: transparent; color: #DCE6F5;
-  border: none; border-radius: 10px;
-  transition: background .18s ease, color .18s ease;
-}
-[data-testid="stSidebar"] .stButton > button p { color: #DCE6F5; }
-[data-testid="stSidebar"] .stButton > button:hover {
-  background: rgba(255,255,255,.08); border: none; color: #FFFFFF;
-}
-[data-testid="stSidebar"] .stButton > button:hover p { color: #FFFFFF; }
-[data-testid="stSidebar"] .stButton > button[kind="primary"] {
-  background: linear-gradient(105deg, #1264C5 0%, #18C6D9 100%);
-  border: none; color: #FFFFFF;
-  box-shadow: 0 4px 14px rgba(18,100,197,.35);
-}
-[data-testid="stSidebar"] .stButton > button[kind="primary"] p { color: #FFFFFF; }
-[data-testid="stSidebar"] [data-testid="stExpander"] {
-  background: transparent; border: none; border-radius: 10px;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] p { color: #F5F7FF; }
-[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
+[data-testid="stSidebar"] hr { border-color: var(--rf-line); }
 
 /* Sidebar logo + user card */
 .rf-logo { display: flex; align-items: center; gap: 10px; padding: 0 4px 14px; }
-.rf-logo-tx { color: #FFFFFF; font-size: 19px; font-weight: 800; letter-spacing: -.01em; line-height: 1.1; }
-.rf-logo-sub { color: #AAB4D2; font-size: 11px; margin-top: 2px; }
-.rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,.10); }
-.rf-user-av { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #18C6D9, #1264C5); color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; flex-shrink: 0; }
-.rf-user-nm { color: #FFFFFF; font-weight: 700; font-size: 14px; }
-.rf-user-rl { color: #AAB4D2; font-size: 12px; }
+.rf-logo-tx { color: var(--rf-ink); font-size: 19px; font-weight: 700; line-height: 1.1; }
+.rf-logo-sub { color: var(--rf-muted); font-size: 11px; margin-top: 2px; }
+.rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid var(--rf-line); }
+.rf-user-av { width: 34px; height: 34px; border-radius: 50%; background: var(--rf-accent); color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; flex-shrink: 0; }
+.rf-user-nm { color: var(--rf-ink); font-weight: 600; font-size: 14px; }
+.rf-user-rl { color: var(--rf-muted); font-size: 12px; }
 
 /* Typography and section headings */
-h1, h2, h3 { color: #10264A; letter-spacing: -.025em; }
-h1 { font-weight: 800; }
-h2, h3 { font-weight: 700; }
+h1, h2, h3 { color: var(--rf-ink); letter-spacing: 0; }
+h1 { font-weight: 600; }
+h2, h3 { font-weight: 600; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
 
 /* Hero banner — light blue-to-cyan gradient */
@@ -1844,31 +1842,31 @@ h2, h3 { font-weight: 700; }
 
 /* Buttons and form controls */
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
-  border-radius: 11px; border: 1px solid #DCE3F5; font-weight: 650; font-size: 14px;
-  transition: all .18s ease; box-shadow: 0 2px 7px rgba(35,48,105,.045);
+  border-radius: 6px; border: 1px solid var(--rf-line); font-weight: 600; font-size: 14px;
+  transition: background .15s ease, border-color .15s ease; box-shadow: none;
 }
 .stButton > button[kind="primary"] {
-  color: #FFFFFF; border: 0;
-  background: linear-gradient(105deg, #1264C5 0%, #18C6D9 100%);
-  box-shadow: 0 6px 16px rgba(18,100,197,.22);
+  color: #FFFFFF; border: 0; background: var(--rf-accent); box-shadow: none;
 }
-.stButton > button:hover, .stDownloadButton > button:hover { border-color: #7FB8E8; transform: translateY(-1px); }
+.stButton > button[kind="primary"] p { color: #FFFFFF; }
+.stButton > button[kind="primary"]:hover { background: #0B7A6B; }
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: var(--rf-accent); }
 [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
 [data-testid="stNumberInput"] input {
-  border-radius: 10px; border-color: #DDE3F1; background: #FFFFFF;
+  border-radius: 6px; border-color: var(--rf-line); background: #FFFFFF;
 }
 [data-testid="stFileUploader"] section {
-  border: 1.5px dashed #BFD9F2; border-radius: 15px; background: #FAFBFF;
+  border: 1.5px dashed #B6C2CC; border-radius: 8px; background: #FFFFFF;
 }
 
 /* Tables, tabs, expanders, alerts */
-[data-testid="stDataFrame"] { border: 1px solid var(--rf-border); border-radius: 13px; overflow: hidden; }
-[data-testid="stTabs"] button[role="tab"] { font-weight: 650; }
-[data-testid="stTabs"] button[aria-selected="true"] { color: #1264C5; }
-[data-testid="stExpander"] { border: 1px solid var(--rf-border); border-radius: 13px; background: #FFFFFF; }
-[data-testid="stAlert"] { border-radius: 12px; }
-hr { border-color: #E5E9F3; }
+[data-testid="stDataFrame"] { border: 1px solid var(--rf-line); border-radius: 8px; overflow: hidden; }
+[data-testid="stTabs"] button[role="tab"] { font-weight: 600; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: var(--rf-accent); }
+[data-testid="stExpander"] { border: 1px solid var(--rf-line); border-radius: 8px; background: #FFFFFF; }
+[data-testid="stAlert"] { border-radius: 8px; }
+hr { border-color: var(--rf-line); }
 
 @media (max-width: 900px) {
   section[data-testid="stSidebar"][aria-expanded="true"],
@@ -2009,15 +2007,39 @@ def _sl(label):
     return f"{num} · {T(nm, _STAGE_MM.get(nm))}"
 
 
-for item in _PAGE_ORDER:
-    _active = st.session_state["page"] == item
-    if st.sidebar.button(
-        page_label(item), key=f"nav_{item}",
-        use_container_width=True, type="primary" if _active else "secondary",
-        icon=_PAGE_ICONS.get(item),
-    ):
-        st.session_state["page"] = item
-        st.rerun()
+# v3.19 nav, grouped by stage. The first page of a stage is the stage entry
+# (stage number + name); the other pages of that stage sit under it, indented.
+_NAV_GROUPS = [
+    (None, ["Dashboard"]),
+    (1, ["Client Brief"]),
+    (2, ["Data Collection", "Batch Processing", "Upload & Split"]),
+    (3, ["Fieldworks", "Transcripts"]),
+    (4, ["Data Cleansing"]),
+    (5, ["Market Analysis", "Quantitative Analysis", "Reports", "Report Editor"]),
+    (6, ["Presentation"]),
+    (None, ["Prompt Library"]),
+]
+assert sorted(p for _, g in _NAV_GROUPS for p in g) == sorted(_PAGE_ORDER)
+_nav_sub_i = 0
+for _stage_no, _pages in _NAV_GROUPS:
+    if _pages[0] == "Prompt Library":
+        st.sidebar.divider()
+    for _j, item in enumerate(_pages):
+        _active = st.session_state["page"] == item
+        _label = page_label(item)
+        if _j == 0:
+            _key = f"nav_{item}"
+            if _stage_no is not None:
+                _label = f"{_stage_no}  {_label}"
+        else:
+            _nav_sub_i += 1
+            _key = f"navsub{_nav_sub_i}"
+        if st.sidebar.button(
+            _label, key=_key,
+            use_container_width=True, type="primary" if _active else "secondary",
+        ):
+            st.session_state["page"] = item
+            st.rerun()
 
 _storage_label = (
     T("💾 Storage: Google Drive (OAuth)", "💾 သိမ်းဆည်းမှု: Google Drive (OAuth)") if DRIVE_AUTH == "oauth"
