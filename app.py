@@ -1234,7 +1234,13 @@ _MY_EMAIL = login_gate()
 CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-.stApp, .stApp * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+/* Inter for text only — never force it onto every element: Streamlit's own
+   icons are Material Symbols ligatures (e.g. keyboard_double_arrow_right for
+   the collapsed-sidebar button) and render as literal text if their font is
+   overridden. Setting the font on .stApp alone lets text inherit Inter while
+   icon spans keep their own font. */
+.stApp { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Material Symbols Rounded', sans-serif !important; }
 :root {
   --rf-navy: #071B3A;
   --rf-navy-2: #0B2A52;
@@ -1296,10 +1302,12 @@ section[data-testid="stSidebar"] > div {
   font-size: .76rem;
 }
 [data-testid="stSidebar"] .stButton > button {
-  min-height: 2.15rem;
-  padding: .28rem .65rem;
-  border-radius: 8px;
-  font-size: .84rem;
+  min-height: 2.4rem;
+  padding: .42rem .75rem;
+  border-radius: 10px;
+  font-size: .9rem;
+  justify-content: flex-start;
+  gap: .6rem;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] details summary {
   padding-top: .45rem;
@@ -1311,21 +1319,38 @@ section[data-testid="stSidebar"] > div {
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
 [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #F5F7FF; }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #AAB4D2; }
-[data-testid="stSidebar"] button {
-  background: rgba(255,255,255,.055); color: #F5F7FF;
-  border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
-  transition: all .18s ease;
+/* Borderless nav: inactive items are plain icon + label (no box); only the
+   active page gets the blue gradient pill. */
+[data-testid="stSidebar"] .stButton > button {
+  background: transparent; color: #DCE6F5;
+  border: none; border-radius: 10px;
+  transition: background .18s ease, color .18s ease;
 }
-[data-testid="stSidebar"] button p { color: #F5F7FF; }
-[data-testid="stSidebar"] button:hover {
-  background: linear-gradient(100deg, rgba(18,100,197,.32), rgba(24,198,217,.30));
-  border-color: rgba(24,198,217,.55); color: #FFFFFF;
+[data-testid="stSidebar"] .stButton > button p { color: #DCE6F5; }
+[data-testid="stSidebar"] .stButton > button:hover {
+  background: rgba(255,255,255,.08); border: none; color: #FFFFFF;
 }
+[data-testid="stSidebar"] .stButton > button:hover p { color: #FFFFFF; }
+[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+  background: linear-gradient(105deg, #1264C5 0%, #18C6D9 100%);
+  border: none; color: #FFFFFF;
+  box-shadow: 0 4px 14px rgba(18,100,197,.35);
+}
+[data-testid="stSidebar"] .stButton > button[kind="primary"] p { color: #FFFFFF; }
 [data-testid="stSidebar"] [data-testid="stExpander"] {
-  background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+  background: transparent; border: none; border-radius: 10px;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] p { color: #F5F7FF; }
 [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
+
+/* Sidebar logo + user card */
+.rf-logo { display: flex; align-items: center; gap: 10px; padding: 4px 4px 14px; }
+.rf-logo-tx { color: #FFFFFF; font-size: 19px; font-weight: 800; letter-spacing: -.01em; line-height: 1.1; }
+.rf-logo-sub { color: #AAB4D2; font-size: 11px; margin-top: 2px; }
+.rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,.10); }
+.rf-user-av { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #18C6D9, #1264C5); color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; flex-shrink: 0; }
+.rf-user-nm { color: #FFFFFF; font-weight: 700; font-size: 14px; }
+.rf-user-rl { color: #AAB4D2; font-size: 12px; }
 
 /* Typography and section headings */
 h1, h2, h3 { color: #10264A; letter-spacing: -.025em; }
@@ -1458,8 +1483,17 @@ PAGE_STAGE = {
 if "page" not in st.session_state:
     st.session_state["page"] = "Dashboard"
 
-st.sidebar.title("📊 ResearchFlow")
-st.sidebar.caption("Market Research AI")
+st.sidebar.markdown(
+    '<div class="rf-logo">'
+    '<svg width="32" height="32" viewBox="0 0 32 32" fill="none">'
+    '<rect x="2" y="19" width="6" height="10" rx="2" fill="#1264C5"/>'
+    '<rect x="11" y="12" width="6" height="17" rx="2" fill="#18C6D9"/>'
+    '<rect x="20" y="5" width="6" height="24" rx="2" fill="#16B89A"/>'
+    '</svg>'
+    '<div><div class="rf-logo-tx">ResearchFlow</div>'
+    '<div class="rf-logo-sub">Market Research AI</div></div></div>',
+    unsafe_allow_html=True,
+)
 
 # Project selector: list once per session (Drive call), refresh after creating one.
 if "project_list" not in st.session_state:
@@ -1494,11 +1528,15 @@ with st.sidebar.expander("＋ Project အသစ်"):
             st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
 
 _PAGE_ICONS = {
-    "Dashboard": "🏠", "Client Brief": "📋",
-    "Data Collection": "🎙️", "Batch Processing": "📁", "Upload & Split": "✂️",
-    "Fieldworks": "🔴", "Transcripts": "📝", "Data Cleansing": "🧹",
-    "Market Analysis": "📊", "Quantitative Analysis": "📈", "Reports": "📑",
-    "Report Editor": "✏️", "Presentation": "🎤", "Prompt Library": "📚",
+    "Dashboard": ":material/home:", "Client Brief": ":material/description:",
+    "Data Collection": ":material/database:", "Batch Processing": ":material/layers:",
+    "Upload & Split": ":material/content_cut:",
+    "Fieldworks": ":material/groups:", "Transcripts": ":material/article:",
+    "Data Cleansing": ":material/cleaning_services:",
+    "Market Analysis": ":material/bar_chart:", "Quantitative Analysis": ":material/pie_chart:",
+    "Reports": ":material/assignment:",
+    "Report Editor": ":material/edit:", "Presentation": ":material/slideshow:",
+    "Prompt Library": ":material/library_books:",
 }
 _PAGE_ORDER = [
     "Dashboard", "Client Brief",
@@ -1511,8 +1549,9 @@ _PAGE_ORDER = [
 for item in _PAGE_ORDER:
     _active = st.session_state["page"] == item
     if st.sidebar.button(
-        f"{_PAGE_ICONS.get(item, '•')} {item}", key=f"nav_{item}",
+        item, key=f"nav_{item}",
         use_container_width=True, type="primary" if _active else "secondary",
+        icon=_PAGE_ICONS.get(item),
     ):
         st.session_state["page"] = item
         st.rerun()
@@ -1523,8 +1562,14 @@ st.sidebar.caption(
     else "💾 Storage: Local (PC)"
 )
 
+st.sidebar.markdown(
+    '<div class="rf-user"><div class="rf-user-av">S</div>'
+    '<div><div class="rf-user-nm">Soe Moe</div>'
+    '<div class="rf-user-rl">Research Team</div></div></div>',
+    unsafe_allow_html=True,
+)
+
 if _MY_EMAIL:
-    st.sidebar.caption(f"👤 {_MY_EMAIL}")
     if st.sidebar.button("Log out"):
         st.logout()
 
