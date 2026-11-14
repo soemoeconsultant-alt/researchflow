@@ -109,6 +109,11 @@ DRIVE_SCOPES = [
 ]
 DRIVE_ROOT_NAME = "ResearchFlow"
 DRIVE_PROJECT = "Default"
+# The ResearchFlow folder in the consultant's Drive (created 2026-11-14, shared
+# with the service account as Editor). A service account cannot find a shared
+# folder via "'root' in parents" — shared items are not in its own root — so
+# use this folder id directly when it resolves; otherwise fall back to lookup.
+DRIVE_ROOT_ID = "1eiun1ZiNj-9rf3LWfdQEWwJczWjPi3jJ"
 
 # dir_key -> Drive folder name (analysis txt + plan txt live in "reports",
 # merged full transcripts live in "transcripts" alongside chunk txt).
@@ -245,7 +250,17 @@ def _drive_folder_id(folder_name):
     """Folder id for ResearchFlow / Default / <folder_name> (created if missing)."""
     if folder_name in _FOLDER_IDS:
         return _FOLDER_IDS[folder_name]
-    root = _drive_ensure_folder(DRIVE_ROOT_NAME, "root")
+    svc = _drive_service()
+    root = None
+    if DRIVE_ROOT_ID:
+        try:
+            info = svc.files().get(fileId=DRIVE_ROOT_ID, fields="id,mimeType").execute()
+            if info.get("mimeType") == "application/vnd.google-apps.folder":
+                root = DRIVE_ROOT_ID
+        except Exception:
+            root = None
+    if not root:
+        root = _drive_ensure_folder(DRIVE_ROOT_NAME, "root")
     proj = _drive_ensure_folder(DRIVE_PROJECT, root)
     fid = _drive_ensure_folder(folder_name, proj)
     _FOLDER_IDS[folder_name] = fid
