@@ -98,8 +98,12 @@ def short_ids_for(names):
 
 
 # --- Storage: local folders, or Google Drive when credentials exist ---
-# Drive is the source of truth when a service account is configured:
+# Drive is the source of truth when credentials are configured:
 #   ResearchFlow / Default / {audio, transcripts, notes, reports}
+# Auth order (v3): OAuth user credentials first — the consultant account
+# itself, so uploaded files belong to him and count against his storage.
+# A service account owns the files it uploads and has no storage quota of
+# its own, so its uploads are rejected by Google; it stays only as fallback.
 # Local folders are always the working cache, so every page works the same
 # with or without Drive. Without credentials the app runs on localhost
 # exactly as before.
@@ -136,6 +140,8 @@ LOCAL_DIR = {
 
 _SA_INFO = None
 _SA_TRIED = False
+_OAUTH_INFO = None
+_OAUTH_TRIED = False
 _DRIVE_SERVICE = None
 _DOCS_SERVICE = None
 _FOLDER_IDS = {}
@@ -174,20 +180,63 @@ def _load_sa_info():
     return None
 
 
-def drive_available():
-    """True when Drive credentials exist AND the Google API packages are installed."""
-    global _SA_INFO, _SA_TRIED
+def _load_oauth_info():
+    """OAuth user credentials (the consultant account itself), from (in order):
+    st.secrets["google_oauth"] (dict with client_id, client_secret,
+    refresh_token, optional token_uri) or env GOOGLE_OAUTH_JSON (JSON string
+    with the same keys). The refresh token is obtained once on the user's PC
+    (get_refresh_token.py) and pasted into Streamlit secrets — the app never
+    asks the user to sign in. Returns the dict, or None."""
+    try:
+        o = st.secrets.get("google_oauth")
+        if isinstance(o, dict) and o.get("refresh_token"):
+            return dict(o)
+    except Exception:
+        pass
+    raw = os.environ.get("GOOGLE_OAUTH_JSON")
+    if raw:
+        try:
+            o = json.loads(raw)
+            if isinstance(o, dict) and o.get("refresh_token"):
+                return dict(o)
+        except Exception:
+            pass
+    return None
+
+
+def _load_all_auth():
+    """Load both credential sources once (OAuth first, service account second)."""
+    global _SA_INFO, _SA_TRIED, _OAUTH_INFO, _OAUTH_TRIED
     if not _SA_TRIED:
         _SA_TRIED = True
         _SA_INFO = _load_sa_info()
-    if not _SA_INFO:
+    if not _OAUTH_TRIED:
+        _OAUTH_TRIED = True
+        _OAUTH_INFO = _load_oauth_info()
+
+
+def drive_available():
+    """True when Drive credentials exist AND the Google API packages are installed."""
+    _load_all_auth()
+    if not (_OAUTH_INFO or _SA_INFO):
         return False
     try:
         import googleapiclient.discovery  # noqa: F401
         from google.oauth2 import service_account  # noqa: F401
+        from google.oauth2 import credentials  # noqa: F401
         return True
     except Exception:
         return False
+
+
+def drive_auth_mode():
+    """Which credentials Drive uses: "oauth", "service", or None."""
+    _load_all_auth()
+    if _OAUTH_INFO:
+        return "oauth"
+    if _SA_INFO:
+        return "service"
+    return None
 
 
 def docs_available():
@@ -195,7 +244,8 @@ def docs_available():
 
 
 def _sa_credentials():
-    if not drive_available():
+    _load_all_auth()
+    if not _SA_INFO:
         return None
     try:
         from google.oauth2 import service_account
@@ -204,12 +254,33 @@ def _sa_credentials():
         return None
 
 
+def _drive_credentials():
+    """OAuth user credentials first (files belong to the user, whose storage
+    quota applies); service account only as fallback. The google-auth
+    library refreshes the OAuth access token automatically on first use."""
+    _load_all_auth()
+    if _OAUTH_INFO:
+        try:
+            from google.oauth2.credentials import Credentials
+            return Credentials(
+                token=None,
+                refresh_token=_OAUTH_INFO.get("refresh_token"),
+                client_id=_OAUTH_INFO.get("client_id"),
+                client_secret=_OAUTH_INFO.get("client_secret"),
+                token_uri=_OAUTH_INFO.get("token_uri") or "https://oauth2.googleapis.com/token",
+                scopes=DRIVE_SCOPES,
+            )
+        except Exception:
+            pass
+    return _sa_credentials()
+
+
 def _drive_service():
     global _DRIVE_SERVICE
     if _DRIVE_SERVICE is None:
         try:
             from googleapiclient.discovery import build
-            _DRIVE_SERVICE = build("drive", "v3", credentials=_sa_credentials())
+            _DRIVE_SERVICE = build("drive", "v3", credentials=_drive_credentials())
         except Exception:
             _DRIVE_SERVICE = False
     return _DRIVE_SERVICE or None
@@ -220,7 +291,7 @@ def _docs_service():
     if _DOCS_SERVICE is None:
         try:
             from googleapiclient.discovery import build
-            _DOCS_SERVICE = build("docs", "v1", credentials=_sa_credentials())
+            _DOCS_SERVICE = build("docs", "v1", credentials=_drive_credentials())
         except Exception:
             _DOCS_SERVICE = False
     return _DOCS_SERVICE or None
@@ -383,8 +454,8 @@ def store_write_text(dir_key, name, text):
     if drive_available():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
-        except Exception:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
+        except Exception as e:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
     return path
 
 
@@ -395,8 +466,8 @@ def store_write_bytes(dir_key, name, data):
     if drive_available():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
-        except Exception:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
+        except Exception as e:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
     return path
 
 
@@ -408,9 +479,8 @@ def store_upload_existing(dir_key, name):
     if path.exists():
         try:
             drive_upload(path, DIR_TO_DRIVE[dir_key], name)
-        except Exception:
-            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
-
+        except Exception as e:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။)")
 
 def next_version_number(stem):
     existing = sorted(ANALYSIS_DIR.glob(f"{stem}_v*_analysis.txt"), key=lambda f: f.name)
@@ -496,6 +566,7 @@ def docs_read_text(doc_id):
 
 
 DRIVE_MODE = drive_available()
+DRIVE_AUTH = drive_auth_mode()  # "oauth" | "service" | None
 
 
 # --- Gemini setup (Phase 2) ---
@@ -789,7 +860,11 @@ for group, items in NAV_GROUPS:
             st.session_state["page"] = item
             st.rerun()
 
-st.sidebar.caption("💾 Storage: Google Drive" if DRIVE_MODE else "💾 Storage: Local (PC)")
+st.sidebar.caption(
+    "💾 Storage: Google Drive (OAuth)" if DRIVE_AUTH == "oauth"
+    else "💾 Storage: Google Drive" if DRIVE_AUTH == "service"
+    else "💾 Storage: Local (PC)"
+)
 
 page = st.session_state["page"]
 
