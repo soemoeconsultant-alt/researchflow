@@ -1306,8 +1306,15 @@ section[data-testid="stSidebar"] > div {
   padding: .42rem .75rem;
   border-radius: 10px;
   font-size: .9rem;
-  justify-content: flex-start !important;
+  justify-content: flex-start;
   gap: .6rem;
+}
+/* Streamlit centers nav content in an inner full-width div INSIDE the button,
+   so justify-content on the button alone cannot move it (v3.13 lesson — the
+   button-level rule + !important still showed centered text). Target the inner
+   div too. */
+[data-testid="stSidebar"] .stButton button div {
+  justify-content: flex-start !important;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] details summary {
   padding-top: .45rem;
