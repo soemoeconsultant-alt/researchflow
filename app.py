@@ -189,7 +189,10 @@ def _load_oauth_info():
     asks the user to sign in. Returns the dict, or None."""
     try:
         o = st.secrets.get("google_oauth")
-        if isinstance(o, dict) and o.get("refresh_token"):
+        # NOTE (v3.1 fix): st.secrets sections are AttrDict, NOT plain dict,
+        # so isinstance(o, dict) is False and OAuth was silently skipped.
+        # Duck-type instead: any mapping with a refresh_token counts.
+        if o is not None and o.get("refresh_token"):
             return dict(o)
     except Exception:
         pass
