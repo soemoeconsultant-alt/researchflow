@@ -1506,6 +1506,12 @@ elif page == "Report Editor":
         st.info("Analysis မရှိသေးပါ — အရင် Market Analysis မှာ Analyze လုပ်ပါ။")
     else:
         saved_names = [f.name for f in saved]
+        # v3.2 fix: a widget's value may only be set BEFORE the widget is
+        # created in the current run. Load buttons set a plain flag and rerun;
+        # it is applied here, before the selectbox exists in this run.
+        _load_target = st.session_state.pop("editor_load_target", None)
+        if _load_target in saved_names:
+            st.session_state["editor_select"] = _load_target
         selected = st.selectbox("Analysis ရွေးပါ", saved_names, key="editor_select")
         content = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
         if looks_like_html(content):
@@ -1522,9 +1528,17 @@ elif page == "Report Editor":
                         doc_id, url = drive_create_doc(title, edited)
                         st.session_state[f"editor_doc_id_{selected}"] = doc_id
                         st.session_state[f"editor_doc_url_{selected}"] = url
+                        # v3.2 fix: fill the link field too — the text input
+                        # keeps its old value unless its own key is set here.
+                        st.session_state["editor_doc_input"] = url
                         st.success("Google Doc ရပြီ — အောက်က link နှိပ်ပြီး ပြင်ပါ.")
                     except Exception as e:
                         st.error(f"Doc ဖန်တီးမရဘူး: {e}")
+            # v3.2 fix: when the selected analysis changes, show that
+            # analysis's stored Doc link (or empty) instead of a stale one.
+            if st.session_state.get("_editor_last_selected") != selected:
+                st.session_state["_editor_last_selected"] = selected
+                st.session_state["editor_doc_input"] = st.session_state.get(f"editor_doc_url_{selected}", "")
             doc_url_default = st.session_state.get(f"editor_doc_url_{selected}", "")
             doc_input = st.text_input("Google Doc link (သို့မဟုတ် ID)", value=doc_url_default, key="editor_doc_input")
             if st.session_state.get(f"editor_doc_url_{selected}"):
@@ -1561,7 +1575,10 @@ elif page == "Report Editor":
                     st.write(f"- {v.name}")
                 with col_l:
                     if st.button("Load", key=f"ed_load_{v.name}"):
-                        st.session_state["editor_select"] = v.name
+                        # v3.2 fix: do NOT write the selectbox key here — the
+                        # selectbox already exists in this run (crash). Set a
+                        # flag; the top of this page applies it, then reruns.
+                        st.session_state["editor_load_target"] = v.name
                         st.rerun()
         else:
             st.caption("Version အသစ် မရှိသေးဘူး။")
