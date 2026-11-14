@@ -1306,7 +1306,7 @@ section[data-testid="stSidebar"] > div {
   padding: .42rem .75rem;
   border-radius: 10px;
   font-size: .9rem;
-  justify-content: flex-start;
+  justify-content: flex-start !important;
   gap: .6rem;
 }
 [data-testid="stSidebar"] [data-testid="stExpander"] details summary {
