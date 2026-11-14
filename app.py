@@ -18,8 +18,8 @@ from docx import Document
 from docx.shared import RGBColor as DocxRGBColor
 
 st.set_page_config(
-    page_title="Market Research AI",
-    page_icon="📊",
+    page_title="ResearchFlow | AI Market Research",
+    page_icon="🔮",
     layout="wide"
 )
 
@@ -1012,29 +1012,145 @@ _MY_EMAIL = login_gate()
 # --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
 CUSTOM_CSS = """
 <style>
-[data-testid="stSidebar"] { background-color: #10283B; }
-[data-testid="stSidebar"] h1 { color: #FFFFFF; }
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #FFFFFF; }
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #B9C6D3; }
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #FFFFFF; }
-[data-testid="stSidebar"] button { background-color: rgba(255,255,255,0.08); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.12); }
-[data-testid="stSidebar"] button:hover { background-color: rgba(255,255,255,0.18); color: #FFFFFF; }
-[data-testid="stSidebar"] button p { color: #FFFFFF; }
-[data-testid="stSidebar"] [data-testid="stExpander"] { background-color: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); }
-[data-testid="stSidebar"] [data-testid="stExpander"] p { color: #FFFFFF; }
-[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #E6EAF0; border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 4px rgba(16,40,59,0.08); }
-.rf-hero { background: linear-gradient(120deg, #E8F1FA 0%, #D6E9FB 55%, #CDEFEA 100%); border-radius: 16px; padding: 28px 32px; margin-bottom: 8px; }
-.rf-hero h1 { color: #10283B; font-size: 40px; margin: 0 0 4px 0; }
-.rf-hero h1 span { color: #0070C0; }
-.rf-hero p { color: #33475B; font-size: 17px; margin: 0; }
-.rf-step { background-color: #FFFFFF; border: 1px solid #E6EAF0; border-radius: 12px; padding: 16px 8px; text-align: center; box-shadow: 0 1px 4px rgba(16,40,59,0.06); min-height: 150px; }
-.rf-step .ico { font-size: 30px; }
-.rf-step .nm { font-weight: 700; color: #10283B; font-size: 14px; }
-.rf-step .ds { color: #5A6B7C; font-size: 12px; }
-.rf-step .st { font-size: 13px; font-weight: 600; }
-.rf-ring { width: 120px; height: 120px; border-radius: 50%; margin: 8px auto; background: conic-gradient(#0070C0 calc(var(--p)*1%), #E6EAF0 0); display: flex; align-items: center; justify-content: center; position: relative; }
-.rf-ring::before { content: ""; position: absolute; width: 88px; height: 88px; border-radius: 50%; background: #FFFFFF; }
-.rf-ring span { position: relative; z-index: 1; font-size: 24px; font-weight: 700; color: #10283B; }
+:root {
+  --rf-navy: #101638;
+  --rf-navy-2: #171f4d;
+  --rf-blue: #3978F6;
+  --rf-purple: #7955E8;
+  --rf-cyan: #26D5E8;
+  --rf-text: #18213D;
+  --rf-muted: #74809B;
+  --rf-border: #E7EAF4;
+  --rf-surface: #FFFFFF;
+}
+
+/* App canvas */
+.stApp {
+  background: radial-gradient(ellipse at 85% 0%, rgba(121,85,232,.07), transparent 32%),
+              radial-gradient(ellipse at 5% 12%, rgba(57,120,246,.06), transparent 28%),
+              #F6F7FC;
+  color: var(--rf-text);
+}
+.block-container { padding-top: 1.8rem; padding-bottom: 3rem; max-width: 1600px; }
+
+/* Dark AI sidebar */
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #111735 0%, #171D49 55%, #20205A 100%);
+  border-right: 1px solid rgba(255,255,255,.08);
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: #F5F7FF; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #AAB4D2; }
+[data-testid="stSidebar"] button {
+  background: rgba(255,255,255,.055); color: #F5F7FF;
+  border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
+  transition: all .18s ease;
+}
+[data-testid="stSidebar"] button p { color: #F5F7FF; }
+[data-testid="stSidebar"] button:hover {
+  background: linear-gradient(100deg, rgba(57,120,246,.32), rgba(121,85,232,.30));
+  border-color: rgba(115,153,255,.55); color: #FFFFFF;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] p { color: #F5F7FF; }
+[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
+
+/* Typography and section headings */
+h1, h2, h3 { color: #172044; letter-spacing: -.025em; }
+h1 { font-weight: 800; }
+h2, h3 { font-weight: 700; }
+[data-testid="stCaptionContainer"] { color: var(--rf-muted); }
+
+/* Hero banner */
+.rf-hero {
+  position: relative; overflow: hidden;
+  background: linear-gradient(115deg, #11183D 0%, #202A70 48%, #5139A8 100%);
+  border: 1px solid rgba(132,151,255,.24); border-radius: 22px;
+  padding: 34px 38px; margin: 4px 0 18px;
+  box-shadow: 0 16px 38px rgba(30,39,105,.18);
+}
+.rf-hero:after {
+  content: ""; position: absolute; width: 300px; height: 300px; right: -70px; top: -170px;
+  border-radius: 50%; background: radial-gradient(circle, rgba(38,213,232,.34), rgba(38,213,232,0) 68%);
+  pointer-events: none;
+}
+.rf-hero h1 { color: #FFFFFF; font-size: clamp(30px, 3.4vw, 44px); margin: 0 0 8px; font-weight: 800; }
+.rf-hero h1 span { color: #70E4F2; }
+.rf-hero p { color: #D7DDFB; font-size: 16px; margin: 0; max-width: 760px; }
+
+/* Metric cards */
+[data-testid="stMetric"] {
+  position: relative; overflow: hidden; background: #FFFFFF;
+  border: 1px solid var(--rf-border); border-radius: 16px;
+  padding: 17px 18px; box-shadow: 0 5px 18px rgba(28,39,87,.055);
+}
+[data-testid="stMetric"]:before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, #3978F6, #7955E8, #26D5E8);
+}
+[data-testid="stMetricLabel"] p { color: #7883A0; font-weight: 600; }
+[data-testid="stMetricValue"] { color: #18234B; font-weight: 800; }
+
+/* Workflow cards and progress ring */
+.rf-step {
+  background: linear-gradient(160deg, #FFFFFF 0%, #F8F9FF 100%);
+  border: 1px solid #E5E9F7; border-radius: 15px; padding: 17px 9px;
+  text-align: center; min-height: 158px;
+  box-shadow: 0 5px 16px rgba(35,48,105,.055);
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+.rf-step:hover { transform: translateY(-3px); border-color: #B9C8FF; box-shadow: 0 10px 24px rgba(57,82,180,.12); }
+.rf-step .ico { font-size: 29px; margin-bottom: 5px; }
+.rf-step .nm { font-weight: 750; color: #202A58; font-size: 13px; }
+.rf-step .ds { color: #7B86A3; font-size: 11px; margin-top: 5px; }
+.rf-step .st { color: #5369C8; font-size: 12px; font-weight: 700; margin-top: 8px; }
+.rf-ring {
+  width: 126px; height: 126px; border-radius: 50%; margin: 12px auto;
+  background: conic-gradient(from 220deg, #3978F6 calc(var(--p)*1%), #7955E8 0, #E9ECF7 0);
+  display: flex; align-items: center; justify-content: center; position: relative;
+  box-shadow: 0 8px 22px rgba(69,86,190,.12);
+}
+.rf-ring:before { content: ""; position: absolute; width: 94px; height: 94px; border-radius: 50%; background: #FFFFFF; }
+.rf-ring span { position: relative; z-index: 1; font-size: 25px; font-weight: 800; color: #202A58; }
+
+/* Buttons and form controls */
+.stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
+  border-radius: 11px; border: 1px solid #DCE3F5; font-weight: 650;
+  transition: all .18s ease; box-shadow: 0 2px 7px rgba(35,48,105,.045);
+}
+.stButton > button[kind="primary"] {
+  color: #FFFFFF; border: 0;
+  background: linear-gradient(105deg, #3978F6 0%, #6855E8 100%);
+  box-shadow: 0 6px 16px rgba(79,91,214,.22);
+}
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: #8CA7F7; transform: translateY(-1px); }
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stNumberInput"] input {
+  border-radius: 10px; border-color: #DDE3F1; background: #FFFFFF;
+}
+[data-testid="stFileUploader"] section {
+  border: 1.5px dashed #B9C7EF; border-radius: 15px; background: #FAFBFF;
+}
+
+/* Tables, tabs, expanders, alerts */
+[data-testid="stDataFrame"] { border: 1px solid var(--rf-border); border-radius: 13px; overflow: hidden; }
+[data-testid="stTabs"] button[role="tab"] { font-weight: 650; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: #4B61D1; }
+[data-testid="stExpander"] { border: 1px solid var(--rf-border); border-radius: 13px; background: #FFFFFF; }
+[data-testid="stAlert"] { border-radius: 12px; }
+hr { border-color: #E5E9F3; }
+
+@media (max-width: 900px) {
+  .block-container { padding-left: 1rem; padding-right: 1rem; }
+  .rf-hero { padding: 25px 22px; }
+  .rf-step { min-height: 140px; }
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -1186,9 +1302,9 @@ if DRIVE_MODE and not st.session_state.get("drive_synced"):
 if page == "Dashboard":
 
     st.markdown(
-        '<div class="rf-hero"><h1>Welcome to <span>ResearchFlow</span></h1>'
+        '<div class="rf-hero"><h1>Welcome to <span>ResearchFlow AI</span></h1>'
         "<p>Transform your interview data into actionable insights with our "
-        "professional market research platform.</p></div>",
+        "Turn interview data into powerful insights with AI-driven market research.</p></div>",
         unsafe_allow_html=True,
     )
     if st.button("▶ Start New Project", key="hero_new_project"):
