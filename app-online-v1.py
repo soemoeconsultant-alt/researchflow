@@ -1,0 +1,1474 @@
+import os
+import re
+import time
+import json
+import hashlib
+import shutil
+import subprocess
+from html.parser import HTMLParser
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+from google import genai
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from docx import Document
+from docx.shared import RGBColor as DocxRGBColor
+
+st.set_page_config(
+    page_title="Market Research AI",
+    page_icon="📊",
+    layout="wide"
+)
+
+APP_DIR = Path(__file__).resolve().parent
+# Localhost layout: app.py lives in <BASE>/website/, data in <BASE>/.
+# Online layout: app.py at the repo root, data in the repo root.
+if (APP_DIR.parent / "audio").is_dir() or (APP_DIR.parent / "output").is_dir():
+    BASE_DIR = APP_DIR.parent
+else:
+    BASE_DIR = APP_DIR
+AUDIO_DIR = BASE_DIR / "audio"
+OUTPUT_DIR = BASE_DIR / "output"
+MERGED_DIR = OUTPUT_DIR / "merged"
+ANALYSIS_DIR = BASE_DIR / "analysis"
+REPORTS_DIR = BASE_DIR / "reports"
+NOTES_DIR = BASE_DIR / "notes"
+
+AUDIO_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+MERGED_DIR.mkdir(exist_ok=True)
+ANALYSIS_DIR.mkdir(exist_ok=True)
+REPORTS_DIR.mkdir(exist_ok=True)
+NOTES_DIR.mkdir(exist_ok=True)
+
+
+def get_transcript_files():
+    files = [f for f in OUTPUT_DIR.glob("*.txt") if f.name != "failed_files.txt"]
+    return sorted(files, key=lambda f: f.name)
+
+
+# --- Merge chunks into full transcripts ---
+def chunk_group_key(name):
+    stem = name[:-4] if name.endswith(".txt") else name
+    stem = re.sub(r"\(\d+\)$", "", stem)
+    return stem
+
+
+def chunk_order(name):
+    m = re.search(r"\((\d+)\)\.txt$", name)
+    return int(m.group(1)) if m else 1
+
+
+def get_chunk_groups():
+    groups = {}
+    for f in get_transcript_files():
+        if f.name.endswith("_full.txt"):
+            continue
+        groups.setdefault(chunk_group_key(f.name), []).append(f)
+    for key in groups:
+        groups[key] = sorted(groups[key], key=lambda f: chunk_order(f.name))
+    return groups
+
+
+def get_full_transcripts():
+    """Merged full files + single-chunk files.
+    Returns (full_files, pending_groups)."""
+    groups = get_chunk_groups()
+    fulls = []
+    pending = []
+    for key, files in sorted(groups.items()):
+        merged = MERGED_DIR / f"{key}_full.txt"
+        if merged.exists():
+            fulls.append(merged)
+        elif len(files) == 1:
+            fulls.append(files[0])
+        else:
+            pending.append((key, len(files)))
+    return fulls, pending
+
+
+def short_ids_for(names):
+    ids = []
+    for name in names:
+        stem = name[:-4] if name.endswith(".txt") else name
+        stem = stem.replace("_full", "").replace("interview_", "")
+        ids.append(stem)
+    return ids
+
+
+# --- Storage: local folders, or Google Drive when credentials exist ---
+# Drive is the source of truth when a service account is configured:
+#   ResearchFlow / Default / {audio, transcripts, notes, reports}
+# Local folders are always the working cache, so every page works the same
+# with or without Drive. Without credentials the app runs on localhost
+# exactly as before.
+DRIVE_SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents",
+]
+DRIVE_ROOT_NAME = "ResearchFlow"
+DRIVE_PROJECT = "Default"
+
+# dir_key -> Drive folder name (analysis txt + plan txt live in "reports",
+# merged full transcripts live in "transcripts" alongside chunk txt).
+DIR_TO_DRIVE = {
+    "audio": "audio",
+    "transcripts": "transcripts",
+    "merged": "transcripts",
+    "analysis": "reports",
+    "reports": "reports",
+    "notes": "notes",
+}
+LOCAL_DIR = {
+    "audio": AUDIO_DIR,
+    "transcripts": OUTPUT_DIR,
+    "merged": MERGED_DIR,
+    "analysis": ANALYSIS_DIR,
+    "reports": REPORTS_DIR,
+    "notes": NOTES_DIR,
+}
+
+_SA_INFO = None
+_SA_TRIED = False
+_DRIVE_SERVICE = None
+_DOCS_SERVICE = None
+_FOLDER_IDS = {}
+
+
+def _load_sa_info():
+    """Service-account credentials, from (in order):
+    st.secrets["gcp_service_account"] (dict), env GOOGLE_SERVICE_ACCOUNT_JSON
+    (JSON string), or drive-service-account.json next to app.py."""
+    try:
+        sa = st.secrets.get("gcp_service_account")
+        if sa:
+            return dict(sa)
+    except Exception:
+        pass
+    try:
+        raw_secret = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if isinstance(raw_secret, dict):
+            return dict(raw_secret)
+        if raw_secret:
+            return json.loads(raw_secret)
+    except Exception:
+        pass
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    p = APP_DIR / "drive-service-account.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return None
+
+
+def drive_available():
+    """True when Drive credentials exist AND the Google API packages are installed."""
+    global _SA_INFO, _SA_TRIED
+    if not _SA_TRIED:
+        _SA_TRIED = True
+        _SA_INFO = _load_sa_info()
+    if not _SA_INFO:
+        return False
+    try:
+        import googleapiclient.discovery  # noqa: F401
+        from google.oauth2 import service_account  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def docs_available():
+    return drive_available()
+
+
+def _sa_credentials():
+    if not drive_available():
+        return None
+    try:
+        from google.oauth2 import service_account
+        return service_account.Credentials.from_service_account_info(_SA_INFO, scopes=DRIVE_SCOPES)
+    except Exception:
+        return None
+
+
+def _drive_service():
+    global _DRIVE_SERVICE
+    if _DRIVE_SERVICE is None:
+        try:
+            from googleapiclient.discovery import build
+            _DRIVE_SERVICE = build("drive", "v3", credentials=_sa_credentials())
+        except Exception:
+            _DRIVE_SERVICE = False
+    return _DRIVE_SERVICE or None
+
+
+def _docs_service():
+    global _DOCS_SERVICE
+    if _DOCS_SERVICE is None:
+        try:
+            from googleapiclient.discovery import build
+            _DOCS_SERVICE = build("docs", "v1", credentials=_sa_credentials())
+        except Exception:
+            _DOCS_SERVICE = False
+    return _DOCS_SERVICE or None
+
+
+def _drive_find_folder(name, parent_id):
+    svc = _drive_service()
+    q = (
+        f"name = '{name}' and mimeType = 'application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents and trashed = false"
+    )
+    res = svc.files().list(q=q, fields="files(id,name)", pageSize=5).execute()
+    files = res.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def _drive_ensure_folder(name, parent_id):
+    fid = _drive_find_folder(name, parent_id)
+    if fid:
+        return fid
+    svc = _drive_service()
+    meta = {"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]}
+    return svc.files().create(body=meta, fields="id").execute()["id"]
+
+
+def _drive_folder_id(folder_name):
+    """Folder id for ResearchFlow / Default / <folder_name> (created if missing)."""
+    if folder_name in _FOLDER_IDS:
+        return _FOLDER_IDS[folder_name]
+    root = _drive_ensure_folder(DRIVE_ROOT_NAME, "root")
+    proj = _drive_ensure_folder(DRIVE_PROJECT, root)
+    fid = _drive_ensure_folder(folder_name, proj)
+    _FOLDER_IDS[folder_name] = fid
+    return fid
+
+
+def drive_list_files(folder_name):
+    """List non-trashed files directly inside a Drive folder."""
+    svc = _drive_service()
+    fid = _drive_folder_id(folder_name)
+    items, token = [], None
+    while True:
+        res = svc.files().list(
+            q=f"'{fid}' in parents and trashed = false",
+            fields="files(id,name,mimeType,modifiedTime),nextPageToken",
+            pageSize=100, pageToken=token,
+        ).execute()
+        items += res.get("files", [])
+        token = res.get("nextPageToken")
+        if not token:
+            break
+    return items
+
+
+def _drive_find_file(folder_name, name):
+    for f in drive_list_files(folder_name):
+        if f["name"] == name and f.get("mimeType") != "application/vnd.google-apps.folder":
+            return f
+    return None
+
+
+def drive_download(file_id, dest_path):
+    from googleapiclient.http import MediaIoBaseDownload
+    svc = _drive_service()
+    req = svc.files().get_media(fileId=file_id)
+    with open(dest_path, "wb") as fh:
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+
+def drive_upload(local_path, folder_name, name=None):
+    """Upload a local file to a Drive folder (updates it if the name exists). Returns file id."""
+    from googleapiclient.http import MediaFileUpload
+    svc = _drive_service()
+    name = name or Path(local_path).name
+    media = MediaFileUpload(str(local_path), resumable=True)
+    existing = _drive_find_file(folder_name, name)
+    if existing:
+        return svc.files().update(fileId=existing["id"], media_body=media, fields="id").execute()["id"]
+    meta = {"name": name, "parents": [_drive_folder_id(folder_name)]}
+    return svc.files().create(body=meta, media_body=media, fields="id").execute()["id"]
+
+
+def drive_move_to_originals(name):
+    """Move an audio file in Drive to audio/originals (kept safe, out of the Batch queue)."""
+    if not drive_available():
+        return
+    try:
+        svc = _drive_service()
+        audio_id = _drive_folder_id("audio")
+        orig_id = _drive_ensure_folder("originals", audio_id)
+        f = _drive_find_file("audio", name)
+        if f:
+            svc.files().update(fileId=f["id"], addParents=orig_id, removeParents=audio_id, fields="id").execute()
+    except Exception:
+        pass
+
+
+def _drive_name_belongs(dir_key, name):
+    """Which local dir a file from a Drive folder belongs to."""
+    if dir_key == "merged":
+        return name.endswith("_full.txt")
+    if dir_key == "transcripts":
+        return name.endswith(".txt") and not name.endswith("_full.txt")
+    if dir_key == "analysis":
+        return name.endswith(".txt")
+    if dir_key == "reports":
+        return name.endswith((".pptx", ".docx"))
+    return True
+
+
+def sync_from_drive():
+    """Drive is the source of truth: download Drive files into the local working folders.
+    Text files are always refreshed from Drive; audio is downloaded only when missing
+    or when the Drive copy is newer (audio files are big)."""
+    if not drive_available():
+        return
+    import datetime
+    for dir_key, drive_folder in DIR_TO_DRIVE.items():
+        local_dir = LOCAL_DIR[dir_key]
+        try:
+            items = drive_list_files(drive_folder)
+        except Exception:
+            continue
+        for f in items:
+            name = f["name"]
+            if f.get("mimeType") == "application/vnd.google-apps.folder":
+                continue
+            if not _drive_name_belongs(dir_key, name):
+                continue
+            dest = local_dir / name
+            try:
+                if name.endswith((".mp3", ".wav", ".m4a")) and dest.exists():
+                    dt = f.get("modifiedTime", "")
+                    if dt:
+                        drv = datetime.datetime.fromisoformat(dt.replace("Z", "+00:00")).timestamp()
+                        if drv <= dest.stat().st_mtime:
+                            continue
+                drive_download(f["id"], dest)
+            except Exception:
+                continue
+
+
+def store_write_text(dir_key, name, text):
+    """Write a text file locally, then upload it to Drive when Drive mode is on."""
+    path = LOCAL_DIR[dir_key] / name
+    path.write_text(text, encoding="utf-8")
+    if drive_available():
+        try:
+            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+        except Exception:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
+    return path
+
+
+def store_write_bytes(dir_key, name, data):
+    """Write a binary file locally, then upload it to Drive when Drive mode is on."""
+    path = LOCAL_DIR[dir_key] / name
+    path.write_bytes(data)
+    if drive_available():
+        try:
+            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+        except Exception:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
+    return path
+
+
+def store_upload_existing(dir_key, name):
+    """Upload a local file created by another tool (ffmpeg split, PPTX/DOCX export)."""
+    if not drive_available():
+        return
+    path = LOCAL_DIR[dir_key] / name
+    if path.exists():
+        try:
+            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+        except Exception:
+            st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — local မှာ သိမ်းပြီးပြီ။")
+
+
+def next_version_number(stem):
+    existing = sorted(ANALYSIS_DIR.glob(f"{stem}_v*_analysis.txt"), key=lambda f: f.name)
+    nums = []
+    for f in existing:
+        m = re.search(r"_v(\d+)_analysis\.txt$", f.name)
+        if m:
+            nums.append(int(m.group(1)))
+    return (max(nums) + 1) if nums else 1
+
+
+# --- Google Docs (Report Editor) ---
+def _doc_id_from_input(value):
+    value = (value or "").strip()
+    if not value:
+        return None
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", value)
+    return m.group(1) if m else value
+
+
+def drive_create_doc(title, text):
+    """Create a Google Doc in the Drive reports folder from analysis text.
+    '## ' lines become headings. Returns (doc_id, url)."""
+    svc = _drive_service()
+    docs = _docs_service()
+    meta = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [_drive_folder_id("reports")],
+    }
+    doc_id = svc.files().create(body=meta, fields="id").execute()["id"]
+    lines = text.splitlines() or [""]
+    plain_parts = []
+    headings = []
+    idx = 1
+    for line in lines:
+        if line.startswith("## "):
+            clean = line[3:].strip()
+            start = idx
+            plain_parts.append(clean)
+            idx += len(clean)
+            if clean:
+                headings.append((start, idx))
+        else:
+            plain_parts.append(line)
+            idx += len(line)
+        plain_parts.append("\n")
+        idx += 1
+    plain = "".join(plain_parts) or " "
+    requests = [{"insertText": {"location": {"index": 1}, "text": plain}}]
+    for start, end in headings:
+        requests.append({
+            "updateParagraphStyle": {
+                "range": {"startIndex": start, "endIndex": end},
+                "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                "fields": "namedStyleType",
+            }
+        })
+    docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+    return doc_id, f"https://docs.google.com/document/d/{doc_id}/edit"
+
+
+def docs_read_text(doc_id):
+    """Read a Google Doc's text. Heading paragraphs come back as '## ' lines,
+    so the analysis structure survives the round trip."""
+    docs = _docs_service()
+    doc = docs.documents().get(documentId=doc_id).execute()
+    out = []
+    for el in doc.get("body", {}).get("content", []):
+        para = el.get("paragraph")
+        if not para:
+            continue
+        style = para.get("paragraphStyle", {}).get("namedStyleType", "")
+        text = "".join(e.get("textRun", {}).get("content", "") for e in para.get("elements", []))
+        text = text.rstrip("\n")
+        if not text.strip():
+            continue
+        if style in ("HEADING_1", "HEADING_2", "TITLE"):
+            out.append("## " + text.strip())
+        else:
+            out.append(text)
+    return "\n".join(out).strip() + "\n"
+
+
+DRIVE_MODE = drive_available()
+
+
+# --- Gemini setup (Phase 2) ---
+MODELS = ["gemini-3.5-flash", "gemini-3.8-flash"]
+
+
+def get_gemini_client():
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("GEMINI_API_KEY")
+        except Exception:
+            api_key = None
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
+
+def ask_gemini(prompt):
+    """Try each model in order; return (text, model_used)."""
+    client = get_gemini_client()
+    if client is None:
+        return None, "GEMINI_API_KEY not set"
+    last_error = None
+    for model in MODELS:
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            return response.text, model
+        except Exception as e:
+            last_error = e
+    return None, f"All models failed: {last_error}"
+
+
+def is_rate_limit_error(e):
+    error_text = str(e).lower()
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(e, "code", None)
+    if status is None:
+        status = getattr(e, "status_code", None)
+    return (
+        status == 429
+        or "429" in error_text
+        or "resource_exhausted" in error_text
+        or "too many requests" in error_text
+    )
+
+
+def transcribe_audio(audio_path):
+    """Upload audio to Gemini and transcribe with generate_content
+    (same call as the working analysis). Returns (text, model_used)."""
+    client = get_gemini_client()
+    if client is None:
+        return None, "GEMINI_API_KEY not set"
+    try:
+        audio_file = client.files.upload(file=str(audio_path))
+    except Exception as e:
+        return None, f"Upload failed: {e}"
+    prompt = (
+        "Transcribe this audio in Burmese. Separate speakers clearly: "
+        "Speaker 1 = Respondent, Speaker 2 = Moderator. "
+        "Do not summarize. Preserve the original spoken meaning. "
+        "Medicine, brand, and disease names in English. "
+        "Mark unclear parts as [unclear]."
+    )
+    last_error = None
+    for model in MODELS:
+        try:
+            result = client.models.generate_content(
+                model=model,
+                contents=[prompt, audio_file],
+            )
+            return result.text, model
+        except Exception as e:
+            last_error = e
+            if is_rate_limit_error(e):
+                return None, "429 — quota ပြည့်နေတယ်, နောက်မှ ပြန်လုပ်"
+    return None, f"All models failed: {last_error}"
+
+
+def audio_duration(path):
+    """Duration in seconds via ffprobe, or None if unavailable."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        r = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return None
+
+
+def split_audio(src_path, chunk_min):
+    """Split a long audio file into chunk_min-minute pieces named base(N).ext.
+    Returns (chunk_paths, error). Uses ffmpeg; WAV fallback via the wave module."""
+    import contextlib
+    import wave
+    base = src_path.stem
+    ext = src_path.suffix.lower().lstrip(".")
+    chunk_sec = chunk_min * 60
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        out_pattern = str(AUDIO_DIR / f"{base}(%d).{ext}")
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(src_path), "-f", "segment",
+             "-segment_time", str(chunk_sec), "-c", "copy",
+             "-segment_start_number", "1", out_pattern],
+            capture_output=True, text=True, timeout=600,
+        )
+        if r.returncode != 0:
+            return None, r.stderr[-500:] or "ffmpeg failed"
+        chunks = sorted(
+            AUDIO_DIR.glob(f"{base}(*).{ext}"),
+            key=lambda f: chunk_order(f.name),
+        )
+        return chunks, None
+    if ext == "wav":
+        with contextlib.closing(wave.open(str(src_path), "rb")) as w:
+            params = w.getparams()
+            framerate = w.getframerate()
+            n_frames = w.getnframes()
+            chunk_frames = chunk_sec * framerate
+            chunks = []
+            idx = 1
+            while (idx - 1) * chunk_frames < n_frames:
+                w.setpos((idx - 1) * chunk_frames)
+                frames = w.readframes(min(chunk_frames, n_frames - (idx - 1) * chunk_frames))
+                out = AUDIO_DIR / f"{base}({idx}).wav"
+                with contextlib.closing(wave.open(str(out), "wb")) as o:
+                    o.setparams(params)
+                    o.writeframes(frames)
+                chunks.append(out)
+                idx += 1
+        return chunks, None
+    return None, "ffmpeg မရှိသေးဘူး — mp3/m4a ခွဲဖို့ ffmpeg လိုတယ်"
+
+
+def plan_based_prompt(plan_text, combined_text, count):
+    base = (
+        "You are a senior market research analyst. Follow this approved analysis plan exactly. "
+        "Use ONLY information from the transcripts. Do not invent findings, numbers, or quotes. "
+        "Write in English. Medicine, brand, and disease names in English. Findings in short paragraphs.\n\n"
+        "Approved analysis plan:\n" + plan_text + "\n\n"
+    )
+    if count > 1:
+        base += (
+            f"Analyze these {count} interview transcripts together, following the plan. "
+            "For each theme, say how many respondents mentioned it (n=).\n\nTranscripts:\n" + combined_text
+        )
+    else:
+        base += "Transcript:\n" + combined_text
+    return base
+
+
+# --- PPTX report (Phase 3) ---
+TEMPLATES = {
+    "Business Clean": {"bg": "FFFFFF", "title": "0070C0", "body": "262626"},
+    "Topline": {"bg": "FFFFFF", "title": "10283B", "body": "262626"},
+    "Dark Navy": {"bg": "10283B", "title": "FFFFFF", "body": "FFFFFF"},
+}
+
+
+def parse_sections(text):
+    sections = []
+    current = None
+    for line in text.splitlines():
+        if line.startswith("## "):
+            current = {"title": line[3:].strip(), "lines": []}
+            sections.append(current)
+        elif current is not None:
+            line = line.strip()
+            if line:
+                if line.startswith(("- ", "* ")):
+                    line = line[2:]
+                current["lines"].append(line)
+    return sections
+
+
+class _HtmlToText(HTMLParser):
+    """Convert HTML back to plain text with ## headings (for versions saved earlier as HTML)."""
+    def __init__(self):
+        super().__init__()
+        self.out = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("h1", "h2"):
+            self.out.append("\n## ")
+        elif tag == "li":
+            self.out.append("\n- ")
+        elif tag == "p":
+            self.out.append("\n")
+        elif tag == "br":
+            self.out.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("p", "h1", "h2"):
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        if data.strip():
+            self.out.append(data)
+
+
+def html_to_text(html_text):
+    parser = _HtmlToText()
+    parser.feed(html_text)
+    text = "".join(parser.out)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip() + "\n"
+
+
+def looks_like_html(text):
+    return "<p" in text or "<h1" in text or "<h2" in text or "<li" in text
+
+
+def _set_bg(slide, hex_color):
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor.from_string(hex_color)
+
+
+def _color_runs(paragraphs, hex_color):
+    for para in paragraphs:
+        for run in para.runs:
+            run.font.color.rgb = RGBColor.from_string(hex_color)
+
+
+def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Clean"):
+    t = TEMPLATES.get(template, TEMPLATES["Business Clean"])
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    _set_bg(slide, t["bg"])
+    slide.shapes.title.text = title_text
+    _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
+    slide.placeholders[1].text = "Market Research AI — ResearchFlow"
+    _color_runs(slide.placeholders[1].text_frame.paragraphs, t["body"])
+    for section in parse_sections(analysis_text):
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        _set_bg(slide, t["bg"])
+        slide.shapes.title.text = section["title"]
+        _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
+        tf = slide.placeholders[1].text_frame
+        tf.clear()
+        for i, line in enumerate(section["lines"]):
+            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            p.text = line
+            p.level = 0
+            for run in p.runs:
+                run.font.color.rgb = RGBColor.from_string(t["body"])
+    prs.save(out_path)
+    return out_path
+
+
+def analysis_to_docx(analysis_text, title_text, out_path):
+    doc = Document()
+    doc.add_heading(title_text, level=0)
+    doc.add_paragraph("Market Research AI — ResearchFlow")
+    for section in parse_sections(analysis_text):
+        heading = doc.add_heading(section["title"], level=1)
+        for run in heading.runs:
+            run.font.color.rgb = DocxRGBColor(0x00, 0x70, 0xC0)
+        for line in section["lines"]:
+            doc.add_paragraph(line)
+    doc.save(out_path)
+    return out_path
+
+
+NAV_GROUPS = [
+    ("🏠 Overview", ["Dashboard"]),
+    ("1 · Data Collection", ["Audio Transcription", "Batch Processing", "FGD Recording", "Upload & Split"]),
+    ("2 · Transcripts", ["Transcripts"]),
+    ("3 · Analysis", ["Market Analysis", "Quant Analysis"]),
+    ("4 · Reports", ["Reports", "Report Editor"]),
+]
+
+if "page" not in st.session_state:
+    st.session_state["page"] = "Dashboard"
+
+st.sidebar.title("📊 Market Research AI")
+st.sidebar.caption("Professional Research Platform")
+
+for group, items in NAV_GROUPS:
+    st.sidebar.markdown(f"**{group}**")
+    for item in items:
+        label = ("▶ " if st.session_state["page"] == item else "") + item
+        if st.sidebar.button(label, key=f"nav_{item}", use_container_width=True):
+            st.session_state["page"] = item
+            st.rerun()
+
+st.sidebar.caption("💾 Storage: Google Drive" if DRIVE_MODE else "💾 Storage: Local (PC)")
+
+page = st.session_state["page"]
+
+# Drive is the source of truth: sync once per session, then pages work on local files.
+if DRIVE_MODE and not st.session_state.get("drive_synced"):
+    with st.spinner("Google Drive နဲ့ sync လုပ်နေပါတယ်..."):
+        sync_from_drive()
+    st.session_state["drive_synced"] = True
+
+if page == "Dashboard":
+
+    st.title("📊 Market Research AI")
+    st.subheader("Myanmar Interview Research Platform")
+
+    st.write(
+        "မြန်မာ Interview အသံဖိုင်များကို "
+        "စာသားပြောင်းခြင်း၊ ခွဲခြမ်းစိတ်ဖြာခြင်းနှင့် "
+        "Research Report ထုတ်လုပ်ခြင်းတို့ကို "
+        "တစ်နေရာတည်းတွင် စီမံနိုင်ပါသည်။"
+    )
+
+    st.divider()
+
+    audio_files = list(AUDIO_DIR.glob("*"))
+    transcript_files = get_transcript_files()
+    report_files = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Audio Files", len(audio_files))
+    col2.metric("Transcripts", len(transcript_files))
+    col3.metric("Research Reports", len(report_files))
+
+    st.divider()
+
+    st.subheader("🚀 Research Workflow")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.info("🎙️ Audio Transcription")
+        st.write("Interview အသံဖိုင်များကို စာသားပြောင်းရန်။")
+
+        st.info("📁 Batch Processing")
+        st.write("Audio ဖိုင်အများအပြားကို စီမံရန်။")
+
+    with col2:
+        st.info("📝 Transcript Management")
+        st.write("Transcript ဖိုင်များကို စီမံရန်။")
+
+        st.info("📊 Market Analysis")
+        st.write("Customer Needs နှင့် Pain Points ရှာဖွေရန်။")
+
+elif page == "Audio Transcription":
+    st.title("🎙️ Audio Transcription")
+
+    uploaded = st.file_uploader("Audio file တင်ပါ (mp3 / wav / m4a)", type=["mp3", "wav", "m4a"])
+    audio_path = None
+    if uploaded is not None:
+        audio_path = AUDIO_DIR / uploaded.name
+        store_write_bytes("audio", uploaded.name, uploaded.getbuffer())
+        st.caption(f"Saved: {uploaded.name}")
+    else:
+        existing = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
+        if existing:
+            audio_names = [f.name for f in existing]
+            audio_selected = st.selectbox("ရှိပြီးသား audio ရွေးပါ", audio_names)
+            audio_path = AUDIO_DIR / audio_selected
+        else:
+            st.info("Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။")
+
+    if audio_path is not None and st.button("Transcribe"):
+        with st.spinner("Transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
+            text, model = transcribe_audio(audio_path)
+        if text:
+            out_file = store_write_text("transcripts", audio_path.stem + ".txt", text)
+            st.success(f"Done — model: {model}")
+            st.caption(f"Saved: {out_file.name} — Transcripts page မှာ ပြန်ဖွင့်လို့ရတယ်။")
+        else:
+            st.error(f"Failed: {model}")
+
+elif page == "Batch Processing":
+    st.title("📁 Batch Processing")
+
+    audio_files = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
+    if not audio_files:
+        st.info("Audio file မရှိသေးပါ — Audio Transcription page မှာ upload လုပ်ပါ။")
+    else:
+        pending = []
+        done = []
+        for f in audio_files:
+            if (OUTPUT_DIR / (f.stem + ".txt")).exists():
+                done.append(f.name)
+            else:
+                pending.append(f.name)
+        st.write(f"စုစုပေါင်း: {len(audio_files)} | ပြီးပြီ: {len(done)} | ကျန်သေးတယ်: {len(pending)}")
+        if pending:
+            st.write("ကျန်တဲ့ file တွေ:")
+            for name in pending:
+                st.write(f"- {name}")
+        if pending and st.button("Transcribe next 5"):
+            progress = st.progress(0)
+            batch = pending[:5]
+            for i, name in enumerate(batch):
+                audio_path = AUDIO_DIR / name
+                with st.spinner(f"Transcribing {name}... ({i+1}/{len(batch)})"):
+                    text, model = transcribe_audio(audio_path)
+                if text:
+                    store_write_text("transcripts", audio_path.stem + ".txt", text)
+                    st.success(f"Done — {name} ({model})")
+                else:
+                    st.error(f"Failed — {name}: {model}")
+                    if "429" in model:
+                        st.warning("429 — quota ပြည့်နေတယ်, batch ရပ်လိုက်ပြီ။ နောက်မှ ပြန်လုပ်။")
+                        break
+                progress.progress((i + 1) / len(batch))
+                if i < len(batch) - 1:
+                    time.sleep(60)
+            st.info("Batch ပြီးပြီ — နောက် 5 ခု လုပ်ချင်ရင် 15 မိနစ် နားပြီးမှ ခလုတ် ပြန်နှိပ်ပါ။")
+        elif not pending:
+            st.success("Audio အားလုံး transcript ပြီးပြီ။")
+
+elif page == "FGD Recording":
+    st.title("🎙️ FGD Recording")
+    st.caption("Browser mic နဲ့ chunk တစ်ခုချင်း record လုပ် → auto-transcribe. 15 မိနစ် တစ်ပိုင်း. 1 chunk = 1 request (2h FGD ≈ 8 chunks).")
+    st.info("Browser က mic ခွင့်တောင်းရင် Allow နှိပ်ပါ. လူအများ တစ်ပြိုင်နက် ပြောရင် speaker ခွဲတာ တိကျမှု လျော့နိုင်တယ် — [unclear] လို့ မှတ်ထားတာကို ပြန်စစ်ပါ.")
+
+    session_name = st.text_input("Session နာမည်", value="fgd_01", key="fgd_session")
+    session_name = re.sub(r"[^\w\-]+", "_", session_name.strip()) or "fgd_01"
+
+    def session_chunk_files():
+        files = []
+        for f in AUDIO_DIR.glob(f"{session_name}(*).wav"):
+            m = re.search(r"\((\d+)\)\.wav$", f.name)
+            if m:
+                files.append((int(m.group(1)), f))
+        return sorted(files)
+
+    chunks = session_chunk_files()
+    if chunks:
+        st.write(f"Chunks: {len(chunks)}")
+        for n, f in chunks:
+            txt = OUTPUT_DIR / (f.stem + ".txt")
+            status = "✅ transcribed" if txt.exists() else "⏳ pending"
+            st.write(f"- Chunk {n}: {f.name} — {status}")
+    else:
+        st.info("Chunk မရှိသေးဘူး — အောက်မှာ record လုပ်ပါ။")
+
+    audio_data = st.audio_input("🎙️ Record a chunk (15 မိနစ် လောက်)")
+    if audio_data is not None:
+        audio_bytes = audio_data.read()
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+        if st.session_state.get("last_recorded_hash") != audio_hash:
+            next_n = (chunks[-1][0] + 1) if chunks else 1
+            chunk_path = AUDIO_DIR / f"{session_name}({next_n}).wav"
+            store_write_bytes("audio", chunk_path.name, audio_bytes)
+            st.session_state["last_recorded_hash"] = audio_hash
+            st.session_state["last_chunk"] = chunk_path.name
+            st.success(f"Saved: {chunk_path.name}")
+            txt_path = OUTPUT_DIR / (chunk_path.stem + ".txt")
+            with st.spinner(f"Transcribing chunk {next_n}... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
+                text, model = transcribe_audio(chunk_path)
+            if text:
+                store_write_text("transcripts", txt_path.name, text)
+                st.success(f"Done — model: {model}")
+            else:
+                st.error(f"Failed: {model} — အောက်က Transcribe pending နဲ့ ပြန်လုပ်လို့ရတယ်။")
+            st.rerun()
+        else:
+            st.caption(f"ဒီ chunk က သိမ်းပြီးသား: {st.session_state.get('last_chunk')}")
+            last_name = st.session_state.get("last_chunk", "")
+            txt_path = OUTPUT_DIR / (Path(last_name).stem + ".txt")
+            if last_name and txt_path.exists():
+                with st.expander("Transcript ကြည့်ပါ"):
+                    st.text(txt_path.read_text(encoding="utf-8"))
+
+    pending_chunks = [(n, f) for n, f in session_chunk_files() if not (OUTPUT_DIR / (f.stem + ".txt")).exists()]
+    if pending_chunks and st.button("Transcribe pending chunks"):
+        for n, f in pending_chunks:
+            with st.spinner(f"Transcribing chunk {n}..."):
+                text, model = transcribe_audio(f)
+            if text:
+                store_write_text("transcripts", f.stem + ".txt", text)
+                st.success(f"Done — chunk {n} ({model})")
+            else:
+                st.error(f"Failed — chunk {n}: {model}")
+                if "429" in model:
+                    st.warning("429 — quota ပြည့်နေတယ်, နောက်မှ ပြန်လုပ်။")
+                    break
+
+elif page == "Upload & Split":
+    st.title("✂️ Upload & Split")
+    st.caption("အရှည်ကြီး audio (device နဲ့ record လုပ်ထားတာ) ကို 15 မိနစ် အပိုင်းတွေ ခွဲ → ပြီးမှ Batch Processing နဲ့ transcribe လုပ်.")
+    if DRIVE_MODE:
+        st.info("Split လုပ်ဖို့ ffmpeg လိုတယ် (mp3/m4a အတွက်). WAV ဆိုရင် ffmpeg မရှိလည်း ရတယ်. Upload လုပ်တဲ့ file က Google Drive (ResearchFlow/Default/audio) ထဲ တိုက်ရိုက် သိမ်းမယ်.")
+    else:
+        st.info("Split လုပ်ဖို့ ffmpeg လိုတယ် (mp3/m4a အတွက်). WAV ဆိုရင် ffmpeg မရှိလည်း ရတယ်. Drive ကနေ တင်တာက နောက်အဆင့် — အခု website ကို တိုက်ရိုက် တင်ပါ.")
+
+    src_mode = st.radio("Audio ဘယ်ကယူမလဲ", ["Upload လုပ်မယ်", "ရှိပြီးသား file ရွေးမယ်"], horizontal=True)
+    src_path = None
+    if src_mode == "Upload လုပ်မယ်":
+        up = st.file_uploader("Audio file တင်ပါ (mp3 / wav / m4a)", type=["mp3", "wav", "m4a"], key="split_upload")
+        if up is not None:
+            src_path = AUDIO_DIR / up.name
+            if not src_path.exists():
+                store_write_bytes("audio", up.name, up.getbuffer())
+            st.caption(f"Saved: {up.name}")
+    else:
+        existing = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
+        if existing:
+            sel = st.selectbox("Audio ရွေးပါ", [f.name for f in existing], key="split_existing")
+            src_path = AUDIO_DIR / sel
+        else:
+            st.info("Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။")
+
+    if src_path is not None:
+        dur = audio_duration(src_path)
+        if dur:
+            st.caption(f"Duration: {dur / 60:.1f} မိနစ်")
+        chunk_min = st.selectbox("တစ်ပိုင်း ဘယ်လောက် မိနစ်", [10, 15], index=1, key="split_len")
+        if st.button("Split into chunks"):
+            with st.spinner("Splitting..."):
+                chunks, err = split_audio(src_path, chunk_min)
+            if err:
+                st.error(f"Failed: {err}")
+                if "ffmpeg" in err:
+                    st.info("PowerShell မှာ ဒါ run လုပ်ပြီး ffmpeg install လုပ်ပါ (ပြီးရင် PowerShell အသစ်ဖွင့်): winget install ffmpeg")
+            elif chunks:
+                st.success(f"Done — {len(chunks)} chunks:")
+                for c in chunks:
+                    st.write(f"- {c.name}")
+                    store_upload_existing("audio", c.name)
+                orig_dir = AUDIO_DIR / "originals"
+                orig_dir.mkdir(exist_ok=True)
+                shutil.move(str(src_path), str(orig_dir / src_path.name))
+                drive_move_to_originals(src_path.name)
+                st.caption(f"မူရင်း file ကို audio/originals/ ထဲ ရွှေ့ပြီးပြီ — Batch Processing မှာ chunks တွေ ပေါ်နေပြီ။")
+            else:
+                st.warning("Chunk မထွက်ဘူး — file က chunk တစ်ပိုင်းထက် တိုနေလို့ဖြစ်နိုင်တယ်။")
+
+elif page == "Transcripts":
+    st.title("📝 Transcript Management")
+
+    st.subheader("🔗 Merge chunks — full transcript")
+    groups = get_chunk_groups()
+    multi_groups = {k: v for k, v in groups.items() if len(v) > 1}
+    if multi_groups:
+        for key, files_in_group in sorted(multi_groups.items()):
+            merged = MERGED_DIR / f"{key}_full.txt"
+            status = "✅ merged" if merged.exists() else f"{len(files_in_group)} chunks"
+            with st.expander(f"{key}: {status}"):
+                for i, f in enumerate(files_in_group, start=1):
+                    st.write(f"{i}. {f.name}")
+        if st.button("Merge all into full transcripts"):
+            for key, files_in_group in sorted(multi_groups.items()):
+                parts = []
+                for i, f in enumerate(files_in_group, start=1):
+                    parts.append(f"--- chunk {i} ({f.name}) ---\n")
+                    parts.append(f.read_text(encoding="utf-8"))
+                out = store_write_text("merged", f"{key}_full.txt", "\n\n".join(parts))
+            st.success("Merged — full transcripts ready in output/merged/")
+    else:
+        st.info("Chunk အများကြီး ရှိတဲ့ interview မရှိဘူး။")
+
+    st.divider()
+
+    st.subheader("📄 Full transcripts (merged)")
+    merged_files = sorted(MERGED_DIR.glob("*_full.txt"), key=lambda f: f.name)
+    if merged_files:
+        for file in merged_files:
+            with st.expander(file.name):
+                st.text(file.read_text(encoding="utf-8"))
+    else:
+        st.info("Merge မလုပ်ရသေးဘူး — အပေါ်က Merge ခလုတ် နှိပ်ပါ။")
+
+    st.divider()
+
+    files = get_transcript_files()
+
+    if files:
+        for file in files:
+            with st.expander(file.name):
+                st.text(file.read_text(encoding="utf-8"))
+    else:
+        st.warning("Transcript ဖိုင် မတွေ့ရှိသေးပါ။")
+
+elif page == "Market Analysis":
+    st.title("📊 Market Research Analysis")
+
+    # Analysis uses FULL transcripts only — never chunks.
+    full_files, pending = get_full_transcripts()
+    if not full_files:
+        st.warning("Full transcript မရှိသေးပါ — အရင် Transcripts page မှာ Merge လုပ်ပါ။")
+    else:
+        names = [f.name for f in full_files]
+        file_map = {f.name: f for f in full_files}
+        if pending:
+            st.caption("Merge မလုပ်ရသေးဘူး: " + ", ".join(f"{k} ({n} chunks)" for k, n in pending) + " — Transcripts page မှာ Merge လုပ်ပါ။")
+
+        st.subheader("📋 Analysis Planner")
+        st.caption("Analysis မလုပ်ခင်: Brief + Discussion Guide + Questionnaire + transcript ပေါင်းကြည့်ပြီး plan အရင် ဆွဲမယ်။")
+        brief_text = st.text_area("Client Brief / Objective", key="brief_text", height=150)
+        dg_text = st.text_area("Discussion Guide (sections / questions)", key="dg_text", height=150)
+        questionnaire_text = st.text_area("Questionnaire (survey မေးခွန်းတွေ — paste လုပ်)", key="questionnaire_text", height=150)
+        collection_tool = st.selectbox(
+            "Data ကောက်တဲ့ tool",
+            ["Google Forms", "SurveyMonkey", "Kobo Collect", "အခြား"],
+            key="collection_tool",
+        )
+        plan_transcripts = st.multiselect(
+            "Plan အတွက် transcript တွေ ရွေးပါ",
+            names,
+            key="plan_transcripts",
+        )
+        st.caption("Plan အတွက် ရွေးတဲ့ transcript တွေနဲ့ အောက်က Analyze အတွက် ရွေးတာ တူရမယ်။")
+        if st.button("Plan analysis"):
+            if not brief_text.strip() and not dg_text.strip() and not questionnaire_text.strip():
+                st.warning("Brief / Discussion Guide / Questionnaire အနည်းဆုံး တစ်ခု ထည့်ပါ။")
+            elif not plan_transcripts:
+                st.warning("Plan အတွက် transcript အနည်းဆုံး ၁ ခု ရွေးပါ။")
+            else:
+                combined_plan = ""
+                for name in plan_transcripts:
+                    combined_plan += f"\n\n=== {name} ===\n"
+                    combined_plan += file_map[name].read_text(encoding="utf-8")
+                plan_prompt = (
+                    "You are a senior market research analyst. Propose an analysis plan for this project. "
+                    "Read the client brief, discussion guide, questionnaire, and interview transcripts together. "
+                    "Do NOT write findings yet — only the plan.\n"
+                    "Rules: Base everything ONLY on the brief, guide, questionnaire, and transcripts. Do not invent objectives or questions. "
+                    "Use the questionnaire to know what was asked and how the data was collected, and match analysis sections to both the guide topics and the survey questions. "
+                    "Write in English.\n\n"
+                    "Structure your answer exactly like this:\n"
+                    "## Project Type\n"
+                    "(e.g. IDI consumer, FGD persona, survey, marketing)\n"
+                    "## Objective\n"
+                    "(restate what the client wants to know, from the brief)\n"
+                    "## Recommended Framework\n"
+                    "(framework name + WHY it fits this brief and guide)\n"
+                    "## Questionnaire & Data Collection\n"
+                    "(what survey questions were asked, which tool collected the data, and how the survey data links to the analysis)\n"
+                    "## Analysis Sections\n"
+                    "(each section: title + what question it answers)\n"
+                    "## Report Outline\n"
+                    "(what goes in the PPTX/DOCX report, in order)\n"
+                    "## Gaps & Notes\n"
+                    "(guide or questionnaire topics with no or little evidence in the transcripts; anything missing)\n\n"
+                    "Client Brief / Objective:\n" + brief_text + "\n\nDiscussion Guide:\n" + dg_text + "\n\nQuestionnaire:\n" + questionnaire_text + "\n\nData collection tool: " + collection_tool + "\n\nTranscripts:\n" + combined_plan
+                )
+                with st.spinner("Planning... (transcript များရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
+                    plan_result, plan_model = ask_gemini(plan_prompt)
+                if plan_result:
+                    st.success(f"Done — model: {plan_model}")
+                    plan_ids = short_ids_for(plan_transcripts)
+                    plan_file = store_write_text("analysis", f"plan_{'-'.join(plan_ids)}.txt", plan_result)
+                    st.session_state["current_plan"] = plan_result
+                    st.session_state["current_plan_name"] = plan_file.name
+                    st.caption(f"Saved: {plan_file.name}")
+                else:
+                    st.error(f"Failed: {plan_model}")
+
+        plan_files = sorted(ANALYSIS_DIR.glob("plan_*.txt"), key=lambda f: f.name)
+        if plan_files:
+            plan_names = [f.name for f in plan_files]
+            plan_selected = st.selectbox("သိမ်းထားတဲ့ plan ရွေးပါ", plan_names)
+            if st.button("Load plan"):
+                st.session_state["current_plan"] = (ANALYSIS_DIR / plan_selected).read_text(encoding="utf-8")
+                st.session_state["current_plan_name"] = plan_selected
+                st.success(f"Loaded: {plan_selected}")
+
+        if st.session_state.get("current_plan"):
+            st.caption(f"Current plan: {st.session_state.get('current_plan_name')}")
+            with st.expander("Plan ကြည့်ပါ"):
+                st.text(st.session_state["current_plan"])
+
+        st.divider()
+        has_plan = st.session_state.get("current_plan") is not None
+        use_plan = st.checkbox(
+            "Approved plan အတိုင်း analyse လုပ်မယ်",
+            value=has_plan,
+            disabled=not has_plan,
+        )
+        mode = st.radio("Analysis ပုံစံ", ["တစ်ခုတည်း", "အများကြီး (multi)"], horizontal=True)
+        if mode == "တစ်ခုတည်း":
+            default_idx = names.index("interview_01_full.txt") if "interview_01_full.txt" in names else 0
+            selected = st.selectbox("Transcript ရွေးပါ", names, index=default_idx)
+            if st.button("Analyze"):
+                text = file_map[selected].read_text(encoding="utf-8")
+                if use_plan and st.session_state.get("current_plan"):
+                    prompt = plan_based_prompt(st.session_state["current_plan"], text, 1)
+                else:
+                    prompt = (
+                        "You are a senior market research analyst. Analyze the interview transcript below in depth, at a professional level.\n"
+                        "Rules: Use ONLY information from the transcript. Do not invent findings, "
+                        "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
+                        "Findings in short paragraphs. Go beyond surface summary: explain WHY behind behaviours, "
+                        "note drivers and barriers, and distinguish what is said by one respondent from what is a pattern.\n\n"
+                        "Structure your answer exactly like this:\n"
+                        "## Key Findings\n"
+                        "## Customer Needs\n"
+                        "## Market Needs\n"
+                        "## Pain Points\n"
+                        "## Behaviour & Journey\n"
+                        "(the purchase/usage journey step by step, with what triggers each step)\n"
+                        "## Brand & Market View\n"
+                        "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
+                        "## Persona\n"
+                        "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
+                        "## Key Quotes\n"
+                        "(for each quote: the quote, then — Speaker)\n"
+                        "## Recommendations\n"
+                        "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
+                        "Transcript:\n" + text
+                    )
+                with st.spinner("Analyzing... (ခဏစောင့်ပါ)"):
+                    result, model = ask_gemini(prompt)
+                if result:
+                    st.success(f"Done — model: {model}")
+                    analysis_file = store_write_text("analysis", selected.replace(".txt", "_analysis.txt"), result)
+                    st.session_state["last_analysis"] = analysis_file.name
+                    st.caption(f"Saved: {analysis_file.name} — အောက်က Saved analyses မှာ ပြန်ဖွင့်လို့ရတယ်။")
+                else:
+                    st.error(f"Failed: {model}")
+        else:
+            selected_multi = st.multiselect(
+                "Transcript တွေ ရွေးပါ (အများဆုံး 6 ခု လောက်ရွေး — များလွန်းရင် ကြာမယ်)",
+                names,
+            )
+            if selected_multi and st.button("Analyze multi"):
+                combined = ""
+                for name in selected_multi:
+                    combined += f"\n\n=== {name} ===\n"
+                    combined += file_map[name].read_text(encoding="utf-8")
+                if use_plan and st.session_state.get("current_plan"):
+                    prompt = plan_based_prompt(st.session_state["current_plan"], combined, len(selected_multi))
+                else:
+                    prompt = (
+                        f"You are a senior market research analyst. Analyze these {len(selected_multi)} interview transcripts together in depth, at a professional level.\n"
+                        "Rules: Use ONLY information from the transcripts. Do not invent findings, "
+                        "numbers, or quotes. Write in English. Medicine, brand, and disease names in English. "
+                        "Findings in short paragraphs. For each theme, say how many respondents mentioned it (n=), "
+                        "give one supporting quote, and note divergent or contradictory views where they exist. "
+                        "Go beyond surface summary: explain WHY behind behaviours, note drivers and barriers.\n\n"
+                        "Structure your answer exactly like this:\n"
+                        "## Key Findings\n"
+                        "## Cross-Respondent Themes\n"
+                        "(for each theme: the theme, then n= how many respondents, one supporting quote, and any divergent view)\n"
+                        "## Customer Needs\n"
+                        "## Market Needs\n"
+                        "## Pain Points\n"
+                        "## Behaviour & Journey\n"
+                        "(the purchase/usage journey step by step, with what triggers each step)\n"
+                        "## Brand & Market View\n"
+                        "(brand perception and positioning, purchase drivers and barriers including price and the pharmacy's role, channel and shopper behaviour)\n"
+                        "## Persona\n"
+                        "(1-2 personas built from behaviour and motivation, each with who they are, what drives them, what blocks them)\n"
+                        "## Key Quotes\n"
+                        "(for each quote: the quote, then — Speaker, source file)\n"
+                        "## Recommendations\n"
+                        "(each with priority High, Medium or Low, and which finding it follows from)\n\n"
+                        "Transcripts:\n" + combined
+                    )
+                with st.spinner("Analyzing... (transcript များရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)"):
+                    result, model = ask_gemini(prompt)
+                if result:
+                    st.success(f"Done — model: {model}")
+                    short_ids = short_ids_for(selected_multi)
+                    analysis_file = store_write_text("analysis", f"multi_{'-'.join(short_ids)}_analysis.txt", result)
+                    st.session_state["last_analysis"] = analysis_file.name
+                    st.caption(f"Saved: {analysis_file.name} — အောက်က Saved analyses မှာ ပြန်ဖွင့်လို့ရတယ်။")
+                else:
+                    st.error(f"Failed: {model}")
+
+        st.divider()
+        st.subheader("💾 Saved analyses")
+        saved = sorted(ANALYSIS_DIR.glob("*_analysis.txt"), key=lambda f: f.name)
+        if saved:
+            saved_names = [f.name for f in saved]
+            last = st.session_state.get("last_analysis")
+            default_saved = saved_names.index(last) if last in saved_names else 0
+            saved_selected = st.selectbox("သိမ်းထားတာ ရွေးပါ", saved_names, index=default_saved)
+            saved_text = (ANALYSIS_DIR / saved_selected).read_text(encoding="utf-8")
+            if looks_like_html(saved_text):
+                saved_text = html_to_text(saved_text)
+            st.text(saved_text)
+            st.download_button(
+                "Download saved analysis (.txt)",
+                data=(ANALYSIS_DIR / saved_selected).read_bytes(),
+                file_name=saved_selected,
+                mime="text/plain",
+            )
+        else:
+            st.info("သိမ်းထားတဲ့ analysis မရှိသေးပါ။")
+
+elif page == "Quant Analysis":
+    st.title("📊 Quant Analysis")
+    st.caption("Survey data (Google Forms / SurveyMonkey / Kobo Collect export — CSV / XLSX) → counts, %, charts, cross-tab.")
+
+    uploaded = st.file_uploader("Survey file တင်ပါ (CSV / XLSX)", type=["csv", "xlsx"])
+    df = None
+    if uploaded is not None:
+        try:
+            if uploaded.name.endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
+        except ImportError:
+            st.error("openpyxl မရှိသေးဘူး — PowerShell မှာ ဒါ run လုပ်ပါ: .\\.venv\\Scripts\\python.exe -m pip install openpyxl")
+        except Exception as e:
+            st.error(f"File ဖတ်မရဘူး: {e}")
+    if df is not None:
+        st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
+        st.dataframe(df.head(5))
+        summary_lines = [f"Quant summary — {uploaded.name}", f"Rows: {len(df)}", ""]
+        cat_cols = []
+        for col in df.columns:
+            series = df[col].dropna()
+            n = len(series)
+            nunique = series.nunique()
+            st.subheader(f"❓ {col}")
+            summary_lines.append(f"## {col} (n={n})")
+            if pd.api.types.is_numeric_dtype(series):
+                counts = series.value_counts().sort_index()
+                table = pd.DataFrame({"Count": counts, "%": (counts / n * 100).round(1)})
+                st.dataframe(table)
+                st.bar_chart(counts)
+                st.caption(f"Mean: {series.mean():.2f}")
+                summary_lines.append(f"Mean: {series.mean():.2f}")
+                for val, cnt in counts.items():
+                    summary_lines.append(f"- {val}: {cnt} ({cnt / n * 100:.1f}%)")
+                if nunique <= 20:
+                    cat_cols.append(col)
+            elif nunique <= 20:
+                counts = series.value_counts()
+                table = pd.DataFrame({"Count": counts, "%": (counts / n * 100).round(1)})
+                st.dataframe(table)
+                st.bar_chart(counts)
+                for val, cnt in counts.items():
+                    summary_lines.append(f"- {val}: {cnt} ({cnt / n * 100:.1f}%)")
+                cat_cols.append(col)
+            else:
+                st.caption(f"Open text — {nunique} unique answers. နမူနာ:")
+                for val in series.head(5):
+                    st.write(f"- {val}")
+                summary_lines.append(f"Open text — {nunique} unique answers.")
+            summary_lines.append("")
+        if len(cat_cols) >= 2:
+            st.divider()
+            st.subheader("🔀 Cross-tab")
+            col_a = st.selectbox("ပထမ မေးခွန်း", cat_cols, key="xtab_a")
+            col_b = st.selectbox("ဒုတိယ မေးခွန်း", cat_cols, index=1 if len(cat_cols) > 1 else 0, key="xtab_b")
+            if col_a != col_b:
+                ctab = pd.crosstab(df[col_a], df[col_b])
+                st.dataframe(ctab)
+                summary_lines.append("## Cross-tab")
+                summary_lines.append(f"{col_a} x {col_b}")
+                summary_lines.append(ctab.to_string())
+        if st.button("Save quant summary"):
+            out_file = store_write_text("analysis", f"quant_{Path(uploaded.name).stem}.txt", "\n".join(summary_lines))
+            st.success(f"Saved: {out_file.name}")
+            st.download_button(
+                "Download quant summary (.txt)",
+                data=out_file.read_bytes(),
+                file_name=out_file.name,
+                mime="text/plain",
+            )
+
+elif page == "Reports":
+    st.title("📑 Research Reports")
+
+    saved = sorted(ANALYSIS_DIR.glob("*_analysis.txt"), key=lambda f: f.name)
+    if not saved:
+        st.info("Analysis မရှိသေးပါ — အရင် Market Analysis မှာ Analyze လုပ်ပါ။")
+    else:
+        saved_names = [f.name for f in saved]
+        selected = st.selectbox("Analysis ရွေးပါ", saved_names)
+        template = st.selectbox("Template ရွေးပါ", list(TEMPLATES.keys()))
+        col_pptx, col_docx = st.columns(2)
+        if col_pptx.button("Export PPTX"):
+            analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+            if looks_like_html(analysis_text):
+                analysis_text = html_to_text(analysis_text)
+            title_text = selected.replace("_analysis.txt", "").replace("_", " ")
+            out_path = REPORTS_DIR / selected.replace("_analysis.txt", ".pptx")
+            with st.spinner("PPTX ထုတ်နေပါတယ်..."):
+                analysis_to_pptx(analysis_text, title_text, out_path, template)
+            store_upload_existing("reports", out_path.name)
+            st.success(f"Done — {out_path.name} ({template})")
+            st.download_button(
+                "Download PPTX",
+                data=out_path.read_bytes(),
+                file_name=out_path.name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )
+        if col_docx.button("Export DOCX"):
+            analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+            if looks_like_html(analysis_text):
+                analysis_text = html_to_text(analysis_text)
+            title_text = selected.replace("_analysis.txt", "").replace("_", " ")
+            out_path = REPORTS_DIR / selected.replace("_analysis.txt", ".docx")
+            with st.spinner("DOCX ထုတ်နေပါတယ်..."):
+                analysis_to_docx(analysis_text, title_text, out_path)
+            store_upload_existing("reports", out_path.name)
+            st.success(f"Done — {out_path.name}")
+            st.download_button(
+                "Download DOCX",
+                data=out_path.read_bytes(),
+                file_name=out_path.name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+        st.divider()
+        st.subheader("📁 Saved reports")
+        reports = sorted(REPORTS_DIR.glob("*.pptx")) + sorted(REPORTS_DIR.glob("*.docx"))
+        if reports:
+            report_names = [f.name for f in reports]
+            report_selected = st.selectbox("သိမ်းထားတဲ့ report ရွေးပါ", report_names)
+            mime = ("application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    if report_selected.endswith(".pptx")
+                    else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            st.download_button(
+                "Download saved report",
+                data=(REPORTS_DIR / report_selected).read_bytes(),
+                file_name=report_selected,
+                mime=mime,
+            )
+        else:
+            st.info("သိမ်းထားတဲ့ report မရှိသေးပါ။")
+
+elif page == "Report Editor":
+    st.title("✏️ Report Editor")
+    st.caption("Google Docs မှာ ပြင် — Doc ဖွင့်, ပြင်ပြီး, Import back နှိပ်. မူရင်း file ကို မထိဘူး.")
+
+    saved = sorted(ANALYSIS_DIR.glob("*_analysis.txt"), key=lambda f: f.name)
+    if not saved:
+        st.info("Analysis မရှိသေးပါ — အရင် Market Analysis မှာ Analyze လုပ်ပါ။")
+    else:
+        saved_names = [f.name for f in saved]
+        selected = st.selectbox("Analysis ရွေးပါ", saved_names, key="editor_select")
+        content = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+        if looks_like_html(content):
+            content = html_to_text(content)
+        edited = st.text_area("Report", value=content, height=400, key=f"ed_text_{selected}")
+        stem = selected[:-len("_analysis.txt")]
+
+        if docs_available():
+            col_c, col_i = st.columns(2)
+            if col_c.button("📄 Create Google Doc"):
+                title = stem.replace("_", " ")
+                with st.spinner("Google Doc ဖန်တီးနေပါတယ်..."):
+                    try:
+                        doc_id, url = drive_create_doc(title, edited)
+                        st.session_state[f"editor_doc_id_{selected}"] = doc_id
+                        st.session_state[f"editor_doc_url_{selected}"] = url
+                        st.success("Google Doc ရပြီ — အောက်က link နှိပ်ပြီး ပြင်ပါ.")
+                    except Exception as e:
+                        st.error(f"Doc ဖန်တီးမရဘူး: {e}")
+            doc_url_default = st.session_state.get(f"editor_doc_url_{selected}", "")
+            doc_input = st.text_input("Google Doc link (သို့မဟုတ် ID)", value=doc_url_default, key="editor_doc_input")
+            if st.session_state.get(f"editor_doc_url_{selected}"):
+                st.link_button("🔗 Open Google Doc", st.session_state[f"editor_doc_url_{selected}"])
+            if col_i.button("⬇️ Import back from Doc"):
+                doc_id = _doc_id_from_input(doc_input)
+                if not doc_id:
+                    st.warning("Doc link အရင် ထည့်ပါ.")
+                else:
+                    with st.spinner("Doc ကနေ ပြန်ယူနေပါတယ်..."):
+                        try:
+                            new_text = docs_read_text(doc_id)
+                            out_name = f"{stem}_v{next_version_number(stem)}_analysis.txt"
+                            store_write_text("analysis", out_name, new_text)
+                            st.success(f"Saved: {out_name} — မူရင်း {selected} က မပြောင်းဘူး.")
+                            st.caption("Reports page သွားရင် version အသစ် ရွေးပြီး PPTX/DOCX export လုပ်လို့ရပြီ။")
+                        except Exception as e:
+                            st.error(f"Import မရဘူး: {e}")
+        else:
+            st.info("Google နဲ့ မချိတ်ရသေးဘူး — Doc ဖွင့်လို့ မရသေးဘူး. ဒီမှာ ပြင်ပြီး version အသစ် အဖြစ် သိမ်းလို့ရတယ်.")
+            if st.button("💾 Save as new version"):
+                out_name = f"{stem}_v{next_version_number(stem)}_analysis.txt"
+                store_write_text("analysis", out_name, edited or "")
+                st.success(f"Saved: {out_name} — မူရင်း {selected} က မပြောင်းဘူး.")
+                st.caption("Reports page သွားရင် version အသစ် ရွေးပြီး PPTX/DOCX export လုပ်လို့ရပြီ။")
+
+        st.divider()
+        st.subheader("Versions")
+        versions = sorted(ANALYSIS_DIR.glob(f"{stem}_v*_analysis.txt"), key=lambda f: f.name)
+        if versions:
+            for v in versions:
+                col_v, col_l = st.columns([4, 1])
+                with col_v:
+                    st.write(f"- {v.name}")
+                with col_l:
+                    if st.button("Load", key=f"ed_load_{v.name}"):
+                        st.session_state["editor_select"] = v.name
+                        st.rerun()
+        else:
+            st.caption("Version အသစ် မရှိသေးဘူး။")

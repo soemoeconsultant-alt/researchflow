@@ -1,0 +1,11 @@
+# ResearchFlow website (online version) — install with:
+# pip install -r requirements-online.txt
+# On Streamlit Community Cloud, rename this file to requirements.txt at the repo root.
+streamlit==1.67.0
+google-genai
+python-pptx
+python-docx
+pandas
+openpyxl
+google-api-python-client
+google-auth
