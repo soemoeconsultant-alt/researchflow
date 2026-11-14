@@ -246,6 +246,75 @@ def docs_available():
     return drive_available()
 
 
+# --- Login (v3.3): Google sign-in + allowlist ---
+# Config lives in Streamlit secrets (never in the repo):
+#   [auth]
+#   redirect_uri = "https://researchflowmaster.streamlit.app/"
+#   cookie_secret = "<random string>"
+#   client_id = "<Web OAuth client id>"
+#   client_secret = "<Web OAuth client secret>"
+#   server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+#   [access]
+#   owners = ["soemoe.consultant@gmail.com"]
+#   allowed = ["soemoekyawww@gmail.com"]
+# No [auth] in secrets (e.g. localhost) -> no login, open access as before.
+# NOTE: the consent screen is in Testing mode, so Google only lets test users
+# sign in — add every allowed email as a test user (or switch to Production).
+
+def _auth_configured():
+    try:
+        return bool(st.secrets.get("auth"))
+    except Exception:
+        return False
+
+
+def _allowed_emails():
+    """(owners, allowed) email lists from secrets [access]."""
+    owners, allowed = [], []
+    try:
+        acc = st.secrets.get("access")
+        if acc is not None:
+            owners = [str(e).strip().lower() for e in (acc.get("owners") or [])]
+            allowed = [str(e).strip().lower() for e in (acc.get("allowed") or [])]
+    except Exception:
+        pass
+    return owners, allowed
+
+
+def current_user_email():
+    try:
+        return (st.user.email or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def current_user_is_owner():
+    owners, _ = _allowed_emails()
+    return current_user_email() in owners
+
+
+def login_gate():
+    """Require Google sign-in + allowlist when [auth] is configured.
+    Call before any page renders. Returns the logged-in email (or "")."""
+    if not _auth_configured():
+        return ""
+    if not st.user.is_logged_in:
+        st.title("🔐 ResearchFlow — Log in")
+        st.write("Google account နဲ့ log in ဝင်ပါ။")
+        st.login()
+        st.stop()
+    email = current_user_email()
+    owners, allowed = _allowed_emails()
+    if email not in owners + allowed:
+        st.title("🔐 ResearchFlow — Log in")
+        st.error("ဒီ account နဲ့ ဝင်လို့ မရဘူး — owner က ခွင့်ပြုထားတဲ့ account ပဲ ဝင်ရတယ်။")
+        st.write(f"Signed in as: {email}")
+        if st.button("Log out"):
+            st.logout()
+        st.stop()
+    return email
+
+
 def _sa_credentials():
     _load_all_auth()
     if not _SA_INFO:
@@ -841,6 +910,10 @@ def analysis_to_docx(analysis_text, title_text, out_path):
     return out_path
 
 
+# Login gate (v3.3): runs before any page renders. No [auth] in secrets
+# (e.g. localhost) -> open access, returns "".
+_MY_EMAIL = login_gate()
+
 NAV_GROUPS = [
     ("🏠 Overview", ["Dashboard"]),
     ("1 · Data Collection", ["Audio Transcription", "Batch Processing", "FGD Recording", "Upload & Split"]),
@@ -868,6 +941,11 @@ st.sidebar.caption(
     else "💾 Storage: Google Drive" if DRIVE_AUTH == "service"
     else "💾 Storage: Local (PC)"
 )
+
+if _MY_EMAIL:
+    st.sidebar.caption(f"👤 {_MY_EMAIL}")
+    if st.sidebar.button("Log out"):
+        st.logout()
 
 page = st.session_state["page"]
 
