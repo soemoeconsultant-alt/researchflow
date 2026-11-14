@@ -1012,6 +1012,8 @@ _MY_EMAIL = login_gate()
 # --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
 CUSTOM_CSS = """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+.stApp, .stApp * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 :root {
   --rf-navy: #101638;
   --rf-navy-2: #171f4d;
@@ -1031,13 +1033,18 @@ CUSTOM_CSS = """
               #F6F7FC;
   color: var(--rf-text);
 }
-.block-container { padding-top: 1.8rem; padding-bottom: 3rem; max-width: 1600px; }
+.block-container { padding-top: 1.2rem; padding-bottom: 3rem; padding-left: 2.5rem; padding-right: 2.5rem; max-width: 1600px; }
 
-/* Dark AI sidebar */
+/* Dark AI sidebar — narrow and compact */
+[data-testid="stSidebar"][aria-expanded="true"] { width: 248px; }
+[data-testid="stSidebar"][aria-expanded="true"] > div:first-child { width: 248px; }
 [data-testid="stSidebar"] {
   background: linear-gradient(180deg, #111735 0%, #171D49 55%, #20205A 100%);
   border-right: 1px solid rgba(255,255,255,.08);
 }
+[data-testid="stSidebar"] h1 { font-size: 20px; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: 0.4rem; }
+.rf-nav-group { font-size: 11px !important; letter-spacing: .09em; text-transform: uppercase; color: #8A94B8 !important; font-weight: 700; margin: 14px 0 2px; }
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3,
@@ -1047,6 +1054,7 @@ CUSTOM_CSS = """
 [data-testid="stSidebar"] button {
   background: rgba(255,255,255,.055); color: #F5F7FF;
   border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
+  padding: 6px 10px; font-size: 13px;
   transition: all .18s ease;
 }
 [data-testid="stSidebar"] button p { color: #F5F7FF; }
@@ -1083,18 +1091,12 @@ h2, h3 { font-weight: 700; }
 .rf-hero h1 span { color: #70E4F2; }
 .rf-hero p { color: #D7DDFB; font-size: 16px; margin: 0; max-width: 760px; }
 
-/* Metric cards */
-[data-testid="stMetric"] {
-  position: relative; overflow: hidden; background: #FFFFFF;
-  border: 1px solid var(--rf-border); border-radius: 16px;
-  padding: 17px 18px; box-shadow: 0 5px 18px rgba(28,39,87,.055);
-}
-[data-testid="stMetric"]:before {
-  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-  background: linear-gradient(90deg, #3978F6, #7955E8, #26D5E8);
-}
-[data-testid="stMetricLabel"] p { color: #7883A0; font-weight: 600; }
-[data-testid="stMetricValue"] { color: #18234B; font-weight: 800; }
+/* Modern metric cards */
+.rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(28,39,87,.055); }
+.rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #3978F6, #7955E8, #26D5E8); }
+.rf-metric-ico { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin-bottom: 10px; }
+.rf-metric-label { color: #7883A0; font-size: 13px; font-weight: 600; }
+.rf-metric-value { color: #18234B; font-size: 30px; font-weight: 800; line-height: 1.1; }
 
 /* Workflow cards and progress ring */
 .rf-step {
@@ -1221,11 +1223,22 @@ with st.sidebar.expander("＋ Project အသစ်"):
         else:
             st.warning("Project နာမည် မှန်မှန်ရိုက်ပါ။")
 
+_PAGE_ICONS = {
+    "Dashboard": "🏠", "Project Brief": "📋",
+    "Audio Transcription": "🎙️", "Batch Processing": "📁", "Upload & Split": "✂️",
+    "FGD Recording": "🔴", "Transcripts": "📝", "Data Cleansing": "🧹",
+    "Market Analysis": "📊", "Quant Analysis": "📈", "Reports": "📑",
+    "Report Editor": "✏️", "Presentation": "🎤",
+}
+
 for group, items in NAV_GROUPS:
-    st.sidebar.markdown(f"**{group}**")
+    st.sidebar.markdown(f'<p class="rf-nav-group">{group}</p>', unsafe_allow_html=True)
     for item in items:
-        label = ("▶ " if st.session_state["page"] == item else "") + item
-        if st.sidebar.button(label, key=f"nav_{item}", use_container_width=True):
+        _active = st.session_state["page"] == item
+        if st.sidebar.button(
+            f"{_PAGE_ICONS.get(item, '•')} {item}", key=f"nav_{item}",
+            use_container_width=True, type="primary" if _active else "secondary",
+        ):
             st.session_state["page"] = item
             st.rerun()
 
@@ -1318,11 +1331,21 @@ if page == "Dashboard":
     _transcripts = get_transcript_files()
     _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
     _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
-    _m1, _m2, _m3, _m4 = st.columns(4)
-    _m1.metric("Total Projects", len(_projects))
-    _m2.metric("Transcripts", len(_transcripts))
-    _m3.metric("Research Reports", len(_reports))
-    _m4.metric("Audio Files", len(_audio))
+    _cards = [
+        ("📁", "Total Projects", len(_projects), "#3978F6"),
+        ("📝", "Transcripts", len(_transcripts), "#7955E8"),
+        ("📊", "Research Reports", len(_reports), "#26D5E8"),
+        ("🎙️", "Audio Files", len(_audio), "#0070C0"),
+    ]
+    _cols = st.columns(4)
+    for _i, (_ico, _lbl, _val, _c) in enumerate(_cards):
+        with _cols[_i]:
+            st.markdown(
+                f'<div class="rf-metric"><div class="rf-metric-ico" style="background:{_c}1A">{_ico}</div>'
+                f'<div class="rf-metric-label">{_lbl}</div>'
+                f'<div class="rf-metric-value">{_val}</div></div>',
+                unsafe_allow_html=True,
+            )
 
     _stages = stage_status()
     _done = sum(1 for _, _, d in _stages if d)
