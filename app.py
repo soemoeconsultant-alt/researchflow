@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.21"
+APP_VERSION = "3.23"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2037,6 +2037,18 @@ h2, h3 { font-weight: 600; }
 [data-testid="stAlert"] { border-radius: 8px; }
 hr { border-color: var(--rf-line); }
 
+/* v3.23 stage header: stage number + name + project + status badge. */
+.rf-sh { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: #FFFFFF; border: 1px solid var(--rf-line); border-left: 4px solid var(--rf-accent);
+  border-radius: 10px; padding: 12px 18px; margin: 0 0 10px; }
+.rf-sh-k { color: var(--rf-muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.4; }
+.rf-sh-p { color: var(--rf-muted); font-size: 13px; }
+.rf-sh-b { padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.rf-sh-b.done { background: #E2F5EE; color: #0E7A5F; }
+.rf-sh-b.wip { background: #FFF1DD; color: #C26A00; }
+.rf-sh-b.todo { background: #EEF1F4; color: #5E6B78; }
+
 @media (max-width: 900px) {
   section[data-testid="stSidebar"][aria-expanded="true"],
   section[data-testid="stSidebar"][aria-expanded="true"] > div {
@@ -2068,7 +2080,7 @@ PAGE_STAGE = {
     "Upload & Transcribe": 4, "Batch Processing": 4, "Upload & Split": 4,
     "Transcripts": 4, "Data Cleansing": 4,
     "Market Analysis": 5, "Quantitative Analysis": 5, "Reports": 5, "Report Editor": 5,
-    "Presentation": 5,
+    "Presentation": 5, "Insights": 5,
 }
 
 if "page" not in st.session_state:
@@ -2150,6 +2162,7 @@ _PAGE_ICONS = {
     "Market Analysis": ":material/bar_chart:", "Quantitative Analysis": ":material/pie_chart:",
     "Reports": ":material/assignment:",
     "Report Editor": ":material/edit:", "Presentation": ":material/slideshow:",
+    "Insights": ":material/lightbulb:",
     "Prompt Library": ":material/library_books:",
 }
 _PAGE_ORDER = [
@@ -2158,7 +2171,7 @@ _PAGE_ORDER = [
     "Upload & Transcribe", "Batch Processing", "Upload & Split",
     "Transcripts", "Data Cleansing",
     "Market Analysis", "Quantitative Analysis", "Reports", "Report Editor",
-    "Presentation", "Prompt Library",
+    "Presentation", "Insights", "Prompt Library",
 ]
 
 _PAGE_MM = {
@@ -2171,6 +2184,7 @@ _PAGE_MM = {
     "Quantitative Analysis": "ပမာဏ ခွဲခြမ်းစိတ်ဖြာမှု",
     "Reports": "Report များ", "Report Editor": "Report ပြင်ဆင်ရန်",
     "Presentation": "တင်ပြမှု", "Prompt Library": "Prompt Library",
+    "Insights": "Insights",
 }
 _STAGE_MM = {
     "Client Brief": "Client Brief", "Research Design": "သုတေသန ဒီဇိုင်း",
@@ -2189,38 +2203,87 @@ def _sl(label):
     return f"{num} · {T(nm, _STAGE_MM.get(nm))}"
 
 
-# v3.19 nav, grouped by stage. The first page of a stage is the stage entry
-# (stage number + name); the other pages of that stage sit under it, indented.
-_NAV_GROUPS = [
-    (None, ["Dashboard"]),
-    (1, ["Client Brief"]),
-    (2, ["Research Design"]),
-    (3, ["Fieldworks"]),
-    (4, ["Upload & Transcribe", "Batch Processing", "Upload & Split", "Transcripts", "Data Cleansing"]),
-    (5, ["Market Analysis", "Quantitative Analysis", "Reports", "Report Editor", "Presentation"]),
-    (None, ["Prompt Library"]),
-]
-assert sorted(p for _, g in _NAV_GROUPS for p in g) == sorted(_PAGE_ORDER)
-_nav_sub_i = 0
-for _stage_no, _pages in _NAV_GROUPS:
-    if _pages[0] == "Prompt Library":
-        st.sidebar.divider()
-    for _j, item in enumerate(_pages):
-        _active = st.session_state["page"] == item
-        _label = page_label(item)
-        if _j == 0:
-            _key = f"nav_{item}"
-            if _stage_no is not None:
-                _label = f"{_stage_no}  {_label}"
-        else:
-            _nav_sub_i += 1
-            _key = f"navsub{_nav_sub_i}"
-        if st.sidebar.button(
-            _label, key=_key,
-            use_container_width=True, type="primary" if _active else "secondary",
-        ):
-            st.session_state["page"] = item
-            st.rerun()
+# v3.23 nav: the sidebar is Dashboard + 5 stage entries + Prompt Library.
+# The old pages are kept (same internal page ids, same code); each stage groups
+# them into sections / steps shown at the top of the stage page.
+_STAGE_NAME_EN = {1: "Client Brief", 2: "Research Design", 3: "Fieldworks",
+                  4: "Data Cleansing", 5: "Analysis & Reports"}
+_STAGE_HOME = {1: "Client Brief", 2: "Research Design", 3: "Fieldworks",
+               4: "Upload & Transcribe", 5: "Market Analysis"}
+# stage -> [(section EN, section MM, [(page id, step EN, step MM), ...]), ...]
+# A stage that is not listed here has one page and no section bar.
+_STAGE_SECTIONS = {
+    4: [
+        ("Data Preparation", "ဒေတာ ပြင်ဆင်ခြင်း", [
+            ("Upload & Transcribe", "Upload & Transcribe", "Upload နဲ့ Transcript"),
+            ("Batch Processing", "Batch", "Batch"),
+            ("Upload & Split", "Split", "ခွဲခြင်း"),
+            ("Transcripts", "Transcripts & Merge", "Transcript နဲ့ Merge"),
+        ]),
+        ("Quality Control", "Quality Control", [
+            ("Data Cleansing", "Quality Control", "Quality Control"),
+        ]),
+    ],
+    5: [
+        ("Analysis", "ခွဲခြမ်းစိတ်ဖြာမှု", [
+            ("Market Analysis", "Qualitative", "Qualitative"),
+            ("Quantitative Analysis", "Quantitative", "Quantitative"),
+        ]),
+        ("Insights", "Insights", [
+            ("Insights", "Insights", "Insights"),
+        ]),
+        ("Report & Presentation", "Report နဲ့ တင်ပြမှု", [
+            ("Reports", "Reports", "Report များ"),
+            ("Report Editor", "Editor", "ပြင်ဆင်ရန်"),
+            ("Presentation", "Presentation", "တင်ပြမှု"),
+        ]),
+    ],
+}
+assert all(p in PAGE_STAGE or p in ("Dashboard", "Prompt Library") for p in _PAGE_ORDER)
+assert all(PAGE_STAGE[p] == _n for _n, _secs in _STAGE_SECTIONS.items()
+           for _sec in _secs for p, _a, _b in _sec[2])
+
+
+def _section_index(stage_no, page_id):
+    for _i, _sec in enumerate(_STAGE_SECTIONS.get(stage_no, [])):
+        if any(p == page_id for p, _a, _b in _sec[2]):
+            return _i
+    return 0
+
+
+def _go_section(stage_no):
+    """Section bar clicked: open the last page used in that section (or its first)."""
+    _i = st.session_state.get(f"sec_radio_{stage_no}", 0)
+    _ids = [p for p, _a, _b in _STAGE_SECTIONS[stage_no][_i][2]]
+    _last = st.session_state.get(f"sec_last_{stage_no}_{_i}")
+    st.session_state["page"] = _last if _last in _ids else _ids[0]
+
+
+def _go_step(stage_no, sec_i):
+    """Step bar clicked: open that step's page."""
+    _ids = [p for p, _a, _b in _STAGE_SECTIONS[stage_no][sec_i][2]]
+    st.session_state["page"] = _ids[st.session_state.get(f"step_radio_{stage_no}_{sec_i}", 0)]
+
+
+def _nav_btn(label, key, active, target):
+    if st.sidebar.button(
+        label, key=key, use_container_width=True,
+        type="primary" if active else "secondary",
+    ):
+        st.session_state["page"] = target
+        st.rerun()
+
+
+_cur_stage = PAGE_STAGE.get(st.session_state["page"])
+_nav_btn(page_label("Dashboard"), "nav_Dashboard", st.session_state["page"] == "Dashboard", "Dashboard")
+for _n in range(1, 6):
+    _nm = _STAGE_NAME_EN[_n]
+    _nav_btn(
+        f"{_n}  {T(_nm, _STAGE_MM.get(_nm))}", f"nav_stage{_n}", _cur_stage == _n,
+        st.session_state.get(f"stage_last_{_n}", _STAGE_HOME[_n]),
+    )
+st.sidebar.divider()
+_nav_btn(page_label("Prompt Library"), "nav_Prompt Library", st.session_state["page"] == "Prompt Library", "Prompt Library")
 
 _storage_label = (
     T("💾 Storage: Google Drive (OAuth)", "💾 သိမ်းဆည်းမှု: Google Drive (OAuth)") if DRIVE_AUTH == "oauth"
@@ -2415,6 +2478,49 @@ if DRIVE_MODE and not st.session_state.get("drive_synced"):
         sync_from_drive()
         retry_sync_queue()
     st.session_state["drive_synced"] = True
+
+# v3.23 stage header + section / step bars (shown on stage pages only).
+_stage_no = PAGE_STAGE.get(page)
+if _stage_no:
+    st.session_state[f"stage_last_{_stage_no}"] = page
+    _stg = stage_status()[_stage_no - 1]
+    if _stg[2]:
+        _sh_txt, _sh_cls = T("✅ Done", "✅ ပြီးပြီ"), "done"
+    elif any(_st == "done" for _en, _mm, _st in _stg[3]):
+        _sh_txt, _sh_cls = T("● In progress", "● လုပ်နေဆဲ"), "wip"
+    else:
+        _sh_txt, _sh_cls = T("○ Not started", "○ မစရသေးဘူး"), "todo"
+    _sh_nm = _STAGE_NAME_EN[_stage_no]
+    st.markdown(
+        '<div class="rf-sh"><div><div class="rf-sh-k">' + T("Stage", "အဆင့်") + f" {_stage_no} / 5</div>"
+        '<div class="rf-sh-t">' + html.escape(T(_sh_nm, _STAGE_MM.get(_sh_nm))) + "</div>"
+        '<div class="rf-sh-p">📁 ' + html.escape(current_project()) + "</div></div>"
+        '<span class="rf-sh-b ' + _sh_cls + '">' + _sh_txt + "</span></div>",
+        unsafe_allow_html=True,
+    )
+    _secs = _STAGE_SECTIONS.get(_stage_no)
+    if _secs:
+        _si = _section_index(_stage_no, page)
+        if len(_secs) > 1:
+            _sec_key = f"sec_radio_{_stage_no}"
+            st.session_state[_sec_key] = _si
+            st.radio(
+                T("Section", "အပိုင်း"), list(range(len(_secs))),
+                format_func=lambda _i, _secs=_secs: T(_secs[_i][0], _secs[_i][1]),
+                horizontal=True, key=_sec_key, label_visibility="collapsed",
+                on_change=_go_section, args=(_stage_no,),
+            )
+        _steps = _secs[_si][2]
+        if len(_steps) > 1:
+            _step_key = f"step_radio_{_stage_no}_{_si}"
+            st.session_state[_step_key] = [p for p, _a, _b in _steps].index(page)
+            st.radio(
+                T("Step", "အဆင့်ခွဲ"), list(range(len(_steps))),
+                format_func=lambda _i, _steps=_steps: T(_steps[_i][1], _steps[_i][2]),
+                horizontal=True, key=_step_key, label_visibility="collapsed",
+                on_change=_go_step, args=(_stage_no, _si),
+            )
+        st.session_state[f"sec_last_{_stage_no}_{_si}"] = page
 
 if page == "Dashboard":
 
@@ -2654,14 +2760,6 @@ elif page == "Client Brief":
     # from the Market Analysis planner). Saved per project as brief.json
     # (Drive notes folder + local). The old placeholder text is gone.
     st.title(T("📋 Client Brief", "📋 Client Brief"))
-    st.write(f"Project: **{current_project()}**")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
-    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
-    col3.metric(T("Research Reports", "သုတေသန Report များ"), len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
-
-    st.divider()
     _brief = load_brief()
     _appr = _brief.get("approval", "Draft")
     st.caption(T(f"Approval: {_appr}", f"အတည်ပြုချက်: {_appr}"))
@@ -2710,14 +2808,6 @@ elif page == "Research Design":
     # fieldwork plan) comes in the Stage 2 build — the list below already
     # follows the 5-stage table exactly.
     st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
-    st.write(f"Project: **{current_project()}**")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
-    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
-    col3.metric(T("Research Reports", "သုတေသန Report များ"), len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
-
-    st.divider()
     st.info(
         T("Approach (Qual / Quant / Mixed), IDI / FGD / survey, sampling, "
           "instruments (Discussion Guide / questionnaire / screener — AI draft) "
@@ -2731,14 +2821,6 @@ elif page == "Data Cleansing":
     # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
     # status comes in the Stage 4 build.
     st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
-    st.write(f"Project: **{current_project()}**")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric(T("Audio Files", "Audio ဖိုင်များ"), len(list(AUDIO_DIR.glob("*"))))
-    col2.metric(T("Transcripts", "Transcript များ"), len(get_transcript_files()))
-    col3.metric(T("Research Reports", "သုတေသန Report များ"), len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx"))))
-
-    st.divider()
     st.info(
         T("Quality Control — check each raw input (checked / clean / unclear / "
           "issue), status + audit trail — coming in the Stage 4 build.",
@@ -2757,13 +2839,21 @@ elif page == "Data Cleansing":
     ]:
         st.write(("✅ " if _ok else "○ ") + _lbl)
 
+elif page == "Insights":
+    # Stage 5: Qual + Quant combined. The builder comes in the Stage 5 build;
+    # for now it shows which inputs already exist (real counts only).
+    st.title(T("💡 Insights", "💡 Insights"))
+    _in_qual = len(list(ANALYSIS_DIR.glob("*_analysis.txt")))
+    _in_quant = len(list(ANALYSIS_DIR.glob("quant_*.txt")))
+    st.info(T("Insights (Qual + Quant combined) — coming in the Stage 5 build. Inputs it will use:",
+              "Insights (Qual + Quant ပေါင်း) — Stage 5 build မှာ လာမယ်။ သုံးမယ့် input တွေ:"))
+    st.write(("✅ " if _in_qual else "○ ") + T(f"Qualitative analyses saved: {_in_qual}", f"သိမ်းထားတဲ့ Qualitative analysis: {_in_qual}"))
+    st.write(("✅ " if _in_quant else "○ ") + T(f"Quantitative summaries saved: {_in_quant}", f"သိမ်းထားတဲ့ Quantitative summary: {_in_quant}"))
+
 elif page == "Presentation":
     # Stage 5 shell page: presentation is part of Stage 5 — the PPTX comes
     # from the report on the Reports page.
     st.title(T("🎤 Presentation", "🎤 တင်ပြမှု"))
-    st.write(f"Project: **{current_project()}**")
-
-    st.divider()
     st.info(
         T("Presentation is part of Stage 5 — export the PPTX from the report "
           "on the Reports page.",
@@ -3444,3 +3534,15 @@ elif page == "Prompt Library":
             for _vname, _vtext in _eng.get("variants", {}).items():
                 st.markdown(f"**Variant: {_vname}**")
                 st.code(_vtext, language="text")
+
+# v3.23: move on to the next stage from the bottom of any stage page.
+if _stage_no and _stage_no < 5:
+    st.divider()
+    _nx = _stage_no + 1
+    _nx_nm = _STAGE_NAME_EN[_nx]
+    if st.button(
+        T(f"Next: Stage {_nx} · {_nx_nm} →", f"နောက်တစ်ဆင့်: အဆင့် {_nx} · {_STAGE_MM.get(_nx_nm, _nx_nm)} →"),
+        key=f"next_stage_{_stage_no}",
+    ):
+        st.session_state["page"] = st.session_state.get(f"stage_last_{_nx}", _STAGE_HOME[_nx])
+        st.rerun()
