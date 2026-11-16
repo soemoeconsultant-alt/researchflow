@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24.3"
+APP_VERSION = "3.24.4"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1913,7 +1913,19 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
 /* Compact sidebar: reserve more screen space for the workspace.
    Width rules apply ONLY while expanded — an unqualified min-width: 250px
    !important stops the sidebar collapsing (the page stays pushed right,
-   "left behind"). When collapsed, Streamlit's own rules must apply untouched. */
+   "left behind"). When collapsed, Streamlit's own rules must apply untouched.
+   v3.24.4 (#5): the `> div` width is scoped to [data-testid=
+   "stSidebarContent"] — the bare `> div` also matched the resize handle
+   (data-testid="stSidebarResizeHandle", a direct child div of the section),
+   which must stay 8px wide. Narrow widths: below Streamlit's md breakpoint
+   (768px viewport) <main> becomes position:absolute and the expanded sidebar
+   floats OVER the content by design (mobile pattern: tap outside to close,
+   auto-collapses on resize-down, starts collapsed on a fresh narrow load).
+   That is why a ~1013px window with a wide browser side panel (viewport
+   <= 768px) showed the sidebar covering the main content — it is not an
+   app rule breaking at ~1000px. At viewport >= 768px the sidebar pushes
+   content (flex row); the 900px rule below only caps its width. Do NOT
+   force push-layout below 768px — that would break phone use. */
 section[data-testid="stSidebar"][aria-expanded="true"] {
   width: 250px !important;
   min-width: 250px !important;
@@ -1921,7 +1933,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] {
   background: var(--rf-surface);
   border-right: 1px solid var(--rf-line);
 }
-section[data-testid="stSidebar"][aria-expanded="true"] > div {
+section[data-testid="stSidebar"][aria-expanded="true"] > [data-testid="stSidebarContent"] {
   width: 250px !important;
 }
 @media (min-width: 901px) {
@@ -1955,17 +1967,21 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 [data-testid="stLogoSpacer"] { display: none !important; }
 [data-testid="stSidebarCollapseButton"] { visibility: visible !important; opacity: 1 !important; }
 
-/* v3.24.1 (#7): the fixed Streamlit header overlays the top ~56px of the
-   viewport, INCLUDING the sidebar. Sidebar content must start BELOW it, or
-   the logo / Language buttons slide under the header bar when the sidebar
-   scrolls. (v3.16.1 pulled this up to .5rem — that is what got clipped.) */
+/* v3.24.4 (#2): the sidebar top padding is cut from 3.5rem to 0.5rem.
+   The 3.5rem was added in v3.24.1 on the belief that the fixed Streamlit
+   header overlays the top of the sidebar — verified against the 1.67 bundle
+   it does NOT (at viewport >= 768px the header lives inside the main column
+   only; below 768px the sidebar paints ABOVE the header, z-index header+1).
+   The padding was pure dead space: with the header row already collapsed to
+   2.5rem it put the logo ~160px from the top. 0.5rem keeps a small clearance
+   so the collapse button is not jammed at y=0. */
 [data-testid="stSidebar"] > div {
-  padding-top: 3.5rem !important;
+  padding-top: 0.5rem !important;
   /* v3.24.2 (#6): anchor/focus scrolling in the sidebar stops below the
      pinned logo instead of sliding a nav item under it.
-     v3.24.3: 8rem — the stuck logo's bottom edge sits ~122px down (3.75rem
-     sticky top + ~62px logo block), so anchor scrolling must clear 128px. */
-  scroll-padding-top: 8rem !important;
+     v3.24.4: 5rem — the stuck logo now pins at top:0 (see below), so its
+     bottom edge sits ~62px down; anchor scrolling must clear 80px. */
+  scroll-padding-top: 5rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
   padding-top: 0 !important;
@@ -2031,24 +2047,30 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 
 /* Sidebar top block stays visible (v3.21 logo pin; v3.24: only the logo is
    pinned — the old current-project label it used to pin below is gone).
-   v3.24.3 — DECISION (b), user-chosen: the logo STAYS pinned, with a SOLID
-   OPAQUE backing so scrolling content can neither show through it nor cover
-   it. Root cause of the v3.24.2 overlap, verified against the 1.67 DOM: the
-   old selector matched EVERY vertical block in the sidebar, INCLUDING the
-   nested blocks inside the Language/Theme columns — so the "English" and
-   "🌙 Dark" buttons were themselves position:sticky at top:3.5rem with
-   z-index 10, and (same z-index, later in the DOM) they painted OVER the
-   logo while scrolling. The rule below is scoped to the TOP-LEVEL block
-   only (stSidebarUserContent > stVerticalBlock), and the nested-block rule
-   after it explicitly un-sticks anything inside columns. The wrapper gets
+   DECISION (b), user-chosen: the logo STAYS pinned, with a SOLID OPAQUE
+   backing so scrolling content can neither show through it nor cover it.
+   v3.24.4 — REGRESSION in v3.24.3: the logo was NOT pinned at all (it
+   scrolled off the top entirely). Root cause, verified against the 1.67 DOM:
+   the v3.24.3 selector used `stSidebarUserContent > stVerticalBlock`, but
+   the sidebar's children are wrapped in a plain <div> (no testid) BETWEEN
+   them — real DOM: stSidebarUserContent > div > stVerticalBlock >
+   div[data-testid="stElementContainer"] (logo). The `>` combinator matched
+   NOTHING, so the rule was dead. The fix uses a descendant combinator
+   through that wrapper, and targets the logo's element container directly
+   with :has(.rf-logo) — no reliance on child order, no way to match the
+   wrong element. Sticky top is 0 (not 3.75rem): the main header does not
+   cover the sidebar (it lives in the main column at viewport >= 768px, and
+   below 768px the sidebar paints ABOVE it, z-index header+1), so the logo
+   pins at the very top — the user's "keep pinned at top". The wrapper gets
    an opaque sidebar-coloured background (!important) plus z-index 20, and
    the .rf-logo element itself gets the same solid background as a second
-   layer. Sticky top is 3.75rem (exactly the fixed main header's height) so
-   the stuck logo sits just below the header instead of sliding 4px under
-   it. At rest nothing is hidden; while scrolling, nav items pass behind the
-   opaque logo — that is the intended pinned behaviour. */
-[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"] > div:nth-child(1) {
-  position: sticky; z-index: 20; background: var(--rf-surface) !important; top: 3.75rem;
+   layer (dark: #0F172A via DARK_CSS). At rest nothing is hidden; while
+   scrolling, nav items pass behind the opaque logo — the intended pinned
+   behaviour. The nested-block rule after this one still un-sticks anything
+   inside columns, so the "English" / "🌙 Dark" buttons can never become
+   sticky and paint over the logo again (v3.24.2 root cause). */
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.rf-logo) {
+  position: sticky !important; top: 0; z-index: 20; background: var(--rf-surface) !important;
   border-bottom: 1px solid var(--rf-line); padding-bottom: .15rem;
 }
 /* Never let a button inside a sidebar column become sticky (see above). */
@@ -2081,19 +2103,20 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 h1, h2, h3 { color: var(--rf-ink); letter-spacing: 0; }
 /* v3.24.1: headings must never slide under the fixed Streamlit header (#13).
    v3.24.3 (#5): 6rem — the header is 3.75rem tall, so anchor-scrolled
-   headings stop 36px clear of it; html scroll-padding covers the same for
-   any other anchor jump.
-   KNOWN LIMIT (v3.24.3 #5, not fixable in CSS/Python): a page can still OPEN
-   scrolled down (e.g. Data Cleansing opening with its heading below the
-   fold) because Streamlit preserves the scroll position across reruns and
-   this app navigates with session_state + st.rerun(). CSS cannot force a
-   scroll-to-top, and st.html strips <script> in its default path (verified
-   in the 1.67 Html chunk — scripts run only when unsafeAllowJavascript is
-   set, which the Python st.html API does not expose). The proper fix is
-   native navigation (st.navigation scrolls to top on page change) or a
-   custom component — a bigger change, left for a later version. */
+   headings stop 36px clear of it.
+   v3.24.4 (#3): scroll-padding belongs on the REAL scroll container.
+   The main pane (<main>, data-testid="stMain") is the element with
+   overflow:auto and height:100dvh — the document itself never scrolls, so
+   the old `html { scroll-padding-top }` alone did nothing for anchor jumps.
+   The scroll-to-top-on-page-change itself is done in Python (a gated
+   st.html script just before the page dispatch) — the v3.24.3 note claiming
+   st.html strips <script> was WRONG for 1.67: the Python API exposes
+   st.html(body, unsafe_allow_javascript=True) (html.py:52) and the
+   frontend Html chunk re-creates <script> elements so they run in the main
+   document (not iframed). No native-navigation refactor was needed. */
 h1, h2, h3, .rf-sh { scroll-margin-top: 6rem; }
 html { scroll-padding-top: 6rem; }
+[data-testid="stMain"] { scroll-padding-top: 6rem; }
 h1 { font-weight: 600; }
 h2, h3 { font-weight: 600; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
@@ -2262,7 +2285,7 @@ hr { border-color: var(--rf-line); }
 }
 @media (max-width: 900px) {
   section[data-testid="stSidebar"][aria-expanded="true"],
-  section[data-testid="stSidebar"][aria-expanded="true"] > div {
+  section[data-testid="stSidebar"][aria-expanded="true"] > [data-testid="stSidebarContent"] {
     width: min(82vw, 280px) !important;
     min-width: min(82vw, 280px) !important;
     max-width: min(82vw, 280px) !important;
@@ -2311,7 +2334,7 @@ DARK_CSS = """<style>
 section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; border-right-color: #334155; }
 [data-testid="stSidebar"] { background: #0F172A; border-right-color: #334155; }
 [data-testid="stSidebar"] .stButton > button:hover { background: #1E293B; }
-[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"] > div:nth-child(1) { background: #0F172A !important; }
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.rf-logo) { background: #0F172A !important; }
 .rf-logo { background: #0F172A !important; }
 .rf-hero { background: linear-gradient(115deg, #0F1B33 0%, #12233F 55%, #0F2A33 100%); border-color: #1E293B; }
 .rf-hero h1 { color: #F8FAFC; }
@@ -2487,6 +2510,34 @@ _theme_root = "<style>\n:root {\n" + "\n".join(
 st.markdown(_theme_root, unsafe_allow_html=True)
 if _THEME_NAME == "dark":
     st.markdown(DARK_CSS, unsafe_allow_html=True)
+
+# v3.24.4 (#4): make sure Noto Sans Myanmar actually LOADS. The font stack
+# and the @import in CUSTOM_CSS look right on paper, yet bold Myanmar text
+# (the "မြန်မာ" button, "တင်ပြမှု" heading, "ခွဲခြမ်းစိတ်ဖြာမှု" radio
+# labels — all weight 600/700) still renders with stacked/medial marks
+# piled up, while regular-weight Myanmar is clean, and raising line-height
+# to 1.8 had no visible effect. That pattern points at the FONT, not the
+# spacing: if Noto Sans Myanmar never loads, the text falls back to the
+# system Myanmar font, whose bold face positions stacked marks tightly.
+# The @import lives inside a <style> block injected through st.markdown,
+# which is sanitised — the import may never reach the browser. So load the
+# same Google Fonts stylesheet a second way: a tiny script (st.html with
+# unsafe_allow_javascript=True — the Python API DOES expose it in 1.67,
+# html.py:52; the frontend re-creates <script> elements so they run in the
+# main document, not an iframe) that appends a <link> to document.head.
+# A script-created <link> is not subject to HTML sanitising, so it loads
+# even if the @import is stripped. The URL is identical to the @import, so
+# the browser de-duplicates it if the @import did load. Runs once per
+# session (the <link> stays in <head> after this element unmounts).
+# If the marks are STILL tight after this, check in the live browser whether
+# fonts.googleapis.com is reachable at all (computed font-family /
+# document.fonts) — a blocked font CDN would need a bundled font instead.
+if "_font_link_loaded" not in st.session_state:
+    st.session_state["_font_link_loaded"] = True
+    st.html(
+        """<script>(function(){if(!document.querySelector('link[data-rf-font]')){var l=document.createElement('link');l.rel='stylesheet';l.setAttribute('data-rf-font','1');l.href='https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap';document.head.appendChild(l);}})();</script>""",
+        unsafe_allow_javascript=True,
+    )
 
 # --- Shell (v3.4): 5-stage nav, one Project = one container. Modern, professional,
 # minimalist: white, one blue accent, generous spacing, no extra decoration.
@@ -2973,6 +3024,29 @@ if _stage_no:
                 on_change=_go_step, args=(_stage_no, _si),
             )
         st.session_state[f"sec_last_{_stage_no}_{_si}"] = page
+
+# v3.24.4 (#3): scroll the main pane to the top when the page CHANGES.
+# Streamlit preserves main's scroll position across reruns, so a page opened
+# from a scrolled position used to open half-scrolled (Data Cleansing's
+# "Upload & Transcribe" heading below the fold; the Dashboard search box and
+# hero heading half-cut under the toolbar on navigation). CSS cannot force a
+# scroll-to-top. The v3.24.3 note claimed st.html strips <script> — that is
+# WRONG for 1.67: the Python API exposes st.html(body,
+# unsafe_allow_javascript=True) (html.py:52) and the frontend Html chunk
+# re-creates <script> elements so they execute in the main document (not
+# iframed). The script is emitted ONLY on a real page change (tracked in
+# session state), never on widget reruns, so interacting with a widget on a
+# long page never yanks the user to the top. The 60 ms delay lets Streamlit
+# finish committing the new page (and any scroll restoration) first.
+# LIMIT: free manual scrolling under the fixed header is normal behaviour —
+# content slides behind the opaque toolbar and the user scrolls it back into
+# view; that cannot (and should not) be prevented with CSS.
+if st.session_state.get("_last_scrolled_page") != page:
+    st.session_state["_last_scrolled_page"] = page
+    st.html(
+        """<script>setTimeout(function(){var m=document.querySelector('[data-testid="stMain"]');if(m){m.scrollTop=0;}window.scrollTo(0,0);},60);</script>""",
+        unsafe_allow_javascript=True,
+    )
 
 if page == "Dashboard":
 
