@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24.1"
+APP_VERSION = "3.24.2"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1824,21 +1824,26 @@ CUSTOM_CSS = """
    selector anywhere), open line-height everywhere, letter-spacing removed
    where Myanmar can appear. Streamlit's own icons are Material Symbols
    ligatures (e.g. keyboard_double_arrow_right for the collapsed-sidebar
-   button) and render as literal text if their font is overridden — icon spans
-   keep their own font via the protected rule below (it wins with !important). */
+   button) and render as literal text if their font is overridden — v3.24.1
+   broke them this way: the .stApp span rule below (specificity 0,1,1) beat
+   the icon font, and the span[class*="material-symbols"] guard never
+   matched anything (Streamlit 1.67 sets the icon font via an emotion
+   hashed class, not a material-symbols-* class). v3.24.2 restores the icon
+   font on the real identifiers (see the stIconMaterial rule below). */
 .stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
 .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp p,
 .stApp div, .stApp span, .stApp label, .stApp button, .stApp input,
 .stApp textarea, .stApp select, .stApp li, .stApp td, .stApp th,
 .stApp a, .stApp small, .stApp summary
 { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
-/* Body-level portals (BaseWeb select menus, popovers, tooltips, calendars)
-   are NOT descendants of .stApp — target them directly. */
-div[data-baseweb="select"], div[data-baseweb="select"] div,
-div[data-baseweb="menu"], div[data-baseweb="menu"] li, div[data-baseweb="menu"] div,
-div[data-baseweb="popover"], div[data-baseweb="popover"] div,
-div[data-baseweb="tooltip"], div[data-baseweb="tooltip"] div,
-div[data-baseweb="calendar"], div[data-baseweb="calendar"] div
+/* Dropdown menus (Streamlit 1.67 has no BaseWeb — the old data-baseweb
+   selectors matched nothing, so the v3.24.1 menu font/line-height rules
+   were dead). The 1.67 select/multiselect menus render inside the widget
+   element, so they inherit .stApp's font; this explicit rule keeps Myanmar
+   option text on the same stack and line height. */
+[data-testid="stSelectboxVirtualDropdown"], [data-testid="stMultiSelectDropdown"],
+[data-testid="stSelectboxVirtualDropdown"] li, [data-testid="stMultiSelectDropdown"] li,
+[data-testid="stSelectboxVirtualDropdown"] div, [data-testid="stMultiSelectDropdown"] div
 { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
 /* Myanmar script needs open line height; tight tracking breaks stacked marks. */
 [data-testid="stMarkdownContainer"] p { line-height: 1.7; }
@@ -1847,9 +1852,22 @@ div[data-baseweb="calendar"], div[data-baseweb="calendar"] div
 [data-testid="stCaptionContainer"] { line-height: 1.6; }
 .stApp h1, .stApp h2, .stApp h3, .stApp h4 { line-height: 1.6; }
 .stApp button, .stApp label { line-height: 1.6; }
-div[data-baseweb="menu"] li { line-height: 1.6; }
+[data-testid="stSelectboxVirtualDropdown"] li, [data-testid="stMultiSelectDropdown"] li { line-height: 1.6; }
 input::placeholder, textarea::placeholder { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; color: #64748B; opacity: 1; line-height: 1.6; }
-div[data-baseweb="select"] input::placeholder { color: #64748B; opacity: 1; }
+[data-testid="stSelectbox"] input::placeholder, [data-testid="stMultiSelect"] input::placeholder { color: #64748B; opacity: 1; }
+/* v3.24.2 (#5): restore the Material Symbols icon font. Streamlit 1.67
+   renders every Material icon as
+   <span data-testid="stIconMaterial" aria-hidden="true" translate="no">
+   with font-family "Material Symbols Rounded" applied by an emotion hashed
+   class (specificity 0,1,0) — the .stApp span rule above (0,1,1) overrode
+   it, so icon names rendered as literal text ("uploadUpload",
+   "_arrow_right", "keyboard_double"). These rules target the real
+   identifiers and win with !important; the class*="material-symbols" line
+   is kept only as a fallback (it never matched in 1.67). Never put the app
+   font stack on an icon span. */
+span[data-testid="stIconMaterial"],
+span[aria-hidden="true"][translate="no"],
+span[role="img"][translate="no"] { font-family: 'Material Symbols Rounded', sans-serif !important; }
 span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Material Symbols Rounded', sans-serif !important; }
 :root {
   --rf-navy: #071B3A;
@@ -1925,6 +1943,9 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
    scrolls. (v3.16.1 pulled this up to .5rem — that is what got clipped.) */
 [data-testid="stSidebar"] > div {
   padding-top: 3.5rem !important;
+  /* v3.24.2 (#6): anchor/focus scrolling in the sidebar stops below the
+     pinned logo instead of sliding a nav item under it. */
+  scroll-padding-top: 7rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
   padding-top: 0 !important;
@@ -1985,10 +2006,22 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 [data-testid="stSidebar"] hr { border-color: var(--rf-line); }
 
 /* Sidebar top block stays visible (v3.21 logo pin; v3.24: only the logo is
-   pinned — the old current-project label it used to pin below is gone). */
+   pinned — the old current-project label it used to pin below is gone).
+   v3.24.2 (#6): the pin stays (logo visible while scrolling), but the
+   block is compacted and the scroll container gets scroll-padding so any
+   focus/anchor scroll stops below the logo. Honest limit: a sticky header
+   inside a single scroll container inherently covers the one nav item that
+   passes beneath it while scrolling — CSS alone cannot clip the nav's
+   scrollport below the logo in Streamlit's DOM (the logo and the nav share
+   one scroll container), and moving the logo to position:fixed would need
+   exact pixel heights the code cannot measure. What this version fixes:
+   the logo no longer floats mid-sidebar (it sticks at the top edge, just
+   below the fixed toolbar, solid background, same as v3.21) and nothing is
+   hidden at rest. If zero coverage even while scrolling is required, the
+   logo must scroll away with the content (unpin it) — a user decision. */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) {
   position: sticky; z-index: 10; background: var(--rf-surface); top: 3.5rem;
-  border-bottom: 1px solid var(--rf-line); padding-bottom: .35rem;
+  border-bottom: 1px solid var(--rf-line); padding-bottom: .15rem;
 }
 
 /* v3.24: the current-project label is gone (project shows in the stage
@@ -2073,13 +2106,24 @@ h2, h3 { font-weight: 600; }
 .rf-ring span { position: relative; z-index: 1; font-size: 22px; font-weight: 800; color: #10264A; }
 
 /* Recent activity table with status badges */
+/* v3.24.2 (#7): table-layout fixed + overflow-wrap anywhere squeezed the
+   table at 1341px and broke headers/cells mid-word ("Dat e & Tim e").
+   Cells are now nowrap and the table scrolls horizontally inside its own
+   wrapper instead of squeezing — the wrapper's overflow-x already handles it. */
 .rf-table-wrap { overflow-x: auto; }
-.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
-.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; letter-spacing: 0; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); line-height: 1.6; overflow-wrap: anywhere; }
-.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; line-height: 1.6; overflow-wrap: anywhere; }
-.rf-table td:first-child { white-space: normal; }
+.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: auto; }
+.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; letter-spacing: 0; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); line-height: 1.6; white-space: nowrap; }
+.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; line-height: 1.6; white-space: nowrap; }
+.rf-table td:first-child { white-space: nowrap; }
 .rf-table tr:last-child td { border-bottom: none; }
-.rf-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; }
+.rf-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; white-space: nowrap; }
+/* v3.24.2 (#7) safety net: on narrow screens the Dashboard bottom row
+   (Recent Activity + Quick Actions + System Status) stacks vertically
+   instead of squeezing its three cards side by side. */
+@media (max-width: 1200px) {
+  [data-testid="stHorizontalBlock"]:has(.rf-table-wrap) { flex-wrap: wrap !important; }
+  [data-testid="stHorizontalBlock"]:has(.rf-table-wrap) > [data-testid="stColumn"] { flex: 1 1 100% !important; min-width: 0 !important; }
+}
 
 /* Guide + system architecture */
 .rf-guide { background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 5px 18px rgba(16,38,74,.05); margin: 0 0 16px; }
@@ -2094,8 +2138,10 @@ h2, h3 { font-weight: 600; }
   line-height: 1.6; white-space: normal; height: auto; min-height: 2.5rem;
 }
 /* v3.24.1: Streamlit truncates long button labels with an ellipsis — let
-   labels (incl. Myanmar) wrap instead of "▶ Start Ne…" (#10). */
-.stButton > button p, .stDownloadButton > button p { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; line-height: 1.6; overflow-wrap: anywhere; }
+   labels (incl. Myanmar) wrap instead of "▶ Start Ne…" (#10).
+   v3.24.2 (#7): overflow-wrap anywhere broke labels MID-WORD in narrow
+   columns ("Uplo ad Files", "Creat e") — wrap at word boundaries only. */
+.stButton > button p, .stDownloadButton > button p { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; line-height: 1.6; overflow-wrap: normal; word-break: normal; }
 /* v3.24.1: horizontal radio option bars (Stage 4/5 section + step bars) must
    wrap instead of crushing long Myanmar labels (#3). */
 [data-testid="stRadio"] div[role="radiogroup"] { flex-wrap: wrap; }
@@ -2106,7 +2152,7 @@ h2, h3 { font-weight: 600; }
 .stButton > button[kind="primary"]:hover { background: #1D4ED8; }
 .stButton > button:hover, .stDownloadButton > button:hover { border-color: var(--rf-accent); }
 [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
-[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+[data-testid="stSelectbox"] div:has(> input), [data-testid="stMultiSelect"] div:has(> input),
 [data-testid="stNumberInput"] input {
   border-radius: 6px; border-color: var(--rf-line); background: #FFFFFF;
 }
@@ -2119,7 +2165,7 @@ h2, h3 { font-weight: 600; }
 [data-testid="stTabs"] button[role="tab"] { font-weight: 600; }
 [data-testid="stTabs"] button[aria-selected="true"] { color: var(--rf-accent); }
 [data-testid="stExpander"] { border: 1px solid var(--rf-line); border-radius: 8px; background: #FFFFFF; }
-[data-testid="stAlert"] { border-radius: 8px; }
+[data-testid="stAlertContainer"] { border-radius: 8px; }
 hr { border-color: var(--rf-line); }
 
 /* v3.23 stage header: stage number + name + project + status badge. */
@@ -2240,9 +2286,12 @@ section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; bo
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a { background: #1E293B; color: #F8FAFC; border-color: #334155; }
 .stButton > button[kind="primary"] { background: #2563EB; color: #FFFFFF; }
 .stButton > button[kind="primary"]:hover { background: #1D4ED8; }
-[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea, [data-testid="stSelectbox"] div[data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background: #0F172A; color: #F8FAFC; border-color: #334155; }
-div[data-baseweb="menu"] { background: #1E293B; }
-div[data-baseweb="menu"] li { color: #F8FAFC; }
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea, [data-testid="stSelectbox"] div:has(> input), [data-testid="stMultiSelect"] div:has(> input), [data-testid="stNumberInput"] input { background: #0F172A; color: #F8FAFC; border-color: #334155; }
+/* v3.24.2 (#1): dropdown menus in Dark — Streamlit 1.67 has no BaseWeb, so
+   the old div[data-baseweb="menu"] rules matched nothing and menus stayed
+   white. Real testids: stSelectboxVirtualDropdown / stMultiSelectDropdown. */
+[data-testid="stSelectboxVirtualDropdown"], [data-testid="stMultiSelectDropdown"] { background: #1E293B; border: 1px solid #334155; }
+[data-testid="stSelectboxVirtualDropdown"] li, [data-testid="stMultiSelectDropdown"] li { color: #F8FAFC; }
 [data-testid="stFileUploader"] section { background: #0F172A; border-color: #475569; }
 [data-testid="stExpander"] { background: #1E293B; border-color: #334155; }
 [data-testid="stDataFrame"] { border-color: #334155; }
@@ -2272,20 +2321,31 @@ div[data-baseweb="menu"] li { color: #F8FAFC; }
 [data-testid="stRadio"] label:has(input:checked) p,
 [data-testid="stRadio"] label:has(input:checked) div { color: #FFFFFF !important; font-weight: 700; }
 [data-testid="stRadio"] input[type="radio"], [data-testid="stCheckbox"] input[type="checkbox"] { accent-color: #3B82F6; }
-/* Select / dropdown controls + their body-level menus (#4). */
-div[data-baseweb="select"], div[data-baseweb="select"] > div,
-div[data-baseweb="select"] div { background-color: #0F172A !important; color: #F8FAFC !important; border-color: #334155 !important; }
-div[data-baseweb="select"] input { color: #F8FAFC !important; }
-div[data-baseweb="select"] input::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
-div[data-baseweb="select"] svg { fill: #CBD5E1 !important; }
-div[data-baseweb="menu"] { background-color: #1E293B !important; border: 1px solid #334155 !important; }
-div[data-baseweb="menu"] li, div[data-baseweb="menu"] div { color: #F8FAFC !important; }
-div[data-baseweb="menu"] li:hover, div[data-baseweb="menu"] li[aria-selected="true"] { background-color: #334155 !important; }
-div[data-baseweb="popover"] { background-color: #1E293B !important; }
-div[data-baseweb="popover"] div { color: #F8FAFC !important; }
-div[data-baseweb="tooltip"] { background-color: #1E293B !important; color: #F8FAFC !important; }
-div[data-baseweb="tag"] { background-color: #334155 !important; color: #F8FAFC !important; }
-div[data-baseweb="tag"] span { color: #F8FAFC !important; }
+/* Select / dropdown controls + their menus (#4). Streamlit 1.67 removed
+   BaseWeb entirely — every div[data-baseweb="..."] selector in v3.24.1
+   matched NOTHING, which is why fields and menus stayed white in Dark.
+   Verified against the 1.67 frontend bundle: a selectbox field is the div
+   that directly holds the <input> inside [data-testid="stSelectbox"]; a
+   multiselect field is the same inside [data-testid="stMultiSelect"]; the
+   opened menus are [data-testid="stSelectboxVirtualDropdown"] and
+   [data-testid="stMultiSelectDropdown"] (position: fixed, bg from the
+   theme). The old BaseWeb popover/tooltip/calendar/tag rules are dropped —
+   they matched nothing and the app uses no popovers. */
+[data-testid="stSelectbox"] div:has(> input),
+[data-testid="stMultiSelect"] div:has(> input) { background-color: #0F172A !important; color: #F8FAFC !important; border-color: #334155 !important; }
+[data-testid="stSelectbox"] input, [data-testid="stMultiSelect"] input { color: #F8FAFC !important; }
+[data-testid="stSelectbox"] input::placeholder, [data-testid="stMultiSelect"] input::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
+[data-testid="stSelectbox"] button, [data-testid="stMultiSelect"] button { color: #F8FAFC !important; }
+[data-testid="stSelectbox"] svg, [data-testid="stMultiSelect"] svg { fill: #CBD5E1 !important; }
+[data-testid="stSelectboxVirtualDropdown"],
+[data-testid="stMultiSelectDropdown"] { background-color: #1E293B !important; border: 1px solid #334155 !important; }
+[data-testid="stSelectboxVirtualDropdown"] ul, [data-testid="stMultiSelectDropdown"] ul,
+[data-testid="stSelectboxVirtualDropdown"] li, [data-testid="stMultiSelectDropdown"] li,
+[data-testid="stSelectboxVirtualDropdown"] div, [data-testid="stMultiSelectDropdown"] div { color: #F8FAFC !important; background-color: #1E293B !important; }
+[data-testid="stSelectboxVirtualDropdown"] li:hover, [data-testid="stSelectboxVirtualDropdown"] li[aria-selected="true"],
+[data-testid="stMultiSelectDropdown"] li:hover, [data-testid="stMultiSelectDropdown"] li[aria-selected="true"] { background-color: #334155 !important; }
+[data-testid="stSelectboxVirtualDropdown"] [data-hovered], [data-testid="stMultiSelectDropdown"] [data-hovered],
+[data-testid="stSelectboxVirtualDropdown"] [data-focused], [data-testid="stMultiSelectDropdown"] [data-focused] { background-color: #334155 !important; }
 /* Search + all text placeholders (#8). */
 input::placeholder, textarea::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
 /* File uploader: Browse button + dropzone text + size caption (#5). */
@@ -2296,15 +2356,27 @@ input::placeholder, textarea::placeholder { color: #94A3B8 !important; opacity: 
 [data-testid="stFileUploader"] button { background: #1E293B !important; color: #F8FAFC !important; border: 1px solid #475569 !important; }
 [data-testid="stFileUploader"] button:hover { background: #334155 !important; }
 [data-testid="stFileUploader"] button p, [data-testid="stFileUploader"] button span { color: #F8FAFC !important; }
-/* Info / alert boxes (#6). */
-[data-testid="stAlert"] { background-color: #1E293B !important; border: 1px solid #334155 !important; color: #F8FAFC !important; }
-[data-testid="stAlert"] p, [data-testid="stAlert"] div, [data-testid="stAlert"] span, [data-testid="stAlert"] li { color: #F8FAFC !important; }
-[data-testid="stAlert"] a { color: #93C5FD !important; }
+/* Info / alert boxes (#6). Streamlit 1.67: the outer box is
+   [data-testid="stAlertContainer"] — the old [data-testid="stAlert"]
+   matched nothing, so v3.24.1 flipped the text white while the box stayed
+   white (invisible). Background AND text are themed together here. */
+[data-testid="stAlertContainer"] { background-color: #1E293B !important; border: 1px solid #334155 !important; }
+[data-testid="stAlertContainer"] > div { background-color: #1E293B !important; }
+[data-testid="stAlertContainer"] p, [data-testid="stAlertContainer"] div, [data-testid="stAlertContainer"] span, [data-testid="stAlertContainer"] li { color: #F8FAFC !important; }
+[data-testid="stAlertContainer"] a { color: #93C5FD !important; }
 [data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"],
 [data-testid="stAlertContentWarning"], [data-testid="stAlertContentError"] { color: #F8FAFC !important; }
-/* Audio recorder widget (#12). */
-[data-testid="stAudioInput"] { background-color: #1E293B !important; border: 1px solid #334155 !important; color: #F8FAFC !important; border-radius: 8px; }
-[data-testid="stAudioInput"] p, [data-testid="stAudioInput"] span, [data-testid="stAudioInput"] div { color: #F8FAFC !important; }
+/* Audio recorder widget (#12). Streamlit 1.67: [data-testid="stAudioInput"]
+   is the OUTER wrapper — the white box is the inner container div, which
+   the old rule never reached. Theme the inner divs + the timer text.
+   NOT fixable via CSS: the waveform itself is a canvas drawn by WaveSurfer
+   with colours passed as JS props from the (light) Streamlit theme
+   (waveColor = primary, playback colour = fadedText40 on secondaryBg), so
+   its dots stay light-grey; the timer/buttons/container are themed here. */
+[data-testid="stAudioInput"] { border: 1px solid #334155 !important; border-radius: 8px; }
+[data-testid="stAudioInput"] div { background-color: #1E293B !important; }
+[data-testid="stAudioInput"] p, [data-testid="stAudioInput"] span { color: #F8FAFC !important; }
+[data-testid="stAudioInputWaveformTimeCode"] { color: #F8FAFC !important; }
 [data-testid="stAudioInput"] button { background-color: #334155 !important; color: #F8FAFC !important; border-color: #475569 !important; }
 [data-testid="stAudioInput"] button svg { fill: #F8FAFC !important; }
 /* Tabs, expander headers, number-input steppers, date/time inputs. */
@@ -2313,8 +2385,6 @@ input::placeholder, textarea::placeholder { color: #94A3B8 !important; opacity: 
 [data-testid="stExpander"] summary p, [data-testid="stExpander"] summary div { color: #F8FAFC !important; }
 [data-testid="stNumberInput"] button { background: #1E293B !important; color: #F8FAFC !important; }
 [data-testid="stDateInput"] input, [data-testid="stTimeInput"] input { background: #0F172A !important; color: #F8FAFC !important; border-color: #334155 !important; }
-div[data-baseweb="calendar"] { background-color: #1E293B !important; }
-div[data-baseweb="calendar"] div { color: #F8FAFC !important; }
 </style>
 """
 
@@ -2969,21 +3039,21 @@ if page == "Dashboard":
     with _qa:
         with st.container(border=True):
             st.subheader(T("⚡ Quick Actions", "⚡ အမြန်လုပ်ဆောင်ချက်များ"))
-            _qa1, _qa2 = st.columns(2)
-            with _qa1:
-                if st.button(T("🎙️ Start Interview", "🎙️ Interview စမယ်"), key="qa_record", use_container_width=True):
-                    st.session_state["page"] = "Fieldworks"
-                    st.rerun()
-                if st.button(T("📊 Run Analysis", "📊 Analysis လုပ်မယ်"), key="qa_analyze", use_container_width=True):
-                    st.session_state["page"] = "Market Analysis"
-                    st.rerun()
-            with _qa2:
-                if st.button(T("📤 Upload Files", "📤 ဖိုင်တင်မယ်"), key="qa_upload", use_container_width=True):
-                    st.session_state["page"] = "Upload & Transcribe"
-                    st.rerun()
-                if st.button(T("📑 Create Report", "📑 Report လုပ်မယ်"), key="qa_report", use_container_width=True):
-                    st.session_state["page"] = "Reports"
-                    st.rerun()
+            # v3.24.2 (#7): the 2 sub-columns squeezed labels to ~180px and
+            # broke them mid-word ("Uplo ad Files") — stack the 4 buttons
+            # vertically in the full column width instead.
+            if st.button(T("🎙️ Start Interview", "🎙️ Interview စမယ်"), key="qa_record", use_container_width=True):
+                st.session_state["page"] = "Fieldworks"
+                st.rerun()
+            if st.button(T("📊 Run Analysis", "📊 Analysis လုပ်မယ်"), key="qa_analyze", use_container_width=True):
+                st.session_state["page"] = "Market Analysis"
+                st.rerun()
+            if st.button(T("📤 Upload Files", "📤 ဖိုင်တင်မယ်"), key="qa_upload", use_container_width=True):
+                st.session_state["page"] = "Upload & Transcribe"
+                st.rerun()
+            if st.button(T("📑 Create Report", "📑 Report လုပ်မယ်"), key="qa_report", use_container_width=True):
+                st.session_state["page"] = "Reports"
+                st.rerun()
     with _ss:
         with st.container(border=True):
             st.subheader(T("💚 System Status", "💚 စနစ် အခြေအနေ"))
