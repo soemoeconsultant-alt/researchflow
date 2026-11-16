@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24"
+APP_VERSION = "3.24.1"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -487,17 +487,17 @@ def _is_local_request():
 # redirect_uri and allowlist below are unchanged. This style block is separate
 # from CUSTOM_CSS because login_gate() runs before CUSTOM_CSS is injected.
 LOGIN_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap');
 .rf-land { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; background: linear-gradient(115deg, #EAF3FF 0%, #DDF3F8 55%, #D9F5EF 100%); border: 1px solid #D5E5F7; border-radius: 18px; padding: 34px 30px 26px; text-align: center; box-shadow: 0 10px 28px rgba(16,38,74,.08); }
-.rf-land h1 { color: #10264A; font-size: 34px; font-weight: 800; margin: 0 0 2px; }
+.rf-land h1 { color: #10264A; font-size: 34px; font-weight: 800; margin: 0 0 2px; line-height: 1.6; }
 .rf-land h1 span.b { color: #2563EB; }
 .rf-land h1 span.t { color: #0D9488; }
-.rf-land .sub { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 12px; }
-.rf-land p { color: #475569; font-size: 15px; line-height: 1.6; margin: 0 auto 14px; max-width: 560px; }
+.rf-land .sub { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 12px; line-height: 1.6; }
+.rf-land p { color: #475569; font-size: 15px; line-height: 1.7; margin: 0 auto 14px; max-width: 560px; }
 .rf-land .stages { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 0 auto 6px; max-width: 560px; }
-.rf-land .stg { background: #FFFFFF; border: 1px solid #D5E5F7; border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 600; color: #10264A; }
+.rf-land .stg { background: #FFFFFF; border: 1px solid #D5E5F7; border-radius: 999px; padding: 5px 12px; font-size: 12.5px; font-weight: 600; color: #10264A; line-height: 1.6; }
 .rf-land .stg b { color: #0E8F7E; }
-.rf-land-note { text-align: center; color: #5E6B78; font-size: 13px; margin-top: 12px; }
+.rf-land-note { text-align: center; color: #5E6B78; font-size: 13px; margin-top: 12px; line-height: 1.6; }
 </style>
 """
 
@@ -1811,17 +1811,45 @@ _MY_EMAIL = login_gate()
 # --- v3.5 look: dark navy sidebar, white cards, blue accent (design reference) ---
 CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700&display=swap');
-/* Inter for text only — never force it onto every element: Streamlit's own
-   icons are Material Symbols ligatures (e.g. keyboard_double_arrow_right for
-   the collapsed-sidebar button) and render as literal text if their font is
-   overridden. Setting the font on .stApp alone lets text inherit Inter while
-   icon spans keep their own font. */
-.stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; }
-.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp p, .stApp label, .stApp button,
-.stApp input, .stApp textarea { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap');
+/* v3.24.1 Myanmar rendering (#1): the font stack must reach EVERY text-bearing
+   element, not just .stApp descendants. Root cause of the audit breakage:
+   (a) Streamlit/BaseWeb render several widgets with their own explicit fonts
+   (widget labels, radio options, select controls, uploader, alerts), and
+   dropdown menus / popovers / tooltips live in body-level portals OUTSIDE
+   .stApp, so inheritance from .stApp never reached them; (b) tight
+   line-heights (1.1-1.25) crush Myanmar stacked marks together, which reads
+   as overlapping/piled glyphs; (c) letter-spacing on table/stage headers
+   disturbs Myanmar shaping. Fixed here: enumerated selectors (no "*" font
+   selector anywhere), open line-height everywhere, letter-spacing removed
+   where Myanmar can appear. Streamlit's own icons are Material Symbols
+   ligatures (e.g. keyboard_double_arrow_right for the collapsed-sidebar
+   button) and render as literal text if their font is overridden — icon spans
+   keep their own font via the protected rule below (it wins with !important). */
+.stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp p,
+.stApp div, .stApp span, .stApp label, .stApp button, .stApp input,
+.stApp textarea, .stApp select, .stApp li, .stApp td, .stApp th,
+.stApp a, .stApp small, .stApp summary
+{ font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
+/* Body-level portals (BaseWeb select menus, popovers, tooltips, calendars)
+   are NOT descendants of .stApp — target them directly. */
+div[data-baseweb="select"], div[data-baseweb="select"] div,
+div[data-baseweb="menu"], div[data-baseweb="menu"] li, div[data-baseweb="menu"] div,
+div[data-baseweb="popover"], div[data-baseweb="popover"] div,
+div[data-baseweb="tooltip"], div[data-baseweb="tooltip"] div,
+div[data-baseweb="calendar"], div[data-baseweb="calendar"] div
+{ font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
 /* Myanmar script needs open line height; tight tracking breaks stacked marks. */
-[data-testid="stMarkdownContainer"] p { line-height: 1.65; }
+[data-testid="stMarkdownContainer"] p { line-height: 1.7; }
+[data-testid="stMarkdownContainer"] li { line-height: 1.7; }
+[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label { line-height: 1.6; }
+[data-testid="stCaptionContainer"] { line-height: 1.6; }
+.stApp h1, .stApp h2, .stApp h3, .stApp h4 { line-height: 1.6; }
+.stApp button, .stApp label { line-height: 1.6; }
+div[data-baseweb="menu"] li { line-height: 1.6; }
+input::placeholder, textarea::placeholder { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; color: #64748B; opacity: 1; line-height: 1.6; }
+div[data-baseweb="select"] input::placeholder { color: #64748B; opacity: 1; }
 span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Material Symbols Rounded', sans-serif !important; }
 :root {
   --rf-navy: #071B3A;
@@ -1842,6 +1870,12 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
   --rf-attn: #C26A00;
 }
 
+/* v3.24.1: flex columns must be allowed to shrink below their content width,
+   or one wide table/label forces its whole row to overflow its neighbours (#9). */
+[data-testid="stColumn"] { min-width: 0; }
+[data-testid="stVerticalBlock"] { min-width: 0; }
+[data-testid="stVerticalBlockBorderWrapper"] { min-width: 0; }
+
 /* App canvas */
 .stApp {
   background: var(--rf-ground);
@@ -1850,7 +1884,10 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
 .block-container {
   width: 100%;
   max-width: 1540px;
-  padding: 4rem clamp(1.2rem, 2.2vw, 2.25rem) 2.5rem;
+  padding: 4.5rem clamp(1.2rem, 2.2vw, 2.25rem) 6rem;
+  /* v3.24.1: 6rem bottom padding so page content is never underneath
+     Streamlit's floating "Manage app" button (#14, #15); 4.5rem top padding
+     clears the fixed header. */
 }
 
 /* Compact sidebar: reserve more screen space for the workspace.
@@ -1875,10 +1912,19 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
   }
 }
 
-/* Sidebar content sits too low — pull it up (v3.16.1). Streamlit leaves a big
-   gap at the top of the sidebar; tighten the container + block top padding. */
+/* v3.24.1: the Streamlit header/toolbar is platform chrome, not app content.
+   Give it a solid theme background so scrolled content disappears cleanly
+   behind it instead of showing through / over a floating light bar (#7, #13).
+   Dark theme overrides this below with its own solid colour. */
+[data-testid="stHeader"] { background: #FFFFFF; }
+[data-testid="stToolbar"] { color: #172B4D; }
+
+/* v3.24.1 (#7): the fixed Streamlit header overlays the top ~56px of the
+   viewport, INCLUDING the sidebar. Sidebar content must start BELOW it, or
+   the logo / Language buttons slide under the header bar when the sidebar
+   scrolls. (v3.16.1 pulled this up to .5rem — that is what got clipped.) */
 [data-testid="stSidebar"] > div {
-  padding-top: .5rem !important;
+  padding-top: 3.5rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
   padding-top: 0 !important;
@@ -1894,22 +1940,22 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .3rem; }
 [data-testid="stSidebar"] h1 {
   font-size: 1.35rem;
-  line-height: 1.25;
+  line-height: 1.6;
   margin-bottom: .15rem;
 }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
   font-size: .76rem; color: var(--rf-muted);
 }
 [data-testid="stSidebar"] .stButton > button {
-  min-height: 2.25rem; padding: .35rem .75rem; border-radius: 6px;
+  min-height: 2.6rem; padding: .35rem .75rem; border-radius: 6px;
   font-size: .9rem; font-weight: 500; justify-content: flex-start; gap: .6rem;
   background: transparent; color: var(--rf-ink); border: none; box-shadow: none;
-  transform: none;
+  transform: none; line-height: 1.6; white-space: normal;
 }
 /* Streamlit centers nav content in an inner div INSIDE the button, so
    justify-content on the button alone cannot move it (v3.13 lesson). */
 [data-testid="stSidebar"] .stButton button div { justify-content: flex-start !important; }
-[data-testid="stSidebar"] .stButton > button p { color: var(--rf-ink); text-align: left; }
+[data-testid="stSidebar"] .stButton > button p { color: var(--rf-ink); text-align: left; line-height: 1.6; white-space: normal; }
 [data-testid="stSidebar"] .stButton > button:hover {
   background: #EEF1F4; border: none; color: var(--rf-ink); transform: none;
 }
@@ -1941,7 +1987,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 /* Sidebar top block stays visible (v3.21 logo pin; v3.24: only the logo is
    pinned — the old current-project label it used to pin below is gone). */
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) {
-  position: sticky; z-index: 10; background: var(--rf-surface); top: 0;
+  position: sticky; z-index: 10; background: var(--rf-surface); top: 3.5rem;
   border-bottom: 1px solid var(--rf-line); padding-bottom: .35rem;
 }
 
@@ -1956,15 +2002,17 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 
 /* Sidebar logo + user card */
 .rf-logo { display: flex; align-items: center; gap: 10px; padding: 0 4px 14px; }
-.rf-logo-tx { color: var(--rf-ink); font-size: 19px; font-weight: 700; line-height: 1.1; }
+.rf-logo-tx { color: var(--rf-ink); font-size: 19px; font-weight: 700; line-height: 1.5; }
 .rf-logo-sub { color: var(--rf-muted); font-size: 11px; margin-top: 2px; }
 .rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid var(--rf-line); }
 .rf-user-av { width: 34px; height: 34px; border-radius: 50%; background: var(--rf-accent); color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; flex-shrink: 0; }
-.rf-user-nm { color: var(--rf-ink); font-weight: 600; font-size: 14px; }
-.rf-user-rl { color: var(--rf-muted); font-size: 12px; }
+.rf-user-nm { color: var(--rf-ink); font-weight: 600; font-size: 14px; line-height: 1.6; }
+.rf-user-rl { color: var(--rf-muted); font-size: 12px; line-height: 1.6; }
 
 /* Typography and section headings */
 h1, h2, h3 { color: var(--rf-ink); letter-spacing: 0; }
+/* v3.24.1: headings must never slide under the fixed Streamlit header (#13). */
+h1, h2, h3, .rf-sh { scroll-margin-top: 5rem; }
 h1 { font-weight: 600; }
 h2, h3 { font-weight: 600; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
@@ -1982,17 +2030,17 @@ h2, h3 { font-weight: 600; }
   border-radius: 50%; background: radial-gradient(circle, rgba(24,198,217,.22), rgba(24,198,217,0) 68%);
   pointer-events: none;
 }
-.rf-hero h1 { color: #10264A; font-size: clamp(24px, 2.6vw, 34px); margin: 0 0 6px; font-weight: 800; }
+.rf-hero h1 { color: #10264A; font-size: clamp(24px, 2.6vw, 34px); margin: 0 0 6px; font-weight: 800; line-height: 1.6; overflow-wrap: anywhere; }
 .rf-hero h1 span.b { color: #2563EB; }
 .rf-hero h1 span.t { color: #0D9488; }
-.rf-hero p { color: #475569; font-size: 16px; margin: 0; max-width: 760px; }
+.rf-hero p { color: #475569; font-size: 16px; margin: 0; max-width: 760px; line-height: 1.7; }
 
 /* Modern metric cards */
 .rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(16,38,74,.06); }
 .rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #2563EB, #0891B2, #0D9488); }
 .rf-metric-ico { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin-bottom: 10px; }
-.rf-metric-label { color: #64748B; font-size: 13px; font-weight: 600; }
-.rf-metric-value { color: #10264A; font-size: 30px; font-weight: 800; line-height: 1.1; }
+.rf-metric-label { color: #64748B; font-size: 13px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.rf-metric-value { color: #10264A; font-size: 30px; font-weight: 800; line-height: 1.4; }
 
 /* Workflow cards and progress ring */
 .rf-step {
@@ -2005,15 +2053,15 @@ h2, h3 { font-weight: 600; }
 /* v3.21: per-stage sub-items under each workflow card, so stages 3 and 4
    no longer look alike. */
 .rf-step .subs { text-align: left; margin-top: 8px; border-top: 1px solid #EEF2F8; padding-top: 8px; }
-.rf-step .sub { color: #475569; font-size: 11px; line-height: 1.55; white-space: normal; }
+.rf-step .sub { color: #475569; font-size: 11px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
 .rf-step .sub .ok { color: #0E7A5F; font-weight: 700; }
 .rf-step .sub .no { color: #94A3B8; }
 .rf-step .sub .cm { color: #94A3B8; }
 .rf-step .sub i { color: #94A3B8; font-style: normal; }
 .rf-step:hover { transform: translateY(-3px); border-color: #BFD9F2; box-shadow: 0 10px 24px rgba(18,100,197,.12); }
 .rf-step .ico { width: 52px; height: 52px; border-radius: 50%; margin: 0 auto 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
-.rf-step .nm { font-weight: 750; color: #10264A; font-size: 13px; }
-.rf-step .ds { color: #64748B; font-size: 11px; margin-top: 5px; }
+.rf-step .nm { font-weight: 700; color: #10264A; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.rf-step .ds { color: #64748B; font-size: 11px; margin-top: 5px; line-height: 1.6; overflow-wrap: anywhere; }
 .rf-step .st { color: #2563EB; font-size: 12px; font-weight: 700; margin-top: 8px; }
 .rf-ring {
   width: 104px; height: 104px; border-radius: 50%; margin: 12px auto;
@@ -2025,10 +2073,11 @@ h2, h3 { font-weight: 600; }
 .rf-ring span { position: relative; z-index: 1; font-size: 22px; font-weight: 800; color: #10264A; }
 
 /* Recent activity table with status badges */
-.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); }
-.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; }
-.rf-table td:first-child { white-space: nowrap; }
+.rf-table-wrap { overflow-x: auto; }
+.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
+.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; letter-spacing: 0; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); line-height: 1.6; overflow-wrap: anywhere; }
+.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; line-height: 1.6; overflow-wrap: anywhere; }
+.rf-table td:first-child { white-space: normal; }
 .rf-table tr:last-child td { border-bottom: none; }
 .rf-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; }
 
@@ -2036,13 +2085,20 @@ h2, h3 { font-weight: 600; }
 .rf-guide { background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 5px 18px rgba(16,38,74,.05); margin: 0 0 16px; }
 .rf-arch { background: #F4F8FF; border: 1px solid var(--rf-border); border-radius: 12px; padding: 14px 16px; text-align: center; font-weight: 700; color: #10264A; }
 .rf-arch small { display: block; font-weight: 500; color: #64748B; font-size: 12px; margin-top: 2px; }
-.rf-arch-arrow { text-align: center; color: #94A3B8; font-size: 18px; line-height: 1.2; padding: 2px 0; }
+.rf-arch-arrow { text-align: center; color: #94A3B8; font-size: 18px; line-height: 1.6; padding: 2px 0; }
 
 /* Buttons and form controls */
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
   border-radius: 6px; border: 1px solid var(--rf-line); font-weight: 600; font-size: 14px;
   transition: background .15s ease, border-color .15s ease; box-shadow: none;
+  line-height: 1.6; white-space: normal; height: auto; min-height: 2.5rem;
 }
+/* v3.24.1: Streamlit truncates long button labels with an ellipsis — let
+   labels (incl. Myanmar) wrap instead of "▶ Start Ne…" (#10). */
+.stButton > button p, .stDownloadButton > button p { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; line-height: 1.6; overflow-wrap: anywhere; }
+/* v3.24.1: horizontal radio option bars (Stage 4/5 section + step bars) must
+   wrap instead of crushing long Myanmar labels (#3). */
+[data-testid="stRadio"] div[role="radiogroup"] { flex-wrap: wrap; }
 .stButton > button[kind="primary"] {
   color: #FFFFFF; border: 0; background: var(--rf-accent); box-shadow: none;
 }
@@ -2070,27 +2126,33 @@ hr { border-color: var(--rf-line); }
 .rf-sh { display: flex; align-items: center; justify-content: space-between; gap: 16px;
   background: #FFFFFF; border: 1px solid var(--rf-line); border-left: 4px solid var(--rf-accent);
   border-radius: 10px; padding: 12px 18px; margin: 0 0 10px; }
-.rf-sh-k { color: var(--rf-muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
-.rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.4; }
-.rf-sh-p { color: var(--rf-muted); font-size: 13px; }
+.rf-sh-k { color: var(--rf-muted); font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 1.6; }
+.rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.6; overflow-wrap: anywhere; }
+.rf-sh-p { color: var(--rf-muted); font-size: 13px; line-height: 1.6; }
 .rf-sh-b { padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .rf-sh-b.done { background: #E2F5EE; color: #0E7A5F; }
 .rf-sh-b.wip { background: #FFF1DD; color: #C26A00; }
 .rf-sh-b.todo { background: #EEF1F4; color: #5E6B78; }
 
 /* v3.24 top bar chips (project + user) + KPI/workflow flex rows + status pills. */
-.rf-chip { background: var(--rf-surface); border: 1px solid var(--rf-line); border-radius: 999px; padding: 9px 14px; font-size: 13px; font-weight: 600; color: var(--rf-ink); white-space: nowrap; text-align: center; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
+.rf-chip { background: var(--rf-surface); border: 1px solid var(--rf-line); border-radius: 999px; padding: 9px 14px; font-size: 13px; font-weight: 600; color: var(--rf-ink); white-space: normal; text-align: center; margin-top: 2px; overflow-wrap: anywhere; line-height: 1.6; }
 .rf-kpirow { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .rf-kpirow .rf-metric { flex: 1 1 200px; min-width: 0; }
-.rf-flow { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; margin-bottom: 8px; }
-.rf-flow .rf-step { flex: 1 1 180px; min-width: 0; }
-.rf-flow-arrow { flex: 0 0 14px; align-self: center; text-align: center; color: #94A3B8; font-size: 18px; }
+.rf-flow { display: flex; gap: 6px; align-items: stretch; flex-wrap: wrap; margin-bottom: 8px; min-width: 0; }
+.rf-flow .rf-step { flex: 1 1 150px; min-width: 140px; }
+.rf-flow-arrow { flex: 0 0 10px; align-self: center; text-align: center; color: #94A3B8; font-size: 18px; }
 .rf-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .pill-done { background: #E2F5EE; color: #0E7A5F; }
 .pill-wip { background: #DBEAFE; color: #1D4ED8; }
 .pill-todo { background: #EEF1F4; color: #5E6B78; }
 .rf-current { display: inline-block; background: #DBEAFE; color: #1D4ED8; border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
 
+@media (max-width: 1100px) {
+  /* v3.24.1 (#11): under 1100px the arrows eat the width — drop them and let
+     the workflow cards wrap two-per-row instead of clipping. */
+  .rf-flow-arrow { display: none; }
+  .rf-flow .rf-step { flex: 1 1 220px; }
+}
 @media (max-width: 900px) {
   section[data-testid="stSidebar"][aria-expanded="true"],
   section[data-testid="stSidebar"][aria-expanded="true"] > div {
@@ -2098,7 +2160,7 @@ hr { border-color: var(--rf-line); }
     min-width: min(82vw, 280px) !important;
     max-width: min(82vw, 280px) !important;
   }
-  .block-container { padding: 4rem 1rem 2rem; }
+  .block-container { padding: 4.5rem 1rem 6rem; }
   .rf-hero { padding: 23px 20px; }
   .rf-step { min-height: 132px; }
 }
@@ -2132,8 +2194,11 @@ _THEME = THEMES.get(_THEME_NAME, THEMES["light"])
 # Dark Mode overrides — applied after CUSTOM_CSS when theme == dark. The
 # :root variables are redefined by the theme block below; these rules cover
 # the component colours that CUSTOM_CSS hardcodes instead of variables.
-# (Streamlit's own native widgets keep their light styling in places CSS
-# cannot reach — alerts, dataframes and charts — noted as a limitation.)
+# v3.24.1: Streamlit itself still runs its LIGHT theme (this app fakes dark
+# mode with CSS), so every native widget defaults to dark text on a white
+# control. Each widget family gets an explicit dark override below (#2-#8,
+# #12). Dataframes and charts keep Streamlit's styling where CSS cannot
+# reach them — noted as a limitation, not faked.
 DARK_CSS = """<style>
 .stApp { background: #0B1220; color: #F8FAFC; }
 section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; border-right-color: #334155; }
@@ -2189,6 +2254,67 @@ div[data-baseweb="menu"] li { color: #F8FAFC; }
 .rf-land .sub, .rf-land p { color: #CBD5E1; }
 .rf-land .stg { background: #1E293B; border-color: #334155; color: #F8FAFC; }
 .rf-land-note { color: #94A3B8; }
+/* v3.24.1 — Dark theme widget re-theming (#2-#8, #12). */
+/* Streamlit chrome: solid themed header so no white bar floats over dark
+   content or over the sidebar header when the sidebar scrolls (#7, #13). */
+[data-testid="stHeader"] { background: #0F172A !important; }
+[data-testid="stHeader"] button { color: #F8FAFC !important; }
+[data-testid="stHeader"] a { color: #F8FAFC !important; }
+[data-testid="stToolbar"] { color: #F8FAFC !important; }
+/* Widget labels, captions and radio/checkbox option text (#2, #3). */
+[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] div { color: #F8FAFC !important; line-height: 1.6; }
+[data-testid="stCaptionContainer"] { color: #CBD5E1 !important; }
+[data-testid="stRadio"] label p, [data-testid="stRadio"] label div,
+[data-testid="stRadio"] label span,
+[data-testid="stCheckbox"] label p, [data-testid="stCheckbox"] label div,
+[data-testid="stCheckbox"] label span { color: #F8FAFC !important; line-height: 1.6; }
+[data-testid="stRadio"] label:has(input:checked) p,
+[data-testid="stRadio"] label:has(input:checked) div { color: #FFFFFF !important; font-weight: 700; }
+[data-testid="stRadio"] input[type="radio"], [data-testid="stCheckbox"] input[type="checkbox"] { accent-color: #3B82F6; }
+/* Select / dropdown controls + their body-level menus (#4). */
+div[data-baseweb="select"], div[data-baseweb="select"] > div,
+div[data-baseweb="select"] div { background-color: #0F172A !important; color: #F8FAFC !important; border-color: #334155 !important; }
+div[data-baseweb="select"] input { color: #F8FAFC !important; }
+div[data-baseweb="select"] input::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
+div[data-baseweb="select"] svg { fill: #CBD5E1 !important; }
+div[data-baseweb="menu"] { background-color: #1E293B !important; border: 1px solid #334155 !important; }
+div[data-baseweb="menu"] li, div[data-baseweb="menu"] div { color: #F8FAFC !important; }
+div[data-baseweb="menu"] li:hover, div[data-baseweb="menu"] li[aria-selected="true"] { background-color: #334155 !important; }
+div[data-baseweb="popover"] { background-color: #1E293B !important; }
+div[data-baseweb="popover"] div { color: #F8FAFC !important; }
+div[data-baseweb="tooltip"] { background-color: #1E293B !important; color: #F8FAFC !important; }
+div[data-baseweb="tag"] { background-color: #334155 !important; color: #F8FAFC !important; }
+div[data-baseweb="tag"] span { color: #F8FAFC !important; }
+/* Search + all text placeholders (#8). */
+input::placeholder, textarea::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
+/* File uploader: Browse button + dropzone text + size caption (#5). */
+[data-testid="stFileUploader"] section { background: #0F172A !important; border-color: #475569 !important; color: #F8FAFC !important; }
+[data-testid="stFileUploader"] section p, [data-testid="stFileUploader"] section span,
+[data-testid="stFileUploader"] section small, [data-testid="stFileUploader"] section div { color: #F8FAFC !important; }
+[data-testid="stFileUploader"] section small { color: #CBD5E1 !important; }
+[data-testid="stFileUploader"] button { background: #1E293B !important; color: #F8FAFC !important; border: 1px solid #475569 !important; }
+[data-testid="stFileUploader"] button:hover { background: #334155 !important; }
+[data-testid="stFileUploader"] button p, [data-testid="stFileUploader"] button span { color: #F8FAFC !important; }
+/* Info / alert boxes (#6). */
+[data-testid="stAlert"] { background-color: #1E293B !important; border: 1px solid #334155 !important; color: #F8FAFC !important; }
+[data-testid="stAlert"] p, [data-testid="stAlert"] div, [data-testid="stAlert"] span, [data-testid="stAlert"] li { color: #F8FAFC !important; }
+[data-testid="stAlert"] a { color: #93C5FD !important; }
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"],
+[data-testid="stAlertContentWarning"], [data-testid="stAlertContentError"] { color: #F8FAFC !important; }
+/* Audio recorder widget (#12). */
+[data-testid="stAudioInput"] { background-color: #1E293B !important; border: 1px solid #334155 !important; color: #F8FAFC !important; border-radius: 8px; }
+[data-testid="stAudioInput"] p, [data-testid="stAudioInput"] span, [data-testid="stAudioInput"] div { color: #F8FAFC !important; }
+[data-testid="stAudioInput"] button { background-color: #334155 !important; color: #F8FAFC !important; border-color: #475569 !important; }
+[data-testid="stAudioInput"] button svg { fill: #F8FAFC !important; }
+/* Tabs, expander headers, number-input steppers, date/time inputs. */
+[data-testid="stTabs"] button[role="tab"] { color: #CBD5E1 !important; }
+[data-testid="stTabs"] button[aria-selected="true"] { color: #60A5FA !important; }
+[data-testid="stExpander"] summary p, [data-testid="stExpander"] summary div { color: #F8FAFC !important; }
+[data-testid="stNumberInput"] button { background: #1E293B !important; color: #F8FAFC !important; }
+[data-testid="stDateInput"] input, [data-testid="stTimeInput"] input { background: #0F172A !important; color: #F8FAFC !important; border-color: #334155 !important; }
+div[data-baseweb="calendar"] { background-color: #1E293B !important; }
+div[data-baseweb="calendar"] div { color: #F8FAFC !important; }
 </style>
 """
 
@@ -2470,7 +2596,7 @@ page = st.session_state["page"]
 
 # v3.24 top bar: global search + current project + user. No notification
 # bell — there is no notification system, so nothing fake is shown.
-_tb_search, _tb_proj, _tb_user = st.columns([6, 1.6, 1.4])
+_tb_search, _tb_proj, _tb_user = st.columns([5.6, 1.8, 1.6])  # v3.24.1 (#10): wider chip columns so project/user pills are never truncated
 with _tb_search:
     _search_q = st.text_input(
         "Search", key="global_search", label_visibility="collapsed",
@@ -2698,7 +2824,7 @@ if page == "Dashboard":
         + "</p></div>",
         unsafe_allow_html=True,
     )
-    _hc1, _hc2, _hc3 = st.columns([1.6, 1.6, 5])
+    _hc1, _hc2, _hc3 = st.columns([2.2, 2.2, 4.6])  # v3.24.1 (#10): wider hero buttons so labels are never truncated
     with _hc1:
         if st.button(T("▶ Start New Project", "▶ Project အသစ် စမယ်"), key="hero_new_project", type="primary", use_container_width=True):
             st.session_state["page"] = "New Project"
@@ -2821,7 +2947,7 @@ if page == "Dashboard":
 
     # v3.24: Recent Activities + Quick Actions + System Status, side by side.
     # Every row is real data only — no fake activities, no fake deltas.
-    _ra, _qa, _ss = st.columns(3)
+    _ra, _qa, _ss = st.columns([1.35, 1, 1])  # v3.24.1 (#9): Recent Activity needs the most room
     with _ra:
         with st.container(border=True):
             st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
@@ -2833,9 +2959,9 @@ if page == "Dashboard":
                     for _t, _f, _a, _s in _act
                 )
                 st.markdown(
-                    '<table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
+                    '<div class="rf-table-wrap"><table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
                     + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
-                    + "</th><th>" + T("Status", "အခြေအနေ") + "</th></tr>" + _rows + "</table>",
+                    + "</th><th>" + T("Status", "အခြေအနေ") + "</th></tr>" + _rows + "</table></div>",
                     unsafe_allow_html=True,
                 )
             else:
