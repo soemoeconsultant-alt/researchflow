@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24.5"
+APP_VERSION = "3.25"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -315,6 +315,128 @@ def load_brief():
 def save_brief(data):
     """Save the brief (Drive + local, via the notes folder)."""
     return store_write_text("notes", "brief.json", json.dumps(data, ensure_ascii=False, indent=2))
+
+
+# --- Research Design (v3.25, Stage 2): one design.json per project, in
+# notes/ (Drive notes folder + local, same path as brief.json). The design is
+# the feed-forward contract for later stages: the Market Analysis planner
+# reads brief.json + notes/discussion_guide.txt + this file's questionnaire
+# structure; Stage 3's form page will render design["questionnaire"].
+# NO SAMPLE CONTENT RULE (user, 2026-11-17): the real project samples he
+# shared are REFERENCE DATA for the website's STRUCTURE only — their format,
+# section shapes, tables, and ordering. NO sample content may appear in this
+# app: no findings, quotes, prices, dates, venues, client names, contacts,
+# interviewer names, product codes, brand lists, township lists, MMK bands,
+# or respondent data — not as defaults, not as placeholders, not as examples,
+# not in help text, not in prompts. The design page starts EMPTY for every
+# new project; the only prefill allowed is from the project's OWN saved Brief.
+# The RESULT side (DG DOCX, questionnaire XLSForm, reports in v3.27) follows
+# the sample FORMATS but is filled with the CURRENT project's own data only.
+# Keys (all optional — empty means unset, never invented):
+#   approach: "Qualitative" | "Quantitative" | "Mixed" | ""
+#   methods: ["FGD"] etc. (subset of DESIGN_METHODS)
+#   target_audience: copied from the brief when the design is saved
+#   goal: the research goal in one short text (prefilled from the brief's
+#     objectives when the design is first saved; empty when no brief).
+#   target: the target in one short text (prefilled from the brief's
+#     target audience the same way). Goal + target + method + N + personas
+#     + sessions are the report's front matter in Stage 5 (v3.27) — that is
+#     why they live here as structured fields, not free text only.
+#   sample_size: int, 0 = unset (total respondents, e.g. survey n)
+#   sessions_count: int, 0 = unset (number of IDI/FGD sessions)
+#   participants_per_session: int, 0 = unset (respondents in one session)
+#   personas: [{"name": ..., "description": ..., "value_framing": ...}] —
+#     from the brief's respondent criteria; the DG draft turns these into
+#     persona-specific probe blocks; "value_framing" is the segment's short
+#     value label. The personas are the report's organizing spine in Stage 5,
+#     so keep them structured, not free text.
+#   quotas: [{"segment": ..., "share": ..., "notes": ...}] — channel /
+#     segment splits (each quota is a segment name plus its share).
+#   screening_criteria: text — who qualifies / who is screened out
+#     (user type, behaviour, non-rejector rules from the brief).
+#   recruitment_criteria: text — extra recruitment notes.
+#   rationale: text — why this method was chosen, in the user's own words.
+#     The proposal is drafted FROM the design later (v3.27); no proposal
+#     generator in v3.25.
+#   dg_language: "English" | "Myanmar" (moderator-script language)
+#   dg_text: the Discussion Guide draft (markup, see DG_DRAFT_TEMPLATE)
+#   dg_file: "discussion_guide.txt" in notes/ (same text, as a file)
+#   questionnaire_language: "Myanmar" | "English" (respondent language)
+#   questionnaire: {"intro_en": ..., "intro_mm": ..., "closing_en": ...,
+#     "closing_mm": ..., "header_fields": ["FGD date", "Interviewer",
+#     "Respondent ID", "Confirmation"], "questions": [{"code": "Q1",
+#     "name": "q1", "section": "Screening", "question_en": ...,
+#     "question_mm": ..., "type": ..., "options_en": ..., "options_mm": ...,
+#     "outcome": ..., "hint_en": ..., "hint_mm": ..., "required": false,
+#     "appearance": ..., "relevant": ..., "constraint": ...,
+#     "constraint_message": ...}]}
+#     — the screener instrument, stored ONCE with EN + MM text in parallel
+#     (same Q numbers/codes render both versions; the MM version keeps
+#     English food-category labels where the instrument uses English category
+#     names). "type" is in QUESTION_TYPES (single_select, multi_select,
+#     ranking_top3, likert_1_5, rating, open_text, numeric, date, note,
+#     observed = observe and record, do not ask; contact = name + phone).
+#     "options_en"/"options_mm" are " | " separated (options contain commas).
+#     "outcome" is the per-question rule in plain words: Terminate /
+#     Continue / group assignment ("<answer> → Group <n>") / quota tag
+#     ("<segment>"). Screening is a section + outcome rule, not a type. "name" is the XLSForm field name, derived from the code
+#     ("Q1" → "q1") when empty. "hint_en"/"hint_mm" are recruiter hints;
+#     "required" is a bool; "relevant" is an XLSForm expression
+#     (e.g. "${q11} = 'other'"); "constraint" an XPath check; "appearance"
+#     is usually derived at export (likert for Likert/rating, field-list
+#     for groups). "intro" is the recruiter script read to the respondent;
+#     "closing" the thank-you. This structure maps cleanly to a Kobo
+#     XLSForm (questionnaire_to_xlsform) and is what Stage 3's form page
+#     will render.
+#   fieldwork_plan: [{"session": 1, "group": ..., "method": ..., "date":
+#     "YYYY-MM-DD", "time": ..., "seats": 0, "recruited": 0, "confirmed": 0,
+#     "moderator": ..., "moderator_seat": "Seat 1", "venue": ...}] — one
+#     session per persona segment; "seats" is the number of respondents who
+#     sit in the session and "recruited" the over-recruited count (extra
+#     recruits cover no-shows);
+#     "confirmed" is how many confirmed to attend. The moderator sits at
+#     Seat 1 by the seating-plan template convention (filled in on save when
+#     a moderator is set and the seat is empty). Dates/times are plain text,
+#     never pickers (an unset date must never invent today's date, same rule
+#     as the Brief timeline).
+#     Participant rows (names/phones) are NOT stored here — that is Stage 3
+#     interview management; the future import shape is one sheet per group
+#     with screener answers + contact columns. A seating-plan DOCX export
+#     (one card per confirmed participant: name, age, gender, education,
+#     occupation, SEC, food type, frequency, outlet; moderator at the top)
+#     belongs to Stage 3, not v3.25.
+DESIGN_APPROACHES = ["Qualitative", "Quantitative", "Mixed"]
+DESIGN_METHODS = ["IDI", "FGD", "Survey"]
+DESIGN_DG_LANGUAGES = ["English", "Myanmar"]
+DESIGN_Q_LANGUAGES = ["Myanmar", "English"]
+QUESTION_TYPES = ["single_select", "multi_select", "ranking_top3", "likert_1_5", "rating", "open_text", "numeric", "date", "note", "observed", "contact"]
+QUESTION_TYPE_LABELS = {
+    "single_select": "Single-select",
+    "multi_select": "Multi-select",
+    "ranking_top3": "Top-3 ranking",
+    "likert_1_5": "Likert 1–5",
+    "rating": "Rating",
+    "open_text": "Open text",
+    "numeric": "Numeric",
+    "date": "Date",
+    "note": "Note (display text)",
+    "observed": "Observed (do not ask)",
+    "contact": "Contact capture",
+}
+
+
+def load_design():
+    """Saved design for the current project, or {} when none exists."""
+    try:
+        data = json.loads((NOTES_DIR / "design.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_design(data):
+    """Save the design (Drive + local, via the notes folder)."""
+    return store_write_text("notes", "design.json", json.dumps(data, ensure_ascii=False, indent=2))
 
 
 _SA_INFO = None
@@ -1603,6 +1725,106 @@ EXEC_SUMMARY_TEMPLATE = (
     "Analysis:\n"
 )
 
+# --- Stage 2 AI-draft templates (v3.25). The Discussion Guide template
+# follows the house FGD guide format: title + method line, conversational
+# Welcome script, section heading rows "Section N: <Name> (<X> Mins)" with
+# a bold objective line, numbered question groups with italic moderator
+# instructions, bulleted main questions with nested probe sub-bullets,
+# italic moderator notes, persona-specific probe blocks, tables where they
+# fit the flow, timings summing to the session length (FGD 120 min / IDI
+# 60 min), closing with thank-you + incentive line. A 2h FGD guide is about
+# 2,000-2,500 words; an IDI guide about 1,000-1,500. The plain-text markup
+# below is what the DG editor shows and what dg_to_docx() turns into a Word
+# file — the AI must output exactly this markup, no other format.
+DG_DRAFT_TEMPLATE = (
+    "You are a senior market research moderator. Draft a Discussion Guide for "
+    "this project from the client brief and the research design below. The "
+    "moderator will read this guide word for word in the room, so write it as "
+    "a spoken script, not a formal document.\n"
+    "Rules: Base everything ONLY on the brief and the design. Do not invent "
+    "objectives, brands, personas, prices, or questions the brief does not "
+    "support. If a detail is missing (brand name, moderator name, incentive), "
+    "write it as a [bracketed placeholder] such as [Brand X], [Moderator Name], "
+    "[Incentive/Gift] — never guess a real name. Number sections correctly "
+    "1, 2, 3, ... in order — never repeat a section number. Section timings "
+    "must SUM to the session length: FGD = 120 minutes, IDI = 60 minutes. "
+    "Keep the tone conversational and colloquial, like a friendly host — never "
+    "formal. Mostly English with an occasional Myanmar line where the moderator "
+    "needs it; never mix English and Myanmar in the same line. Build "
+    "persona-specific probe blocks ONLY from the personas listed in the design; "
+    "if the design lists no personas, do not invent persona groups. Length: "
+    "FGD about 2,000-2,500 words, IDI about 1,000-1,500 words.\n\n"
+    "Write the guide EXACTLY in this markup (the app turns it into a Word file):\n"
+    "# DISCUSSION GUIDE FOR <Project name> (<Client name>)\n"
+    "Qualitative Market Research (FGD) — or (IDI) for IDI projects\n"
+    "## Welcome\n"
+    "<welcome script: greeting, moderator intro, 'no right or wrong answer', "
+    "recording note, session length>\n"
+    "## Section 1: <Name> (10 Mins)\n"
+    "Objective: <one sentence — what this section must find out>\n"
+    "### 1. <Question group name>\n"
+    "> <moderator instruction, spoken to the room>\n"
+    "- <main question>\n"
+    "  - <nested probe>\n"
+    "> (Note: <moderator note, e.g. what an answer signals>)\n"
+    "[TABLE]\n"
+    "<Header A> | <Header B> | <Header C>\n"
+    "<cell text> | <cell text> | <cell text>\n"
+    "[/TABLE]\n"
+    "(use a [TABLE] block only where a table fits the flow, e.g. a daily timeline)\n"
+    "## Section N: Closing & Thank You (5 Mins)\n"
+    "<thank the group, ask if anything was missed>\n"
+    "Please collect your [Incentive/Gift] at door.\n"
+    "Thank you.\n"
+)
+
+QUESTIONNAIRE_DRAFT_TEMPLATE = (
+    "You are a senior market research analyst. Draft a recruitment screener / "
+    "questionnaire for this project from the client brief and the research "
+    "design below. A recruiter will read it to real respondents, so write the "
+    "questions in their everyday spoken language.\n"
+    "Rules: Base everything ONLY on the brief and the design. Do not invent "
+    "brands, products, prices, or screening rules the brief does not support — "
+    "use [Brand X] style placeholders where a real name is missing. Start "
+    "with a short screening section (simple fail to end: category use, "
+    "frequency, and any age/area/education/spend rule the brief states). Then "
+    "sections that follow the brief objectives, using the brief's respondent "
+    "criteria for who the questions fit. EVERY question carries an outcome "
+    "rule in plain words: Terminate (which answer ends the interview), "
+    "Continue, a group assignment (e.g. '<answer> → Group <n>'), or a quota "
+    "tag (e.g. '<segment>'). Use the design's personas, quotas, and "
+    "screening criteria for those rules. Question types: single_select, "
+    "multi_select, ranking_top3 (pick the top 3), likert_1_5 (a statement, "
+    "answered 1-5), rating (1-5 or 1-10), open_text, numeric, observed "
+    "(observe and record — do not ask, e.g. gender with a quota note), "
+    "contact (name + phone capture). No complex skip logic. About 15-30 "
+    "questions in total — do not pad. Include an intro script the recruiter "
+    "reads (study intro, session length, incentive, venue as [Venue]) and a "
+    "short closing thank-you.\n"
+    "Language: store every question ONCE with BOTH English and Myanmar text in "
+    "parallel (same Q numbers and codes for both versions). Write the Myanmar "
+    "in everyday colloquial Myanmar, no English mixed in — except food-category "
+    "labels, which stay in English where the instrument uses English category "
+    "names. If the design says English "
+    "only, write the Myanmar text the same as the English text.\n"
+    "XLSForm fields: set 'required' true for screening and essential questions, "
+    "false otherwise. Where an outcome implies a condition, also write it as an "
+    "XLSForm 'relevant' expression using the question names, e.g. "
+    "\"${q11} = 'other'\" for an Other-specify field. Put recruiter guidance in "
+    "'hint_en'/'hint_mm'. Leave 'appearance', 'constraint', and "
+    "'constraint_message' empty unless a question needs one.\n\n"
+    "Output JSON ONLY — one object, no other text:\n"
+    '{"intro_en": "...", "intro_mm": "...", "closing_en": "...", "closing_mm": "...", '
+    '"header_fields": ["FGD date", "Interviewer", "Respondent ID", "Confirmation"], '
+    '"questions": [{"code": "Q1", "name": "q1", "section": "Screening", "question_en": "...", '
+    '"question_mm": "...", "type": "single_select|multi_select|ranking_top3|likert_1_5|rating|open_text|numeric|date|note|observed|contact", '
+    '"options_en": "option 1 | option 2", "options_mm": "option 1 | option 2", '
+    '"outcome": "Yes → Terminate; No → Continue", "hint_en": "", "hint_mm": "", '
+    '"required": true, "appearance": "", "relevant": "", "constraint": "", "constraint_message": ""}]}\n'
+    "Options are separated by ' | ' (options contain commas, so never use commas as the separator). "
+    "For numeric, date, note, observed, and contact questions, leave options empty.\n"
+)
+
 PROMPT_LIBRARY = {
     "transcription": {
         "name": "1. Transcription Engine",
@@ -1654,6 +1876,20 @@ PROMPT_LIBRARY = {
         "purpose": "Turns a saved analysis into a one-page client topline: objective, 3-5 key findings with n= and quotes, max 3 recommendations. Same evidence rules and format as the analysis engines.",
         "used_by": "Reports page (Create executive summary)",
         "template": EXEC_SUMMARY_TEMPLATE,
+    },
+    "discussion_guide": {
+        "name": "8. Discussion Guide Draft Engine",
+        "icon": "💬",
+        "purpose": "Drafts a moderator Discussion Guide from the saved brief + research design, in the house format (Welcome script, timed sections with objectives, numbered question groups, italic moderator instructions, nested probes, persona blocks, closing). One Gemini request per draft.",
+        "used_by": "Research Design page (AI draft Discussion Guide)",
+        "template": DG_DRAFT_TEMPLATE,
+    },
+    "questionnaire": {
+        "name": "9. Questionnaire Draft Engine",
+        "icon": "📋",
+        "purpose": "Drafts a questionnaire structure from the saved brief + research design as JSON (section, question, type, options). Screening first (simple fail to end), then objective sections. Respondent language: everyday colloquial Myanmar unless the design says English. One Gemini request per draft.",
+        "used_by": "Research Design page (AI draft Questionnaire)",
+        "template": QUESTIONNAIRE_DRAFT_TEMPLATE,
     },
 }
 
@@ -1803,6 +2039,581 @@ def analysis_to_docx(analysis_text, title_text, out_path):
             doc.add_paragraph(line)
     doc.save(out_path)
     return out_path
+
+
+# --- Discussion Guide (v3.25, Stage 2) ---
+# The DG lives as plain-text markup (what the AI draft produces and what the
+# editor shows) and is rendered to Word by dg_to_docx(). The markup mirrors
+# the house FGD guide format:
+#   "# DISCUSSION GUIDE FOR <Project> (<Client>)" — title line
+#   "Qualitative Market Research (FGD)" — method line (or (IDI))
+#   "## Welcome" — welcome script heading
+#   "## Section N: <Name> (<X> Mins)" — section heading row (amber table)
+#   "Objective: <one sentence>" — bold objective line under the heading
+#   "### N. <Group name>" — bold numbered question-group heading
+#   "> <text>" — moderator instruction (bold+italic), or "(Note: ...)"
+#     moderator note (italic only)
+#   "- <question>" — bulleted main question
+#   "  - <probe>" — nested probe sub-bullet
+#   "[TABLE]" ... "[/TABLE]" — pipe-separated table (header row + rows)
+#   closing lines as plain paragraphs, ending with
+#   "Please collect your [Incentive/Gift] at door." + "Thank you."
+DG_SECTION_FILL = "FFC000"  # amber section-heading fill (house format)
+
+
+def _dg_parse(dg_text):
+    """Parse DG markup into a list of blocks. Unknown lines become plain
+    paragraphs — the parser never drops text."""
+    blocks = []
+    lines = str(dg_text or "").splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        line = raw.strip()
+        i += 1
+        if not line:
+            continue
+        if line == "[TABLE]":
+            rows = []
+            while i < len(lines):
+                tline = lines[i].strip()
+                i += 1
+                if tline == "[/TABLE]":
+                    break
+                if tline:
+                    rows.append([c.strip() for c in tline.split("|")])
+            if rows:
+                blocks.append({"kind": "table", "rows": rows})
+            continue
+        if line.startswith("# "):
+            blocks.append({"kind": "title", "text": line[2:].strip()})
+        elif line.startswith("## "):
+            blocks.append({"kind": "h2", "text": line[3:].strip()})
+        elif line.startswith("### "):
+            blocks.append({"kind": "h3", "text": line[4:].strip()})
+        elif line.lower().startswith("objective:"):
+            blocks.append({"kind": "objective", "text": line[len("Objective:"):].strip()})
+        elif line.startswith("> "):
+            blocks.append({"kind": "instruction", "text": line[2:].strip()})
+        elif raw.startswith("  - ") or raw.startswith("\t- "):
+            blocks.append({"kind": "bullet", "text": line[2:].strip(), "level": 1})
+        elif line.startswith("- "):
+            blocks.append({"kind": "bullet", "text": line[2:].strip(), "level": 0})
+        else:
+            blocks.append({"kind": "para", "text": line})
+    return blocks
+
+
+def _dg_shade_cell(cell, fill):
+    """Fill a table cell (amber section heading, as in the sample guide)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill)
+    tcPr.append(shd)
+
+
+def dg_to_docx(dg_text, title_text, out_path):
+    """Render DG markup to a Word file in the house format: title, method
+    line, Welcome script, amber section-heading table rows with bold
+    objectives, bold group headings, bold+italic instructions, italic
+    notes, bulleted questions with nested probes, tables, closing."""
+    doc = Document()
+    blocks = _dg_parse(dg_text)
+    seen_title = False
+    for b in blocks:
+        kind = b["kind"]
+        if kind == "title":
+            doc.add_heading(b["text"], level=0)
+            seen_title = True
+        elif kind == "h2":
+            text = b["text"]
+            if text.lower().startswith("section "):
+                table = doc.add_table(rows=1, cols=1)
+                table.style = "Table Grid"
+                cell = table.rows[0].cells[0]
+                cell.text = ""
+                p = cell.paragraphs[0]
+                run = p.add_run(text)
+                run.bold = True
+                _dg_shade_cell(cell, DG_SECTION_FILL)
+            else:
+                p = doc.add_paragraph()
+                run = p.add_run(text)
+                run.bold = True
+        elif kind == "objective":
+            p = doc.add_paragraph()
+            run = p.add_run(b["text"])
+            run.bold = True
+        elif kind == "h3":
+            p = doc.add_paragraph()
+            run = p.add_run(b["text"])
+            run.bold = True
+        elif kind == "instruction":
+            p = doc.add_paragraph()
+            run = p.add_run(b["text"])
+            run.italic = True
+            if not b["text"].lstrip().startswith("(Note:"):
+                run.bold = True
+        elif kind == "bullet":
+            style = "List Bullet 2" if b.get("level") == 1 else "List Bullet"
+            try:
+                doc.add_paragraph(b["text"], style=style)
+            except Exception:
+                doc.add_paragraph(("  " if b.get("level") == 1 else "") + "• " + b["text"])
+        elif kind == "table":
+            rows = b["rows"]
+            table = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+            table.style = "Table Grid"
+            for ri, row in enumerate(rows):
+                for ci, val in enumerate(row):
+                    cell = table.rows[ri].cells[ci]
+                    cell.text = ""
+                    p = cell.paragraphs[0]
+                    run = p.add_run(val)
+                    if ri == 0:
+                        run.bold = True
+        else:  # para
+            doc.add_paragraph(b["text"])
+    if not seen_title:
+        doc.add_heading(title_text, level=0)
+        doc.add_paragraph("Market Research AI — ResearchFlow")
+    doc.save(out_path)
+    return out_path
+
+
+def _dg_to_markdown(dg_text):
+    """Light conversion of DG markup to Markdown for the in-app preview.
+    Section headings become ### headings, objectives bold, instructions
+    quotes, tables become Markdown tables."""
+    out = []
+    in_table = False
+    for b in _dg_parse(dg_text):
+        kind = b["kind"]
+        if kind == "title":
+            out.append(f"# {b['text']}")
+        elif kind == "h2":
+            out.append(f"### {b['text']}")
+        elif kind == "objective":
+            out.append(f"**{b['text']}**")
+        elif kind == "h3":
+            out.append(f"**{b['text']}**")
+        elif kind == "instruction":
+            out.append(f"> *{b['text']}*")
+        elif kind == "bullet":
+            out.append(("  - " if b.get("level") == 1 else "- ") + b["text"])
+        elif kind == "table":
+            rows = b["rows"]
+            if rows:
+                out.append("| " + " | ".join(rows[0]) + " |")
+                out.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
+                for row in rows[1:]:
+                    out.append("| " + " | ".join(row) + " |")
+            in_table = False
+        else:
+            out.append(b["text"])
+    return "\n\n".join(out)
+
+
+def _xlsform_slug(text):
+    """Slug for XLSForm names: lowercase, non-alphanumeric → underscore."""
+    return re.sub(r"[^a-z0-9]+", "_", str(text or "").strip().lower()).strip("_")
+
+
+def _parse_questionnaire_json(text):
+    """Parse the AI questionnaire draft (JSON object) into the stored
+    structure. Returns (data, error): data is a dict with intro_en/intro_mm/
+    closing_en/closing_mm/header_fields/questions, error is "" on success.
+    Tolerates a bare list (old format) and JSON wrapped in other text."""
+    raw = str(text or "").strip()
+    data = None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(raw[start:end + 1])
+            except Exception:
+                data = None
+    if data is None:
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start >= 0 and end > start:
+            try:
+                data = {"questions": json.loads(raw[start:end + 1])}
+            except Exception:
+                data = None
+    if not isinstance(data, dict):
+        return None, "Could not read the questionnaire JSON — the draft is shown below; fix it and save."
+    questions = data.get("questions")
+    if not isinstance(questions, list):
+        return None, "The questionnaire has no questions list — the draft is shown below; fix it and save."
+    clean = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qtext_en = str(q.get("question_en", q.get("question", "")) or "").strip()
+        qtext_mm = str(q.get("question_mm", "") or "").strip()
+        if not qtext_en and not qtext_mm:
+            continue
+        qtype = str(q.get("type", "open_text") or "open_text").strip()
+        if qtype not in QUESTION_TYPES:
+            qtype = "open_text"
+        _req = q.get("required", False)
+        if isinstance(_req, str):
+            _req = _req.strip().lower() in {"true", "yes", "1"}
+        clean.append({
+            "code": str(q.get("code", "") or "").strip(),
+            "name": _xlsform_slug(q.get("name", "") or q.get("code", "")),
+            "section": str(q.get("section", "") or "").strip(),
+            "question_en": qtext_en,
+            "question_mm": qtext_mm,
+            "type": qtype,
+            "options_en": str(q.get("options_en", q.get("options", "")) or "").strip(),
+            "options_mm": str(q.get("options_mm", "") or "").strip(),
+            "outcome": str(q.get("outcome", "") or "").strip(),
+            "hint_en": str(q.get("hint_en", "") or "").strip(),
+            "hint_mm": str(q.get("hint_mm", "") or "").strip(),
+            "required": bool(_req),
+            "appearance": str(q.get("appearance", "") or "").strip(),
+            "relevant": str(q.get("relevant", "") or "").strip(),
+            "constraint": str(q.get("constraint", "") or "").strip(),
+            "constraint_message": str(q.get("constraint_message", "") or "").strip(),
+        })
+    header = data.get("header_fields")
+    if not isinstance(header, list):
+        header = []
+    header = [str(h).strip() for h in header if str(h).strip()]
+    return {
+        "intro_en": str(data.get("intro_en", "") or ""),
+        "intro_mm": str(data.get("intro_mm", "") or ""),
+        "closing_en": str(data.get("closing_en", "") or ""),
+        "closing_mm": str(data.get("closing_mm", "") or ""),
+        "header_fields": header,
+        "questions": clean,
+    }, ""
+
+
+def _ed_bool(v):
+    """data_editor checkbox cell → bool (NaN/None become False — note that
+    bool(float('nan')) is True, so NaN must be caught first)."""
+    try:
+        if pd.isna(v):
+            return False
+    except Exception:
+        pass
+    return bool(v)
+
+
+def _ed_str(v):
+    """data_editor cell → clean string (NaN/None become '')."""
+    try:
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    return str(v).strip() if v is not None else ""
+
+
+def _ed_int(v, default=0):
+    """data_editor cell → int (NaN/None/'' become default)."""
+    try:
+        if pd.isna(v):
+            return default
+    except Exception:
+        pass
+    try:
+        return int(float(v))
+    except Exception:
+        return default
+
+
+# --- Kobo XLSForm export (v3.25, Stage 2) ---
+# The questionnaire maps to a KoboToolbox XLSForm workbook (survey +
+# choices + settings) in the format of the CLT sample form: survey columns
+# type / name / label::English (en) / label::Myanmar (my) / hint::English
+# (en) / hint::Myanmar (my) / required / appearance / relevant /
+# repeat_count / constraint / constraint_message; choices columns
+# list_name / name / label::English (en) / label::Myanmar (my) / order;
+# settings id_string / version / default language. Sections become
+# begin_group/end_group (field-list); a section named "Repeat: ..." becomes
+# begin_repeat/end_repeat with a blank repeat_count (set the count in Kobo).
+XLSFORM_SURVEY_HEADER = ["type", "name", "label::English (en)", "label::Myanmar (my)",
+                         "hint::English (en)", "hint::Myanmar (my)", "required", "appearance",
+                         "relevant", "repeat_count", "constraint", "constraint_message"]
+XLSFORM_CHOICES_HEADER = ["list_name", "name", "label::English (en)", "label::Myanmar (my)", "order"]
+
+
+def _design_prompt_context(brief, design):
+    """Shared brief + design context block for the Stage 2 AI drafts.
+    Only non-empty fields are included — nothing is invented."""
+    b = []
+    for key, label in [("client_name", "Client"), ("project_code", "Project code"),
+                       ("background", "Background"), ("objectives", "Objectives"),
+                       ("target_audience", "Target audience"), ("scope", "Scope"),
+                       ("discussion_guide", "Discussion Guide outline from the brief")]:
+        v = str(brief.get(key, "") or "").strip()
+        if v:
+            b.append(f"{label}: {v}")
+    _tl = [str(brief.get("timeline_start", "") or "").strip(),
+           str(brief.get("timeline_end", "") or "").strip()]
+    _tl = [x for x in _tl if x]
+    if _tl:
+        b.append("Timeline: " + " – ".join(_tl))
+    if brief.get("deliverables"):
+        b.append("Deliverables: " + ", ".join(brief["deliverables"]))
+    d = []
+    if str(design.get("goal", "") or "").strip():
+        d.append("Research goal: " + str(design["goal"]).strip())
+    if str(design.get("target", "") or "").strip():
+        d.append("Target: " + str(design["target"]).strip())
+    if design.get("approach"):
+        d.append("Approach: " + str(design["approach"]))
+    if design.get("methods"):
+        d.append("Methods: " + ", ".join(design["methods"]))
+    if str(design.get("rationale", "") or "").strip():
+        d.append("Why this approach: " + str(design["rationale"]).strip())
+    if (design.get("sample_size") or 0) > 0:
+        d.append(f"Sample size: {int(design['sample_size'])}")
+    if (design.get("sessions_count") or 0) > 0:
+        d.append(f"Sessions: {int(design['sessions_count'])}")
+    if (design.get("participants_per_session") or 0) > 0:
+        d.append(f"Participants per session: {int(design['participants_per_session'])}")
+    for p in design.get("personas") or []:
+        if isinstance(p, dict) and str(p.get("name", "") or "").strip():
+            _pd = f"Persona: {p['name'].strip()}"
+            if str(p.get("description", "") or "").strip():
+                _pd += f" — {p['description'].strip()}"
+            if str(p.get("value_framing", "") or "").strip():
+                _pd += f" (value framing: {p['value_framing'].strip()})"
+            d.append(_pd)
+    for qq in design.get("quotas") or []:
+        if isinstance(qq, dict) and str(qq.get("segment", "") or "").strip():
+            _qd = f"Quota: {qq['segment'].strip()}"
+            if str(qq.get("share", "") or "").strip():
+                _qd += f" — {qq['share'].strip()}"
+            if str(qq.get("notes", "") or "").strip():
+                _qd += f" ({qq['notes'].strip()})"
+            d.append(_qd)
+    if str(design.get("screening_criteria", "") or "").strip():
+        d.append("Screening criteria: " + str(design["screening_criteria"]).strip())
+    if str(design.get("recruitment_criteria", "") or "").strip():
+        d.append("Recruitment notes: " + str(design["recruitment_criteria"]).strip())
+    out = ["Client brief:\n" + ("\n".join(b) if b else "(no brief saved yet)"),
+           "Research design:\n" + ("\n".join(d) if d else "(no design saved yet)")]
+    return "\n\n".join(out)
+
+
+def questionnaire_to_xlsform(qdata, title_text, out_path):
+    """Export the saved questionnaire as a Kobo XLSForm workbook.
+    Returns (out_path, stats) or (None, error) when openpyxl is missing.
+    Type mapping: single_select → select_one; multi_select → select_multiple;
+    ranking_top3 → select_multiple + constraint count-selected(.) = 3;
+    likert_1_5 / rating → select_one + appearance likert (choices 1-5 unless
+    options given); open_text → text; numeric → integer; date → date;
+    note → note; observed → text (or select_one when options exist — the
+    recruiter records what they see); contact → two text rows (<name>_name,
+    <name>_phone). The screener's Terminate outcome has no XLSForm
+    equivalent — it stays in the question's outcome text and in the relevant
+    expression when one is given; no skip logic is invented. Header fields
+    export as date (FGD date), select_one Yes/No (Confirmation), else text.
+    Intro/closing export as note rows."""
+    try:
+        import openpyxl
+    except ImportError:
+        return None, "openpyxl is not installed — run this in PowerShell: .\\.venv\\Scripts\\python.exe -m pip install openpyxl"
+    if isinstance(qdata, list):
+        qdata = {"questions": qdata}
+    if not isinstance(qdata, dict):
+        qdata = {}
+    questions = qdata.get("questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "survey"
+    ws.append(XLSFORM_SURVEY_HEADER)
+    ch = wb.create_sheet("choices")
+    ch.append(XLSFORM_CHOICES_HEADER)
+    st_ = wb.create_sheet("settings")
+    st_.append(["form_title", "id_string", "version", "default_language"])
+    st_.append([title_text or "ResearchFlow Questionnaire",
+                _xlsform_slug(title_text) or "researchflow", "1", "English (en)"])
+    used_names = set()
+    choice_rows = 0
+    notes = []
+
+    def _unique_name(base, fallback):
+        name = _xlsform_slug(base) or fallback
+        if name not in used_names:
+            used_names.add(name)
+            return name
+        i = 2
+        while f"{name}_{i}" in used_names:
+            i += 1
+        used_names.add(f"{name}_{i}")
+        return f"{name}_{i}"
+
+    def _add_choices(list_name, opts_en, opts_mm):
+        nonlocal choice_rows
+        for i, en in enumerate(opts_en):
+            mm = opts_mm[i] if i < len(opts_mm) else en
+            ch.append([list_name, str(i + 1), en, mm, ""])
+            choice_rows += 1
+
+    def _row(qtype, name, en="", mm="", hint_en="", hint_mm="", required="false",
+             appearance="", relevant="", repeat_count="", constraint="", constraint_message=""):
+        ws.append([qtype, name, en, mm, hint_en, hint_mm, required, appearance,
+                   relevant, repeat_count, constraint, constraint_message])
+
+    _row("start", "start")
+    _row("end", "end")
+    _row("start-geopoint", "start-geopoint")
+    # Header / operational fields.
+    for field in qdata.get("header_fields") or []:
+        slug = _xlsform_slug(field)
+        if not slug:
+            continue
+        if "date" in slug:
+            _row("date", _unique_name(slug, "field"), field, field, required="false")
+        elif "confirm" in slug:
+            lname = _unique_name(slug, "field")
+            _row(f"select_one {lname}", lname, field, field, required="false")
+            _add_choices(lname, ["Yes", "No"], ["ဟုတ်ကဲ့", "မဟုတ်ဘူး"])
+        else:
+            _row("text", _unique_name(slug, "field"), field, field, required="false")
+    # Intro script as a note row.
+    if (qdata.get("intro_en") or "").strip() or (qdata.get("intro_mm") or "").strip():
+        _row("note", _unique_name("intro", "intro"),
+             qdata.get("intro_en", ""), qdata.get("intro_mm", ""), required="false")
+    # Questions, grouped by section in first-appearance order.
+    sections = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        sec = str(q.get("section", "") or "").strip()
+        if sec not in sections:
+            sections.append(sec)
+    has_terminate = False
+    has_repeat = False
+    has_contact = False
+    has_observed = False
+    for sec in sections:
+        sec_questions = [q for q in questions if isinstance(q, dict)
+                         and str(q.get("section", "") or "").strip() == sec]
+        if not sec_questions:
+            continue
+        gname = _unique_name(_xlsform_slug(sec) or "section", "section")
+        is_repeat = sec.lower().startswith("repeat:")
+        if is_repeat:
+            has_repeat = True
+            _row("begin_repeat", gname, sec, sec, required="false", appearance="field-list")
+        else:
+            _row("begin_group", gname, sec, sec, required="false", appearance="field-list")
+        for qi, q in enumerate(sec_questions):
+            qname = _unique_name(q.get("name") or q.get("code") or f"q{qi + 1}", f"q{qi + 1}")
+            q_en = str(q.get("question_en", "") or "")
+            q_mm = str(q.get("question_mm", "") or "")
+            qtype = str(q.get("type", "open_text") or "open_text")
+            if qtype not in QUESTION_TYPES:
+                qtype = "open_text"
+            opts_en = [o.strip() for o in str(q.get("options_en", "") or "").split("|") if o.strip()]
+            opts_mm = [o.strip() for o in str(q.get("options_mm", "") or "").split("|") if o.strip()]
+            if not opts_mm:
+                opts_mm = list(opts_en)
+            hint_en = str(q.get("hint_en", "") or "")
+            hint_mm = str(q.get("hint_mm", "") or "")
+            required = "true" if q.get("required") else "false"
+            appearance = str(q.get("appearance", "") or "")
+            relevant = str(q.get("relevant", "") or "")
+            constraint = str(q.get("constraint", "") or "")
+            constraint_message = str(q.get("constraint_message", "") or "")
+            outcome = str(q.get("outcome", "") or "")
+            if "terminate" in outcome.lower():
+                has_terminate = True
+            if qtype == "single_select":
+                _row(f"select_one {qname}", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+                _add_choices(qname, opts_en, opts_mm)
+            elif qtype == "multi_select":
+                _row(f"select_multiple {qname}", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+                _add_choices(qname, opts_en, opts_mm)
+            elif qtype == "ranking_top3":
+                if not constraint:
+                    constraint = "count-selected(.) = 3"
+                if not constraint_message:
+                    constraint_message = "Please select exactly 3."
+                _row(f"select_multiple {qname}", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+                _add_choices(qname, opts_en, opts_mm)
+            elif qtype in ("likert_1_5", "rating"):
+                if not appearance:
+                    appearance = "likert"
+                if not opts_en:
+                    opts_en = ["1", "2", "3", "4", "5"]
+                    opts_mm = list(opts_en)
+                _row(f"select_one {qname}", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+                _add_choices(qname, opts_en, opts_mm)
+            elif qtype == "open_text":
+                _row("text", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+            elif qtype == "numeric":
+                _row("integer", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+            elif qtype == "date":
+                _row("date", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+            elif qtype == "note":
+                _row("note", qname, q_en, q_mm, hint_en, hint_mm,
+                     "false", appearance, relevant, "", "", "")
+            elif qtype == "observed":
+                has_observed = True
+                if opts_en:
+                    _row(f"select_one {qname}", qname, q_en, q_mm, hint_en, hint_mm,
+                         required, appearance, relevant, "", constraint, constraint_message)
+                    _add_choices(qname, opts_en, opts_mm)
+                else:
+                    _row("text", qname, q_en, q_mm, hint_en, hint_mm,
+                         required, appearance, relevant, "", constraint, constraint_message)
+            elif qtype == "contact":
+                has_contact = True
+                _row("text", f"{qname}_name", q_en + " — Name", (q_mm + " — နာမည်") if q_mm else q_en + " — Name",
+                     hint_en, hint_mm, required, appearance, relevant, "", constraint, constraint_message)
+                _row("text", f"{qname}_phone", q_en + " — Phone", (q_mm + " — ဖုန်း") if q_mm else q_en + " — Phone",
+                     hint_en, hint_mm, required, appearance, relevant, "", constraint, constraint_message)
+            else:
+                _row("text", qname, q_en, q_mm, hint_en, hint_mm,
+                     required, appearance, relevant, "", constraint, constraint_message)
+        if is_repeat:
+            _row("end_repeat", "", "", "", "", "", "", "", "", "", "", "")
+        else:
+            _row("end_group", "", "", "", "", "", "", "", "", "", "", "")
+    # Closing thank-you as a note row.
+    if (qdata.get("closing_en") or "").strip() or (qdata.get("closing_mm") or "").strip():
+        _row("note", _unique_name("closing", "closing"),
+             qdata.get("closing_en", ""), qdata.get("closing_mm", ""), required="false")
+    if has_terminate:
+        notes.append("Terminate outcomes are kept as text in the outcome column — "
+                     "no skip logic was invented. Add relevant expressions in Kobo where a "
+                     "Terminate must hide the rest of the form.")
+    if has_repeat:
+        notes.append("Repeat sections export with a blank repeat_count — set the count in Kobo.")
+    if has_contact:
+        notes.append("Contact questions export as two text rows (<name>_name, <name>_phone).")
+    if has_observed:
+        notes.append("Observed questions export as text (or select_one when options exist) — "
+                     "the recruiter records what they see; nothing is asked.")
+    wb.save(out_path)
+    stats = {"questions": len(questions), "choice_rows": choice_rows,
+             "groups": len(sections), "notes": notes}
+    return out_path, stats
 
 
 # Login gate: authentication is mandatory unless explicit local-only opt-in is set.
@@ -2945,6 +3756,23 @@ def stage_status():
                   if f.is_file() and f.name not in {"brief.json", "project.json"}])
     any_files = audio_n + tr_n + an_n + rep_n > 0
     brief = load_brief()
+    design = load_design()
+    _d_methods = design.get("methods") or []
+    _d_q = design.get("questionnaire") or {}
+    _d_qs = _d_q.get("questions") if isinstance(_d_q, dict) else []
+    _d2_items = [
+        _stage_item("Approach (Qual / Quant / Mixed)", "Approach (Qual / Quant / Mixed)",
+                    "done" if design.get("approach") in DESIGN_APPROACHES else "todo"),
+        _stage_item("IDI / FGD / survey", "IDI / FGD / survey",
+                    "done" if _d_methods else "todo"),
+        _stage_item("Sampling", "Sampling",
+                    "done" if (design.get("sample_size") or 0) > 0 or (design.get("sessions_count") or 0) > 0
+                    or design.get("personas") or design.get("quotas") else "todo"),
+        _stage_item("DG / questionnaire / screener", "DG / questionnaire / screener",
+                    "done" if design.get("dg_text") or _d_qs else "todo"),
+        _stage_item("Fieldwork plan", "ကွင်းဆင်းအစီအစဉ်",
+                    "done" if design.get("fieldwork_plan") else "todo"),
+    ]
     return [
         (_sl("1 · Client Brief"),
          T("Define objectives & scope", "ရည်ရွယ်ချက်နဲ့ scope သတ်မှတ်ခြင်း"),
@@ -2961,14 +3789,8 @@ def stage_status():
          ]),
         (_sl("2 · Research Design"),
          T("Design methodology, sampling & instruments", "နည်းလမ်း၊ sampling နဲ့ tool တွေ ဒီဇိုင်းဆွဲခြင်း"),
-         False,
-         [
-             _stage_item("Approach (Qual / Quant / Mixed)", "Approach (Qual / Quant / Mixed)", "coming"),
-             _stage_item("IDI / FGD / survey", "IDI / FGD / survey", "coming"),
-             _stage_item("Sampling", "Sampling", "coming"),
-             _stage_item("DG / questionnaire / screener", "DG / questionnaire / screener", "coming"),
-             _stage_item("Fieldwork plan", "ကွင်းဆင်းအစီအစဉ်", "coming"),
-         ]),
+         all(_s == "done" for _e, _m, _s in _d2_items),
+         _d2_items),
         (_sl("3 · Fieldworks"),
          T("Collect data in the field", "ကွင်းဆင်းပြီး ဒေတာ ကောက်ယူခြင်း"),
          audio_n > 0,
@@ -3428,18 +4250,348 @@ elif page == "Client Brief":
             st.rerun()
 
 elif page == "Research Design":
-    # Stage 2 shell page: the full builder (approach, sampling, instruments,
-    # fieldwork plan) comes in the Stage 2 build — the list below already
-    # follows the 5-stage table exactly.
+    # Stage 2 builder (v3.25): method, sampling, Discussion Guide +
+    # questionnaire (AI draft), fieldwork plan — all saved per project as
+    # design.json in notes/ (Drive + local). The page starts EMPTY for a new
+    # project; the only prefill is from the project's OWN saved Brief.
     st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
-    st.info(
-        T("Approach (Qual / Quant / Mixed), IDI / FGD / survey, sampling, "
-          "instruments (Discussion Guide / questionnaire / screener — AI draft) "
-          "+ fieldwork plan — coming in the Stage 2 build.",
-          "Approach (Qual / Quant / Mixed), IDI / FGD / survey, sampling, "
-          "instruments (Discussion Guide / questionnaire / screener — AI draft) "
-          "+ fieldwork plan — Stage 2 build မှာ လာမယ်။")
-    )
+    _brief = load_brief()
+    _design = load_design()
+    _has_brief = bool(_brief)
+    if not _has_brief:
+        st.warning(
+            T("No Client Brief saved yet — fill in the Client Brief first so the AI drafts have something to work from. Method and sampling below can still be set.",
+              "Client Brief မသိမ်းရသေးဘူး — အရင် Client Brief ဖြည့်ပါ၊ AI draft တွေက Brief ကနေ ရေးမှာ။ အောက်က Method နဲ့ Sampling ကိုတော့ အခု သတ်မှတ်လို့ရတယ်။")
+        )
+    # Saved-design summary (what is set, what is still empty).
+    _sum_items = [
+        ("Method", "Method", bool(_design.get("approach")) or bool(_design.get("methods"))),
+        ("Sampling", "Sampling", bool(_design.get("sample_size") or _design.get("sessions_count") or _design.get("personas") or _design.get("quotas") or _design.get("screening_criteria"))),
+        ("Discussion Guide", "Discussion Guide", bool((_design.get("dg_text") or "").strip())),
+        ("Questionnaire", "Questionnaire", bool((_design.get("questionnaire") or {}).get("questions") if isinstance(_design.get("questionnaire"), dict) else _design.get("questionnaire"))),
+        ("Fieldwork Plan", "Fieldwork Plan", bool(_design.get("fieldwork_plan"))),
+    ]
+    st.caption(" · ".join(("✅ " if _done else "○ ") + T(_en, _mm) for _en, _mm, _done in _sum_items))
+
+    # ---- 1. Method ----
+    st.subheader(T("1. Method", "၁။ Method"))
+    _approach_idx = DESIGN_APPROACHES.index(_design.get("approach")) if _design.get("approach") in DESIGN_APPROACHES else None
+    _approach = st.radio(T("Research approach", "သုတေသန approach"), DESIGN_APPROACHES, index=_approach_idx, key="design_approach")
+    _methods = st.multiselect(T("Method", "Method"), DESIGN_METHODS, default=[m for m in _design.get("methods", []) if m in DESIGN_METHODS], key="design_methods")
+    if _approach == "Qualitative" and "Survey" in _methods:
+        st.warning(T("Qualitative with a survey is unusual — a survey is usually Quantitative or Mixed.", "Qualitative နဲ့ Survey တွဲတာ မများဘူး — Survey က Quantitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
+    if _approach == "Quantitative" and ("IDI" in _methods or "FGD" in _methods):
+        st.warning(T("Quantitative with IDI / FGD is unusual — interviews and groups are usually Qualitative or Mixed.", "Quantitative နဲ့ IDI / FGD တွဲတာ မများဘူး — IDI / FGD က Qualitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
+    if _approach and _approach != "Mixed" and len(_methods) > 1:
+        st.info(T("More than one method — consider Mixed.", "Method တစ်ခုထက်ပိုရင် Mixed စဉ်းစားကြည့်ပါ။"))
+    _rationale = st.text_area(T("Why this method? (rationale)", "ဘာလို့ ဒီ method ရွေးတာလဲ။"), value=_design.get("rationale", ""), height=80, key="design_rationale")
+    _goal_default = _design.get("goal", "") or _brief.get("objectives", "")
+    _goal = st.text_area(T("Research goal", "သုတေသန ရည်ရွယ်ချက်"), value=_goal_default, height=80, key="design_goal")
+    _target_default = _design.get("target", "") or _brief.get("target_audience", "")
+    _target = st.text_area(T("Target", "Target"), value=_target_default, height=80, key="design_target")
+    if st.button(T("Save method", "Method သိမ်းမယ်"), key="design_save_method", type="primary"):
+        _design.update({"approach": _approach or "", "methods": list(_methods),
+                        "rationale": _rationale.strip(), "goal": _goal.strip(),
+                        "target": _target.strip(), "target_audience": _brief.get("target_audience", "")})
+        save_design(_design)
+        st.success(T("Method saved.", "Method သိမ်းပြီးပြီ။"))
+        st.rerun()
+
+    # ---- 2. Sampling ----
+    st.subheader(T("2. Sampling", "၂။ Sampling"))
+    if _has_brief:
+        st.text_input(T("Target audience (from the brief)", "Target audience (Brief ကနေ)"), value=_brief.get("target_audience", ""), disabled=True, key="design_audience_ro")
+    _sc1, _sc2, _sc3 = st.columns(3)
+    _sample_size = _sc1.number_input(T("Sample size (total respondents)", "Sample size (ဖြေဆိုသူ စုစုပေါင်း)"), value=_ed_int(_design.get("sample_size"), 0), min_value=0, step=1, key="design_sample_size")
+    _sessions = _sc2.number_input(T("Sessions (groups / interviews)", "Sessions (အဖွဲ့ / အင်တာဗျူး အရေအတွက်)"), value=_ed_int(_design.get("sessions_count"), 0), min_value=0, step=1, key="design_sessions")
+    _pps = _sc3.number_input(T("Participants per session", "တစ်ဖွဲ့မှာ လူအရေအတွက်"), value=_ed_int(_design.get("participants_per_session"), 0), min_value=0, step=1, key="design_pps")
+    st.caption(T("0 means unset — empty is empty, never guessed.", "0 ဆိုတာ မသတ်မှတ်ရသေးဘူး — မရှိရင် မရှိဘူး၊ ခန့်မှန်းမထည့်ဘူး။"))
+    st.caption(T("Personas (from the brief's respondent criteria)", "Personas (Brief ရဲ့ respondent criteria ကနေ)"))
+    _personas = _design.get("personas") or []
+    _p_df = pd.DataFrame([{"Name": _ed_str(p.get("name")), "Description": _ed_str(p.get("description")), "Value framing": _ed_str(p.get("value_framing"))} for p in _personas if isinstance(p, dict)], columns=["Name", "Description", "Value framing"])
+    _p_edited = st.data_editor(_p_df, num_rows="dynamic", use_container_width=True, key="design_personas")
+    st.caption(T("Quotas (channel / segment splits)", "Quotas (channel / segment ခွဲဝေမှု)"))
+    _quotas = _design.get("quotas") or []
+    _qt_df = pd.DataFrame([{"Segment": _ed_str(q.get("segment")), "Share": _ed_str(q.get("share")), "Notes": _ed_str(q.get("notes"))} for q in _quotas if isinstance(q, dict)], columns=["Segment", "Share", "Notes"])
+    _qt_edited = st.data_editor(_qt_df, num_rows="dynamic", use_container_width=True, key="design_quotas")
+    _screening = st.text_area(T("Screening criteria — who qualifies, who is screened out", "Screening criteria — ဘယ်သူ ပါမလဲ၊ ဘယ်သူ မပါဘူး"), value=_design.get("screening_criteria", ""), height=80, key="design_screening")
+    _recruitment = st.text_area(T("Recruitment criteria / notes", "Recruitment criteria / မှတ်ချက်"), value=_design.get("recruitment_criteria", ""), height=80, key="design_recruitment")
+    # Current editor values (used by the Save button below and by the AI drafts).
+    _new_personas = []
+    for _r in _p_edited.to_dict("records"):
+        _nm = _ed_str(_r.get("Name"))
+        if _nm or _ed_str(_r.get("Description")) or _ed_str(_r.get("Value framing")):
+            _new_personas.append({"name": _nm, "description": _ed_str(_r.get("Description")), "value_framing": _ed_str(_r.get("Value framing"))})
+    _new_quotas = []
+    for _r in _qt_edited.to_dict("records"):
+        _sg = _ed_str(_r.get("Segment"))
+        if _sg or _ed_str(_r.get("Share")) or _ed_str(_r.get("Notes")):
+            _new_quotas.append({"segment": _sg, "share": _ed_str(_r.get("Share")), "notes": _ed_str(_r.get("Notes"))})
+    if st.button(T("Save sampling", "Sampling သိမ်းမယ်"), key="design_save_sampling", type="primary"):
+        _design.update({"sample_size": int(_sample_size), "sessions_count": int(_sessions),
+                        "participants_per_session": int(_pps), "personas": _new_personas,
+                        "quotas": _new_quotas, "screening_criteria": _screening.strip(),
+                        "recruitment_criteria": _recruitment.strip(),
+                        "target_audience": _brief.get("target_audience", "")})
+        save_design(_design)
+        st.success(T("Sampling saved.", "Sampling သိမ်းပြီးပြီ။"))
+        st.rerun()
+    # Design as the AI drafts see it: saved values + what is on screen now.
+    _draft_design = dict(_design)
+    _draft_design.update({"approach": _approach or "", "methods": list(_methods),
+                          "rationale": _rationale.strip(), "goal": _goal.strip(),
+                          "target": _target.strip(), "personas": _new_personas,
+                          "quotas": _new_quotas, "screening_criteria": _screening.strip(),
+                          "recruitment_criteria": _recruitment.strip()})
+
+    # ---- 3. Discussion Guide ----
+    st.subheader(T("3. Discussion Guide", "၃။ Discussion Guide"))
+    _dg_lang = st.selectbox(T("Discussion Guide language", "Discussion Guide ဘာသာစကား"), DESIGN_DG_LANGUAGES, index=DESIGN_DG_LANGUAGES.index(_design.get("dg_language", "English")) if _design.get("dg_language") in DESIGN_DG_LANGUAGES else 0, key="dg_lang")
+    _survey_only = list(_methods) == ["Survey"]
+    if _survey_only:
+        st.info(T("A survey-only project has no Discussion Guide — the questionnaire below is the instrument.", "Survey သီးသန့် project မှာ Discussion Guide မရှိဘူး — အောက်က questionnaire ကပဲ instrument ဖြစ်တယ်။"))
+
+    def _run_dg_draft():
+        _sess = "120 minutes (FGD)" if "FGD" in _draft_design.get("methods", []) else "60 minutes (IDI)"
+        _lang_note = (" — write the whole guide in everyday colloquial Myanmar; never mix English and Myanmar in the same line." if _dg_lang == "Myanmar" else " — mostly English with an occasional Myanmar line where the moderator needs it.")
+        _prompt = (PROMPT_LIBRARY["discussion_guide"]["template"] + "\n\n"
+                   + _design_prompt_context(_brief, _draft_design)
+                   + "\n\nDiscussion Guide language: " + _dg_lang + _lang_note
+                   + "\nSession length: " + _sess)
+        with st.spinner(T("Drafting the Discussion Guide…", "Discussion Guide ရေးနေတယ်…")):
+            _draft, _model_used = ask_gemini(_prompt)
+        if _draft:
+            st.session_state["dg_pending_draft"] = _draft
+            st.session_state.pop("dg_editor", None)
+            st.session_state.pop("dg_confirm_overwrite", None)
+            st.rerun()
+        else:
+            st.error(T(f"AI draft failed: {_model_used}", f"AI draft မရဘူး: {_model_used}"))
+
+    if st.button(T("✨ AI Draft Discussion Guide", "✨ AI နဲ့ Discussion Guide ရေးခိုင်းမယ်"), key="dg_draft", type="primary", disabled=(not _has_brief) or _survey_only):
+        _has_saved_dg = bool((_design.get("dg_text") or "").strip())
+        if _has_saved_dg and not st.session_state.get("dg_confirm_overwrite"):
+            st.session_state["dg_confirm_overwrite"] = True
+            st.rerun()
+        else:
+            _run_dg_draft()
+    if st.session_state.get("dg_confirm_overwrite"):
+        st.warning(T("A Discussion Guide is already saved. Drafting again will REPLACE the text in the editor — the saved guide stays in design.json until you press Save.", "Discussion Guide သိမ်းပြီးသား ရှိတယ်။ ထပ်ရေးခိုင်းရင် editor ထဲက စာသား အစားထိုးသွားမယ် — Save မနှိပ်မချင်း သိမ်းပြီးသား guide က design.json မှာ ရှိနေသေးတယ်။"))
+        _cy, _cn = st.columns(2)
+        if _cy.button(T("Yes, draft again", "ဟုတ်ကဲ့၊ ထပ်ရေးခိုင်းမယ်"), key="dg_confirm_yes", type="primary"):
+            _run_dg_draft()
+        if _cn.button(T("Keep my edits", "ကိုယ့်စာသား ထားမယ်"), key="dg_confirm_no"):
+            st.session_state.pop("dg_confirm_overwrite", None)
+            st.rerun()
+    if st.session_state.get("dg_pending_draft"):
+        st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
+    _dg_value = st.session_state.get("dg_pending_draft", _design.get("dg_text", ""))
+    st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), value=_dg_value, height=400, key="dg_editor")
+    _dc1, _dc2 = st.columns(2)
+    if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
+        _dg_final = st.session_state.get("dg_editor", "")
+        _design["dg_text"] = _dg_final
+        _design["dg_language"] = _dg_lang
+        _design["dg_file"] = "discussion_guide.txt"
+        save_design(_design)
+        store_write_text("notes", "discussion_guide.txt", _dg_final)
+        st.session_state.pop("dg_pending_draft", None)
+        st.success(T("Discussion Guide saved.", "Discussion Guide သိမ်းပြီးပြီ။"))
+        st.rerun()
+    if _dc2.button(T("Export DOCX", "DOCX ထုတ်မယ်"), key="dg_export"):
+        _dg_final = st.session_state.get("dg_editor", "")
+        if not _dg_final.strip():
+            st.warning(T("Nothing to export — the Discussion Guide is empty.", "ထုတ်စရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
+        else:
+            _out = NOTES_DIR / "discussion_guide.docx"
+            dg_to_docx(_dg_final, f"Discussion Guide — {current_project()}", _out)
+            store_upload_existing("notes", "discussion_guide.docx")
+            st.success(T("DOCX exported.", "DOCX ထုတ်ပြီးပြီ။"))
+    if (NOTES_DIR / "discussion_guide.docx").exists():
+        st.download_button(T("Download discussion_guide.docx", "discussion_guide.docx ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / "discussion_guide.docx").read_bytes(), file_name="discussion_guide.docx", key="dg_download")
+    with st.expander(T("Preview", "အစမ်းကြည့်မယ်")):
+        _dg_prev = st.session_state.get("dg_editor", "")
+        if _dg_prev.strip():
+            st.markdown(_dg_to_markdown(_dg_prev))
+        else:
+            st.caption(T("Empty — no Discussion Guide yet.", "ဗလာဖြစ်နေတယ် — Discussion Guide မရှိသေးဘူး။"))
+
+    # ---- 4. Questionnaire / Screener ----
+    st.subheader(T("4. Questionnaire / Screener", "၄။ Questionnaire / Screener"))
+    _q_lang = st.selectbox(T("Questionnaire language", "Questionnaire ဘာသာစကား"), DESIGN_Q_LANGUAGES, index=DESIGN_Q_LANGUAGES.index(_design.get("questionnaire_language", "Myanmar")) if _design.get("questionnaire_language") in DESIGN_Q_LANGUAGES else 0, key="q_lang")
+    _q_saved = _design.get("questionnaire") or {}
+    if isinstance(_q_saved, list):
+        _q_saved = {"questions": _q_saved}
+    if st.session_state.get("q_pending_draft") is not None:
+        _q_saved = st.session_state["q_pending_draft"]
+    _qs = _q_saved.get("questions") or []
+    if not isinstance(_qs, list):
+        _qs = []
+
+    def _run_q_draft():
+        _lang_note = (" — write the questions in everyday colloquial Myanmar (respondent language); store both EN and MM text for every question." if _q_lang == "Myanmar" else " — write the questions in English; store the Myanmar text the same as the English text.")
+        _prompt = (PROMPT_LIBRARY["questionnaire"]["template"] + "\n\n"
+                   + _design_prompt_context(_brief, _draft_design)
+                   + "\n\nQuestionnaire language: " + _q_lang + _lang_note)
+        with st.spinner(T("Drafting the questionnaire…", "Questionnaire ရေးနေတယ်…")):
+            _draft, _model_used = ask_gemini(_prompt)
+        if not _draft:
+            st.error(T(f"AI draft failed: {_model_used}", f"AI draft မရဘူး: {_model_used}"))
+            return
+        _parsed, _perr = _parse_questionnaire_json(_draft)
+        if _parsed is None:
+            st.error(T(f"AI draft could not be read as JSON: {_perr}", f"AI draft ကို JSON အဖြစ် ဖတ်မရဘူး: {_perr}"))
+            with st.expander(T("Raw AI draft", "AI draft အစိမ်း")):
+                st.code(_draft)
+            return
+        st.session_state["q_pending_draft"] = _parsed
+        st.session_state.pop("q_editor", None)
+        st.session_state.pop("q_confirm_overwrite", None)
+        st.rerun()
+
+    if st.button(T("✨ AI Draft Questionnaire", "✨ AI နဲ့ Questionnaire ရေးခိုင်းမယ်"), key="q_draft", type="primary", disabled=not _has_brief):
+        if _qs and not st.session_state.get("q_confirm_overwrite"):
+            st.session_state["q_confirm_overwrite"] = True
+            st.rerun()
+        else:
+            _run_q_draft()
+    if st.session_state.get("q_confirm_overwrite"):
+        st.warning(T("A questionnaire is already saved. Drafting again will REPLACE the questions in the editor — the saved questionnaire stays in design.json until you press Save.", "Questionnaire သိမ်းပြီးသား ရှိတယ်။ ထပ်ရေးခိုင်းရင် editor ထဲက မေးခွန်းတွေ အစားထိုးသွားမယ် — Save မနှိပ်မချင်း သိမ်းပြီးသား questionnaire က design.json မှာ ရှိနေသေးတယ်။"))
+        _qy, _qn = st.columns(2)
+        if _qy.button(T("Yes, draft again", "ဟုတ်ကဲ့၊ ထပ်ရေးခိုင်းမယ်"), key="q_confirm_yes", type="primary"):
+            _run_q_draft()
+        if _qn.button(T("Keep my edits", "ကိုယ့်စာသား ထားမယ်"), key="q_confirm_no"):
+            st.session_state.pop("q_confirm_overwrite", None)
+            st.rerun()
+    if st.session_state.get("q_pending_draft") is not None:
+        st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
+    _q_intro_en = st.text_area(T("Intro script (English)", "Intro script (English)"), value=_q_saved.get("intro_en", ""), height=70, key="q_intro_en")
+    _q_intro_mm = st.text_area(T("Intro script (Myanmar)", "Intro script (မြန်မာ)"), value=_q_saved.get("intro_mm", ""), height=70, key="q_intro_mm")
+    _q_closing_en = st.text_area(T("Closing script (English)", "Closing script (English)"), value=_q_saved.get("closing_en", ""), height=60, key="q_closing_en")
+    _q_closing_mm = st.text_area(T("Closing script (Myanmar)", "Closing script (မြန်မာ)"), value=_q_saved.get("closing_mm", ""), height=60, key="q_closing_mm")
+    _q_header = st.text_input(T("Header fields (comma-separated)", "Header fields (ကော်မာနဲ့ ခွဲပါ)"), value=", ".join(_q_saved.get("header_fields", [])), key="q_header")
+    _q_cols = ["Code", "Section", "Question (EN)", "Question (MM)", "Type", "Options (EN)", "Options (MM)", "Outcome", "Required", "Relevant"]
+    _q_rows = []
+    for _qq in _qs:
+        if not isinstance(_qq, dict):
+            continue
+        _qt = _ed_str(_qq.get("type"))
+        _q_rows.append({"Code": _ed_str(_qq.get("code")), "Section": _ed_str(_qq.get("section")),
+                        "Question (EN)": _ed_str(_qq.get("question_en")), "Question (MM)": _ed_str(_qq.get("question_mm")),
+                        "Type": _qt if _qt in QUESTION_TYPES else "open_text",
+                        "Options (EN)": _ed_str(_qq.get("options_en")), "Options (MM)": _ed_str(_qq.get("options_mm")),
+                        "Outcome": _ed_str(_qq.get("outcome")), "Required": _ed_bool(_qq.get("required")),
+                        "Relevant": _ed_str(_qq.get("relevant"))})
+    _q_df = pd.DataFrame(_q_rows, columns=_q_cols)
+    _q_edited = st.data_editor(_q_df, num_rows="dynamic", use_container_width=True, key="q_editor", column_config={
+        "Type": st.column_config.SelectboxColumn(T("Type", "Type"), options=QUESTION_TYPES),
+        "Required": st.column_config.CheckboxColumn(T("Required", "Required")),
+    })
+    if st.button(T("Save questionnaire", "Questionnaire သိမ်းမယ်"), key="q_save", type="primary"):
+        _new_qs = []
+        for _i, _r in enumerate(_q_edited.to_dict("records")):
+            _en = _ed_str(_r.get("Question (EN)"))
+            _mm = _ed_str(_r.get("Question (MM)"))
+            if not _en and not _mm:
+                continue
+            _hidden = _qs[_i] if _i < len(_qs) and isinstance(_qs[_i], dict) else {}
+            _code = _ed_str(_r.get("Code")) or _ed_str(_hidden.get("code"))
+            _tt = _ed_str(_r.get("Type"))
+            _new_qs.append({
+                "code": _code,
+                "name": _ed_str(_hidden.get("name")) or _xlsform_slug(_code) or f"q{_i + 1}",
+                "section": _ed_str(_r.get("Section")),
+                "question_en": _en, "question_mm": _mm,
+                "type": _tt if _tt in QUESTION_TYPES else "open_text",
+                "options_en": _ed_str(_r.get("Options (EN)")),
+                "options_mm": _ed_str(_r.get("Options (MM)")),
+                "outcome": _ed_str(_r.get("Outcome")),
+                "hint_en": _ed_str(_hidden.get("hint_en")),
+                "hint_mm": _ed_str(_hidden.get("hint_mm")),
+                "required": _ed_bool(_r.get("Required")),
+                "appearance": _ed_str(_hidden.get("appearance")),
+                "relevant": _ed_str(_r.get("Relevant")),
+                "constraint": _ed_str(_hidden.get("constraint")),
+                "constraint_message": _ed_str(_hidden.get("constraint_message")),
+            })
+        _header_fields = [h.strip() for h in _q_header.split(",") if h.strip()]
+        _design["questionnaire"] = {"intro_en": _q_intro_en.strip(), "intro_mm": _q_intro_mm.strip(),
+                                    "closing_en": _q_closing_en.strip(), "closing_mm": _q_closing_mm.strip(),
+                                    "header_fields": _header_fields, "questions": _new_qs}
+        _design["questionnaire_language"] = _q_lang
+        save_design(_design)
+        st.session_state.pop("q_pending_draft", None)
+        st.success(T("Questionnaire saved.", "Questionnaire သိမ်းပြီးပြီ။"))
+        st.rerun()
+    if st.button(T("Export Kobo XLSForm (.xlsx)", "Kobo XLSForm (.xlsx) ထုတ်မယ်"), key="q_export_kobo"):
+        _q_now = _design.get("questionnaire") or {}
+        if not isinstance(_q_now, dict) or not (_q_now.get("questions") or []):
+            st.warning(T("Nothing to export — save a questionnaire first.", "ထုတ်စရာ မရှိဘူး — အရင် questionnaire သိမ်းပါ။"))
+        else:
+            _out = NOTES_DIR / "questionnaire_kobo.xlsx"
+            _res, _stats = questionnaire_to_xlsform(_q_now, f"Questionnaire — {current_project()}", _out)
+            if _res is None:
+                st.error(_stats)
+            else:
+                store_upload_existing("notes", "questionnaire_kobo.xlsx")
+                st.success(T(f"Kobo XLSForm exported: {_stats['questions']} questions, {_stats['choice_rows']} choices, {_stats['groups']} groups.", f"Kobo XLSForm ထုတ်ပြီးပြီ: မေးခွန်း {_stats['questions']} ခု၊ choices {_stats['choice_rows']} ခု၊ groups {_stats['groups']} ခု။"))
+                for _n in _stats.get("notes", []):
+                    st.caption("• " + _n)
+    if (NOTES_DIR / "questionnaire_kobo.xlsx").exists():
+        st.download_button(T("Download questionnaire_kobo.xlsx", "questionnaire_kobo.xlsx ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / "questionnaire_kobo.xlsx").read_bytes(), file_name="questionnaire_kobo.xlsx", key="q_kobo_download")
+    with st.expander(T("Questionnaire JSON (advanced — XLSForm fields)", "Questionnaire JSON (အဆင့်မြင့် — XLSForm fields)")):
+        st.caption(T("Hint, appearance, relevant, and constraint live here — edit the JSON and save it.", "Hint, appearance, relevant, constraint တို့ ဒီမှာ ရှိတယ် — JSON ပြင်ပြီး သိမ်းပါ။"))
+        _q_json = st.text_area(T("Questionnaire JSON", "Questionnaire JSON"), value=json.dumps(_q_saved, ensure_ascii=False, indent=2), height=200, key="q_json_editor")
+        if st.button(T("Save questionnaire JSON", "Questionnaire JSON သိမ်းမယ်"), key="q_json_save"):
+            _parsed, _perr = _parse_questionnaire_json(_q_json)
+            if _parsed is None:
+                st.error(T(f"Could not read the JSON: {_perr}", f"JSON ဖတ်မရဘူး: {_perr}"))
+            else:
+                _design["questionnaire"] = _parsed
+                save_design(_design)
+                st.session_state.pop("q_pending_draft", None)
+                st.success(T("Questionnaire JSON saved.", "Questionnaire JSON သိမ်းပြီးပြီ။"))
+                st.rerun()
+
+    # ---- 5. Fieldwork Plan ----
+    st.subheader(T("5. Fieldwork Plan", "၅။ Fieldwork Plan"))
+    _fw = _design.get("fieldwork_plan") or []
+    _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
+    _fw_rows = []
+    for _i, _r in enumerate(_fw):
+        if not isinstance(_r, dict):
+            continue
+        _fw_rows.append({"Session": _ed_int(_r.get("session"), _i + 1), "Group": _ed_str(_r.get("group")),
+                         "Method": _ed_str(_r.get("method")), "Date": _ed_str(_r.get("date")),
+                         "Time": _ed_str(_r.get("time")), "Seats": _ed_int(_r.get("seats"), 0),
+                         "Recruited": _ed_int(_r.get("recruited"), 0), "Confirmed": _ed_int(_r.get("confirmed"), 0),
+                         "Moderator": _ed_str(_r.get("moderator")), "Moderator seat": _ed_str(_r.get("moderator_seat")),
+                         "Venue": _ed_str(_r.get("venue"))})
+    _fw_df = pd.DataFrame(_fw_rows, columns=_fw_cols)
+    _fw_edited = st.data_editor(_fw_df, num_rows="dynamic", use_container_width=True, key="fw_editor", column_config={
+        "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
+    })
+    st.caption(T("Dates are plain text (YYYY-MM-DD) — an unset date never invents today's date. Seats = respondents in the session; Recruited = over-recruited count for no-shows; the moderator sits at Seat 1.", "ရက်စွဲက စာသားပဲ (YYYY-MM-DD) — မသတ်မှတ်ရင် ဒီနေ့ရက် အလိုအလျောက် မထည့်ဘူး။ Seats = အဖွဲ့ထဲမှာ ထိုင်မယ့်သူ၊ Recruited = မလာသူ အတွက် ပိုခေါ်ထားတာ၊ moderator က Seat 1 မှာ ထိုင်တယ်။"))
+    if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
+        _new_fw = []
+        for _i, _r in enumerate(_fw_edited.to_dict("records")):
+            _grp = _ed_str(_r.get("Group"))
+            _mth = _ed_str(_r.get("Method"))
+            _mod = _ed_str(_r.get("Moderator"))
+            if not _grp and not _mth and not _mod and not _ed_str(_r.get("Date")) and not _ed_str(_r.get("Venue")):
+                continue
+            _seat = _ed_str(_r.get("Moderator seat"))
+            if _mod and not _seat:
+                _seat = "Seat 1"
+            _new_fw.append({"session": _ed_int(_r.get("Session"), _i + 1), "group": _grp, "method": _mth,
+                            "date": _ed_str(_r.get("Date")), "time": _ed_str(_r.get("Time")),
+                            "seats": _ed_int(_r.get("Seats"), 0), "recruited": _ed_int(_r.get("Recruited"), 0),
+                            "confirmed": _ed_int(_r.get("Confirmed"), 0), "moderator": _mod,
+                            "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
+        _design["fieldwork_plan"] = _new_fw
+        save_design(_design)
+        st.success(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
+        st.rerun()
 
 elif page == "Data Cleansing":
     # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
