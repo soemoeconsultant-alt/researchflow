@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import shutil
 import subprocess
+import unicodedata
 from zoneinfo import ZoneInfo
 from html.parser import HTMLParser
 import pandas as pd
@@ -27,7 +28,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.26"
+APP_VERSION = "3.27"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -838,6 +839,462 @@ def seating_plan_to_docx(title_text, session, participants, out_path):
                     _cell.add_paragraph(_line)
     doc.save(str(out_path))
     return out_path
+
+
+# --- v3.27 AI Research Intelligence helpers ---
+# NO SAMPLE CONTENT RULE (user, 2026-11-17): the samples he sent (brief,
+# proposal, DG, recruitment list/forms, report, Kobo form, seating plan) are
+# STRUCTURE reference only — zero sample content (no findings, quotes,
+# prices, dates, venues, client/interviewer names, product codes,
+# brand/township lists, MMK bands, respondent data) anywhere in this file,
+# not as defaults, placeholders, examples, help text, or prompts. Every
+# value below comes from the project's OWN saved files or the user's own
+# input. Every new page/section starts EMPTY for a new project.
+# Evidence verification is deterministic pure-Python matching (no Gemini
+# call, no quota): a finding is VERIFIED only when its verbatim quote is
+# found word-for-word in a transcript and its claimed n matches what the
+# transcripts actually contain. A failed finding stays flagged — nothing is
+# auto-fixed or invented. QC corrections never overwrite an original: the
+# corrected copy is saved alongside and every correction is audit-logged.
+QC_FILE = "qc.json"
+QC_AUDIT_FILE = "qc_audit.json"
+INSIGHTS_FILE = "insights.json"
+QC_STATUSES = ["Unchecked", "Checked", "Needs correction", "Corrected"]
+
+
+def _ev_normalise(text):
+    """Lowercase, drop punctuation/symbols, collapse whitespace — for
+    matching only. The words themselves are never changed. Punctuation is
+    dropped by Unicode category (not [^\\w\\s]) so Myanmar combining marks
+    — which are part of the word — survive intact."""
+    t = str(text or "").lower()
+    t = "".join(ch if unicodedata.category(ch)[0] not in ("P", "S", "C") else " "
+                for ch in t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _ev_quote_match(quote, transcript_text):
+    """("exact" | "near" | "none", coverage). Exact = the normalised quote
+    is a substring of the normalised transcript. Near = at least 80% of the
+    quote's tokens appear in the transcript (a quote trimmed at the edges
+    or with a word changed). Near never counts as verified."""
+    q = _ev_normalise(quote)
+    if not q:
+        return "none", 0.0
+    t = _ev_normalise(transcript_text)
+    if q in t:
+        return "exact", 1.0
+    qt = q.split()
+    if not qt:
+        return "none", 0.0
+    tset = set(t.split())
+    hit = sum(1 for w in qt if w in tset)
+    cov = hit / len(qt)
+    return ("near", cov) if cov >= 0.8 else ("none", cov)
+
+
+_EV_TURN_RE = re.compile(r"(?m)^(Speaker\s*\d+|Moderator|Respondent|Interviewer)\s*:", re.IGNORECASE)
+
+
+def _ev_speakers_with(transcript_text, quote):
+    """Speaker labels whose turns contain the quote (exact or near match).
+    Turns are 'Speaker N:' blocks; text before the first label is checked
+    as its own turn ('Unlabelled')."""
+    text = str(transcript_text or "")
+    parts = _EV_TURN_RE.split(text)
+    speakers = set()
+    if parts and _ev_quote_match(quote, parts[0])[0] in ("exact", "near"):
+        speakers.add("Unlabelled")
+    for i in range(1, len(parts) - 1, 2):
+        label = re.sub(r"\s+", " ", parts[i].strip())
+        if _ev_quote_match(quote, parts[i + 1])[0] in ("exact", "near"):
+            speakers.add(label)
+    return speakers
+
+
+_EV_QUOTE_RE = re.compile(r'>\s*"([^"]+)"\s*(?:—|-)\s*Speaker\s*(\d+)?\s*,?\s*(.*)$')
+_EV_INLINE_QUOTE_RE = re.compile(r'"([^"]+)"\s*(?:—|-)\s*Speaker\s*(\d+)?\s*,?\s*(.*)$')
+_EV_N_RE = re.compile(r"n\s*=\s*(\d+)\s*(?:of|/)\s*(\d+)", re.IGNORECASE)
+
+
+def _ev_parse_findings(analysis_text):
+    """One entry per finding line: {section, text, claimed_n, claimed_y,
+    quotes: [{quote, speaker, source}], no_evidence}. A quote line
+    ('> "..." — Speaker N, <file>') attaches to the finding directly above
+    it in the same section. A line that is exactly 'No evidence in
+    transcripts' is kept with no_evidence=True — an honest empty statement,
+    not a claim."""
+    out = []
+    for sec in parse_sections(analysis_text or ""):
+        current = None
+        for line in sec["lines"]:
+            if not line:
+                continue
+            if line.strip() == "No evidence in transcripts":
+                out.append({"section": sec["title"], "text": line.strip(),
+                            "claimed_n": None, "claimed_y": None,
+                            "quotes": [], "no_evidence": True})
+                current = None
+                continue
+            m = _EV_QUOTE_RE.match(line)
+            if m:
+                quote = {"quote": m.group(1).strip(),
+                         "speaker": m.group(2) or "",
+                         "source": (m.group(3) or "").strip()}
+                if current is not None:
+                    current["quotes"].append(quote)
+                else:
+                    out.append({"section": sec["title"], "text": "",
+                                "claimed_n": None, "claimed_y": None,
+                                "quotes": [quote], "no_evidence": False})
+                continue
+            nm = _EV_N_RE.search(line)
+            entry = {"section": sec["title"], "text": line,
+                     "claimed_n": int(nm.group(1)) if nm else None,
+                     "claimed_y": int(nm.group(2)) if nm else None,
+                     "quotes": [], "no_evidence": False}
+            im = _EV_INLINE_QUOTE_RE.search(line)
+            if im:
+                entry["quotes"].append({"quote": im.group(1).strip(),
+                                       "speaker": im.group(2) or "",
+                                       "source": (im.group(3) or "").strip()})
+            out.append(entry)
+            current = entry
+    return out
+
+
+def verify_analysis(analysis_text, transcript_texts):
+    """Verify every finding in a saved analysis against the project's
+    transcripts ({filename: text}). Returns (results, (verified, total)).
+    VERIFIED only on a word-for-word quote + a claimed n the transcripts
+    support; anything else is UNVERIFIED with the reason."""
+    findings = _ev_parse_findings(analysis_text)
+    results = []
+    verified = 0
+    for f in findings:
+        row = {"section": f["section"], "finding": f["text"],
+               "quote": "", "speaker": "", "source": "",
+               "claimed_n": f["claimed_n"], "claimed_y": f["claimed_y"],
+               "found_n": 0, "found_files": [], "status": "UNVERIFIED",
+               "reason": ""}
+        if f.get("no_evidence"):
+            row["status"] = "VERIFIED"
+            row["reason"] = "States no evidence — nothing to check"
+            results.append(row)
+            verified += 1
+            continue
+        if not f["quotes"]:
+            row["reason"] = "No verbatim quote given"
+            results.append(row)
+            continue
+        q = f["quotes"][0]
+        row["quote"] = q["quote"]
+        row["speaker"] = q["speaker"]
+        row["source"] = q["source"]
+        best = "none"
+        best_cov = 0.0
+        files_hit = []
+        speakers = set()
+        for fname, ttext in (transcript_texts or {}).items():
+            m, cov = _ev_quote_match(q["quote"], ttext)
+            if m in ("exact", "near"):
+                files_hit.append(fname)
+                # (file, speaker) pairs: the same "Speaker 1" label in two
+                # files is two different respondents.
+                speakers |= {(fname, s) for s in _ev_speakers_with(ttext, q["quote"])}
+                if m == "exact":
+                    best = "exact"
+                elif best != "exact":
+                    best = "near"
+                best_cov = max(best_cov, cov)
+        row["found_files"] = files_hit
+        row["found_n"] = len(speakers) if speakers else len(files_hit)
+        if best == "none":
+            row["reason"] = "Quote not found in any transcript"
+            if q["source"] and q["source"] not in (transcript_texts or {}):
+                row["reason"] += " (cited source file is not in this project)"
+        elif best == "near":
+            row["reason"] = (f"Quote is a near match only ({best_cov:.0%} of words) "
+                             "— not word-for-word")
+        else:
+            if f["claimed_n"] is None:
+                row["status"] = "VERIFIED"
+                row["reason"] = "Quote found word-for-word"
+            elif row["found_n"] >= f["claimed_n"]:
+                row["status"] = "VERIFIED"
+                row["reason"] = (f"Quote found; {row['found_n']} speaker(s) "
+                                 f"vs claimed n={f['claimed_n']}")
+            else:
+                row["reason"] = (f"Claimed n={f['claimed_n']}, only "
+                                 f"{row['found_n']} speaker(s) found saying it")
+        if row["status"] == "VERIFIED":
+            verified += 1
+        results.append(row)
+    return results, (verified, len(results))
+
+
+def evidence_report_text(analysis_name, results, score):
+    """Plain-text evidence-check report, saved to notes/."""
+    lines = [f"Evidence check — {analysis_name}",
+             f"Verified: {score[0]} of {score[1]} findings", ""]
+    for r in results:
+        lines.append(f"[{r['status']}] {r['section']} — {r['finding'][:160]}")
+        if r["quote"]:
+            lines.append(f"  Quote: \"{r['quote']}\"")
+            if r["speaker"]:
+                lines.append(f"  Cited: Speaker {r['speaker']}, {r['source']}")
+            else:
+                lines.append(f"  Cited: {r['source']}")
+        if r["claimed_n"] is not None:
+            lines.append(f"  Claimed: n={r['claimed_n']} of {r['claimed_y']}")
+        lines.append(f"  Found: {r['found_n']} speaker(s) in {len(r['found_files'])} file(s) — {r['reason']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def run_evidence_check(analysis_name):
+    """Load a saved analysis + all full transcripts, verify, save the
+    report to notes/evidence_check_<stem>.txt (Drive + local). Returns
+    (results, score, report_path)."""
+    text = (ANALYSIS_DIR / analysis_name).read_text(encoding="utf-8", errors="replace")
+    if looks_like_html(text):
+        text = html_to_text(text)
+    full_files, _pending = get_full_transcripts()
+    ttexts = {f.name: f.read_text(encoding="utf-8", errors="replace") for f in full_files}
+    results, score = verify_analysis(text, ttexts)
+    stem = analysis_name[:-4] if analysis_name.endswith(".txt") else analysis_name
+    report = evidence_report_text(analysis_name, results, score)
+    path = store_write_text("notes", f"evidence_check_{stem}.txt", report)
+    return results, score, path
+
+
+# --- Stage 4 QC helpers (v3.27) ---
+_QC_SPEAKER_RE = re.compile(r"^(Speaker\s*\d+|Moderator|Respondent|Interviewer)\s*:", re.IGNORECASE)
+_QC_UNCLEAR_RE = re.compile(r"\[unclear\]", re.IGNORECASE)
+
+
+def qc_check_text(name, text):
+    """Checks on one transcript's text. Returns a list of issue dicts
+    {type, count, detail}. Pure counts — the text is never edited here."""
+    lines = str(text or "").splitlines()
+    issues = []
+    unclear = sum(len(_QC_UNCLEAR_RE.findall(ln)) for ln in lines)
+    if unclear:
+        issues.append({"type": "unclear", "count": unclear,
+                       "detail": f"{unclear} [unclear] marker(s)"})
+    no_spk = 0
+    short = 0
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith("===") or s.startswith("---"):
+            continue
+        if _QC_SPEAKER_RE.match(s):
+            continue
+        no_spk += 1
+        if len(s) < 10:
+            short += 1
+    if no_spk:
+        issues.append({"type": "no_speaker", "count": no_spk,
+                       "detail": f"{no_spk} line(s) without a speaker label"})
+    if short:
+        issues.append({"type": "short_line", "count": short,
+                       "detail": f"{short} very short line(s) — possible truncation"})
+    return issues
+
+
+def load_qc():
+    """Saved QC state for the current project, or a fresh empty one."""
+    try:
+        data = json.loads((NOTES_DIR / QC_FILE).read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("files", {})
+            return data
+    except Exception:
+        pass
+    return {"files": {}}
+
+
+def save_qc(data):
+    """Save the QC state (Drive + local, via the notes folder)."""
+    return store_write_text("notes", QC_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def qc_run_all():
+    """Run the checks over every transcript file; keep existing statuses,
+    add 'Unchecked' for new files; return the qc dict."""
+    qc = load_qc()
+    files = qc.setdefault("files", {})
+    for f in get_transcript_files():
+        entry = files.setdefault(f.name, {"status": "Unchecked", "checked_at": "", "issues": []})
+        entry["issues"] = qc_check_text(f.name, f.read_text(encoding="utf-8", errors="replace"))
+        entry["checked_at"] = datetime.datetime.now(ZoneInfo("Asia/Rangoon")).strftime("%Y-%m-%d %H:%M")
+    save_qc(qc)
+    return qc
+
+
+def qc_load_audit():
+    """Audit trail entries (newest last), or [] when none exist."""
+    try:
+        data = json.loads((NOTES_DIR / QC_AUDIT_FILE).read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def qc_log_audit(entry):
+    """Append one entry to the audit trail (Drive + local)."""
+    audit = qc_load_audit()
+    audit.append(entry)
+    store_write_text("notes", QC_AUDIT_FILE, json.dumps(audit, ensure_ascii=False, indent=2))
+    return audit
+
+
+def _qc_first_diff(before_text, after_text):
+    """First differing line (before, after), truncated — for the audit trail."""
+    b_lines = str(before_text or "").splitlines()
+    a_lines = str(after_text or "").splitlines()
+    for i in range(max(len(b_lines), len(a_lines))):
+        b = b_lines[i] if i < len(b_lines) else ""
+        a = a_lines[i] if i < len(a_lines) else ""
+        if b != a:
+            return b[:160], a[:160]
+    return "", ""
+
+
+def qc_save_correction(name, corrected_text, note=""):
+    """Save a corrected copy — the ORIGINAL file is never overwritten.
+    Corrected copy: <stem>_corrected.txt in the transcripts folder, so it
+    can be picked for analysis like any full transcript. Every correction
+    is logged to the audit trail and the file's status becomes Corrected.
+    Returns (path_or_None, message)."""
+    orig = None
+    for d in (OUTPUT_DIR, MERGED_DIR):
+        p = d / name
+        if p.exists():
+            orig = p
+            break
+    if orig is None:
+        return None, "Original file not found."
+    original_text = orig.read_text(encoding="utf-8", errors="replace")
+    if original_text == corrected_text:
+        return None, "No changes — nothing saved."
+    stem = name[:-4] if name.endswith(".txt") else name
+    corr_name = f"{stem}_corrected.txt"
+    out_path = store_write_text("transcripts", corr_name, corrected_text)
+    before, after = _qc_first_diff(original_text, corrected_text)
+    qc_log_audit({
+        "timestamp": datetime.datetime.now(ZoneInfo("Asia/Rangoon")).strftime("%Y-%m-%d %H:%M"),
+        "file": name, "corrected_file": corr_name,
+        "action": "correction",
+        "before": before, "after": after, "note": note or "",
+    })
+    qc = load_qc()
+    entry = qc.setdefault("files", {}).setdefault(name, {"status": "Unchecked", "checked_at": "", "issues": []})
+    entry["status"] = "Corrected"
+    save_qc(qc)
+    return out_path, f"Saved corrected copy: {corr_name} (original untouched)."
+
+
+def _qc_summary():
+    """(checked, corrected, needs_correction, total_files, audit_entries)
+    for stage_status() — from notes/qc.json + notes/qc_audit.json."""
+    qc = load_qc()
+    files = qc.get("files", {})
+    checked = sum(1 for e in files.values()
+                  if isinstance(e, dict) and e.get("status") in ("Checked", "Needs correction", "Corrected"))
+    corrected = sum(1 for e in files.values()
+                    if isinstance(e, dict) and e.get("status") == "Corrected")
+    needs = sum(1 for e in files.values()
+                if isinstance(e, dict) and e.get("status") == "Needs correction")
+    return checked, corrected, needs, len(files), len(qc_load_audit())
+
+
+# --- Insights builder helpers (v3.27) ---
+def load_insights():
+    """Saved insights for the current project, or a fresh empty list."""
+    try:
+        data = json.loads((NOTES_DIR / INSIGHTS_FILE).read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("insights", [])
+            return data
+    except Exception:
+        pass
+    return {"insights": []}
+
+
+def save_insights(data):
+    """Save the insights (Drive + local, via the notes folder)."""
+    return store_write_text("notes", INSIGHTS_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _ins_qual_findings():
+    """Qual findings from SAVED analysis files: each entry {statement,
+    quotes: [{quote, speaker, source}], section, analysis_file}. Only from
+    saved files — nothing is generated here."""
+    out = []
+    for f in sorted(ANALYSIS_DIR.glob("*_analysis.txt")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        if looks_like_html(text):
+            text = html_to_text(text)
+        for entry in _ev_parse_findings(text):
+            if entry.get("no_evidence") or not entry.get("text"):
+                continue
+            out.append({"statement": entry["text"], "quotes": entry.get("quotes", []),
+                        "section": entry.get("section", ""), "analysis_file": f.name})
+    return out
+
+
+def _ins_quant_numbers():
+    """Quant numbers from saved quant summaries (quant_*.txt): each entry
+    {label, value, source}. Numbers come from the Quant page's computed
+    tables — never invented here. Interpretation files are skipped."""
+    out = []
+    for f in sorted(ANALYSIS_DIR.glob("quant_*.txt")):
+        if f.name.endswith("_interpretation.txt"):
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for sec in parse_sections(text):
+            for line in sec["lines"]:
+                m = re.match(r"(.+?):\s*(\d+)\s*\(([\d.]+)%\)", line)
+                if m:
+                    out.append({"label": f"{sec['title']} — {m.group(1).strip()}",
+                                "value": f"{m.group(2)} ({m.group(3)}%)",
+                                "source": f.name})
+    return out
+
+
+def _ins_dg_sections():
+    """Section titles from the saved Discussion Guide
+    (notes/discussion_guide.txt) — what an insight can answer."""
+    titles = []
+    dg_path = NOTES_DIR / "discussion_guide.txt"
+    if dg_path.exists():
+        for b in _dg_parse(dg_path.read_text(encoding="utf-8", errors="replace")):
+            if b.get("kind") in ("h2", "h3") and b.get("text"):
+                titles.append(b["text"])
+            elif b.get("kind") == "para" and re.match(r"^Section \d+\s*:", b.get("text", "")):
+                titles.append(b["text"])
+    return titles
+
+
+def cross_interview_themes():
+    """Theme x transcript presence from saved SINGLE-transcript analyses.
+    Returns (themes, files): themes[title][filename] = finding count.
+    Multi-interview analyses are excluded — they already combine
+    interviews."""
+    files = [f for f in sorted(ANALYSIS_DIR.glob("*_analysis.txt"))
+             if not f.name.startswith("multi_")]
+    themes = {}
+    for f in files:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        if looks_like_html(text):
+            text = html_to_text(text)
+        for sec in parse_sections(text):
+            n = len([ln for ln in sec["lines"]
+                     if ln and ln != "No evidence in transcripts"
+                     and not ln.startswith("> ")])
+            themes.setdefault(sec["title"], {})[f.name] = n
+    return themes, [f.name for f in files]
 
 
 _SA_INFO = None
@@ -4177,6 +4634,8 @@ def stage_status():
     _fw_counts = fieldwork_counts(design, load_fieldwork())
     _fw_q = design.get("questionnaire") or {}
     _fw_qs = _fw_q.get("questions") if isinstance(_fw_q, dict) else []
+    _qc_checked, _qc_corrected, _qc_needs, _qc_total, _qc_audited = _qc_summary()
+    _ins_saved_n = len(load_insights().get("insights", []))
     return [
         (_sl("1 · Client Brief"),
          T("Define objectives & scope", "ရည်ရွယ်ချက်နဲ့ scope သတ်မှတ်ခြင်း"),
@@ -4217,10 +4676,10 @@ def stage_status():
              _stage_item("Split", "ခွဲခြင်း", "done" if chunk_n > 0 else "todo"),
              _stage_item("Transcribe", "Transcript လုပ်ခြင်း", "done" if tr_n > 0 else "todo"),
              _stage_item("Merge", "ပေါင်းခြင်း", "done" if merged_n > 0 else "todo"),
-             _stage_item("QC: check", "QC: စစ်ဆေးခြင်း", "coming"),
-             _stage_item("QC: correct", "QC: ပြင်ဆင်ခြင်း", "coming"),
-             _stage_item("QC: status", "QC: အခြေအနေ", "coming"),
-             _stage_item("QC: audit trail", "QC: audit trail", "coming"),
+             _stage_item("QC: check", "QC: စစ်ဆေးခြင်း", "done" if _qc_checked > 0 else "todo"),
+             _stage_item("QC: correct", "QC: ပြင်ဆင်ခြင်း", "done" if _qc_corrected > 0 else "todo"),
+             _stage_item("QC: status", "QC: အခြေအနေ", "done" if _qc_checked > 0 else "todo"),
+             _stage_item("QC: audit trail", "QC: audit trail", "done" if _qc_audited > 0 else "todo"),
          ]),
         (_sl("5 · Analysis & Reports"),
          T("Generate insights & reports", "Insight နဲ့ report ထုတ်လုပ်ခြင်း"),
@@ -4228,7 +4687,7 @@ def stage_status():
          [
              _stage_item("Qual analysis", "Qual ခွဲခြမ်းစိတ်ဖြာမှု", "done" if an_n > 0 else "todo"),
              _stage_item("Quant analysis", "Quant ခွဲခြမ်းစိတ်ဖြာမှု", "done" if quant_n > 0 else "todo"),
-             _stage_item("Insights (Qual + Quant)", "Insights (Qual + Quant)", "done" if multi_n > 0 else "todo"),
+             _stage_item("Insights (Qual + Quant)", "Insights (Qual + Quant)", "done" if _ins_saved_n > 0 else "todo"),
              _stage_item("Report (PPTX / DOCX / PDF)", "Report (PPTX / DOCX / PDF)", "done" if rep_n > 0 else "todo"),
              _stage_item("Presentation (PPTX export)", "တင်ပြမှု (PPTX export)", "done" if pptx_n > 0 else "todo"),
          ]),
@@ -4998,15 +5457,10 @@ elif page == "Research Design":
         st.rerun()
 
 elif page == "Data Cleansing":
-    # Stage 4 shell page: file counts now; per-file check/clean/unclear/issue
-    # status comes in the Stage 4 build.
+    # Stage 4 (v3.27): Data Preparation status from real counts + real
+    # Quality Control below (checks, per-file status, correction with
+    # audit trail). Originals are never overwritten.
     st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
-    st.info(
-        T("Quality Control — check each raw input (checked / clean / unclear / "
-          "issue), status + audit trail — coming in the Stage 4 build.",
-          "Quality Control — raw input တစ်ခုချင်းကို စစ်တာ (checked / clean / "
-          "unclear / issue), status + audit trail — Stage 4 build မှာ လာမယ်။")
-    )
 
     st.subheader(T("Data Preparation", "ဒေတာ ပြင်ဆင်ခြင်း"))
     _pa, _pt, _pm, _pc, _pp = _data_prep_counts()
@@ -5019,16 +5473,155 @@ elif page == "Data Cleansing":
     ]:
         st.write(("✅ " if _ok else "○ ") + _lbl)
 
+    st.divider()
+    st.subheader(T("Quality Control", "အရည်အသွေး စစ်ဆေးခြင်း"))
+    _qc_fulls, _qc_pending = get_full_transcripts()
+    if _qc_pending:
+        st.warning(T("Not merged yet: " + ", ".join(f"{k} ({n} chunks)" for k, n in _qc_pending) + " — merge on the Transcripts page.",
+                     "Merge မလုပ်ရသေးဘူး: " + ", ".join(f"{k} ({n} chunks)" for k, n in _qc_pending) + " — Transcripts page မှာ Merge လုပ်ပါ။"))
+    if st.button(T("Run QC checks", "QC စစ်မယ်"), key="qc_run"):
+        _qc = qc_run_all()
+        st.success(T(f"QC checks done — {len(_qc.get('files', {}))} transcript(s) checked.",
+                     f"QC စစ်ပြီးပြီ — transcript {len(_qc.get('files', {}))} ခု စစ်ပြီးပြီ။"))
+    _qc = load_qc()
+    _qc_files = _qc.get("files", {})
+    if not _qc_files:
+        st.info(T("No transcripts checked yet — transcribe first, then press Run QC checks.",
+                  "Transcript မစစ်ရသေးဘူး — အရင် transcribe လုပ်ပြီး Run QC checks နှိပ်ပါ။"))
+    else:
+        _qc_s = _qc_summary()
+        st.caption(T(f"Checked: {_qc_s[0]} of {_qc_s[3]} | Corrected: {_qc_s[1]} | Needs correction: {_qc_s[2]} | Audit entries: {_qc_s[4]}",
+                     f"စစ်ပြီး: {_qc_s[0]} / {_qc_s[3]} | ပြင်ပြီး: {_qc_s[1]} | ပြင်ရန်လို: {_qc_s[2]} | Audit: {_qc_s[4]}"))
+        _qc_names = sorted(_qc_files)
+        for _qi, _qname in enumerate(_qc_names):
+            _entry = _qc_files[_qname] if isinstance(_qc_files[_qname], dict) else {}
+            _issues = _entry.get("issues", []) if isinstance(_entry.get("issues"), list) else []
+            _issue_txt = "; ".join(str(i.get("detail", "")) for i in _issues) if _issues else T("No issues found", "ပြဿနာ မတွေ့ဘူး")
+            st.write(f"**{_qname}** — {_issue_txt}")
+            _cur_status = _entry.get("status", "Unchecked")
+            _new_status = st.selectbox(T("Status", "အခြေအနေ"), QC_STATUSES,
+                                       index=QC_STATUSES.index(_cur_status) if _cur_status in QC_STATUSES else 0,
+                                       key=f"qc_status_{_qi}")
+            if st.button(T("Save status", "အခြေအနေ သိမ်းမယ်"), key=f"qc_save_status_{_qi}"):
+                _qc2 = load_qc()
+                _e2 = _qc2.setdefault("files", {}).setdefault(_qname, {"status": "Unchecked", "checked_at": "", "issues": []})
+                _e2["status"] = _new_status
+                save_qc(_qc2)
+                st.success(T(f"Status saved: {_qname} → {_new_status}", f"သိမ်းပြီး: {_qname} → {_new_status}"))
+            with st.expander(T(f"Correct {_qname}", f"{_qname} ကို ပြင်မယ်")):
+                _orig_path = None
+                for _d in (OUTPUT_DIR, MERGED_DIR):
+                    if (_d / _qname).exists():
+                        _orig_path = _d / _qname
+                        break
+                if _orig_path is None:
+                    st.warning(T("Original file not found.", "မူရင်း file မတွေ့ဘူး။"))
+                else:
+                    _orig_text = _orig_path.read_text(encoding="utf-8", errors="replace")
+                    _corr_text = st.text_area(T("Corrected text (the original is never overwritten — a _corrected copy is saved)",
+                                                "ပြင်ထားတဲ့ စာသား (မူရင်းကို ဘယ်တော့မှ မရေးဘူး — _corrected copy သိမ်းမယ်)"),
+                                              value=_orig_text, height=300, key=f"qc_correct_{_qi}")
+                    _corr_note = st.text_input(T("What did you change? (note for the audit trail)",
+                                                 "ဘာပြင်လိုက်လဲ? (audit trail အတွက် မှတ်ချက်)"), key=f"qc_note_{_qi}")
+                    if st.button(T("Save correction", "ပြင်ဆင်ချက် သိမ်းမယ်"), key=f"qc_save_corr_{_qi}"):
+                        _out, _msg = qc_save_correction(_qname, _corr_text, _corr_note)
+                        if _out is None:
+                            st.warning(_msg)
+                        else:
+                            st.success(_msg)
+        with st.expander(T("Audit trail", "Audit trail")):
+            _audit = qc_load_audit()
+            if not _audit:
+                st.info(T("No corrections logged yet.", "ပြင်ဆင်ချက် မှတ်တမ်း မရှိသေးပါ။"))
+            else:
+                for _a in reversed(_audit[-10:]):
+                    st.write(f"- {_a.get('timestamp', '')} — {_a.get('file', '')} → {_a.get('corrected_file', '')}")
+                    if _a.get("before") or _a.get("after"):
+                        st.caption(f"Before: {_a.get('before', '')}")
+                        st.caption(f"After: {_a.get('after', '')}")
+                    if _a.get("note"):
+                        st.caption(f"Note: {_a.get('note', '')}")
+
 elif page == "Insights":
-    # Stage 5: Qual + Quant combined. The builder comes in the Stage 5 build;
-    # for now it shows which inputs already exist (real counts only).
+    # Stage 5 (v3.27): build insight cards from SAVED outputs — Qual
+    # analysis files + Quant summaries. Nothing is invented: a missing
+    # input is shown as missing, with a link to the page that makes it.
     st.title(T("💡 Insights", "💡 Insights"))
-    _in_qual = len(list(ANALYSIS_DIR.glob("*_analysis.txt")))
-    _in_quant = len(list(ANALYSIS_DIR.glob("quant_*.txt")))
-    st.info(T("Insights (Qual + Quant combined) — coming in the Stage 5 build. Inputs it will use:",
-              "Insights (Qual + Quant ပေါင်း) — Stage 5 build မှာ လာမယ်။ သုံးမယ့် input တွေ:"))
-    st.write(("✅ " if _in_qual else "○ ") + T(f"Qualitative analyses saved: {_in_qual}", f"သိမ်းထားတဲ့ Qualitative analysis: {_in_qual}"))
-    st.write(("✅ " if _in_quant else "○ ") + T(f"Quantitative summaries saved: {_in_quant}", f"သိမ်းထားတဲ့ Quantitative summary: {_in_quant}"))
+    _ins_qual = _ins_qual_findings()
+    _ins_quant = _ins_quant_numbers()
+    _ins_design = load_design()
+    _ins_personas = [p.get("name") for p in (_ins_design.get("personas") or []) if isinstance(p, dict) and p.get("name")]
+    _ins_sections = _ins_dg_sections()
+    st.write(("✅ " if _ins_qual else "○ ") + T(f"Qualitative findings saved: {len(_ins_qual)}", f"သိမ်းထားတဲ့ Qualitative finding: {len(_ins_qual)}"))
+    st.write(("✅ " if _ins_quant else "○ ") + T(f"Quantitative numbers saved: {len(_ins_quant)}", f"သိမ်းထားတဲ့ Quantitative နံပါတ်: {len(_ins_quant)}"))
+    if not _ins_qual and not _ins_quant:
+        st.info(T("No analysis saved yet — analyze on the Market Analysis page (Qual) and save a quant summary on the Quantitative Analysis page first.",
+                  "Analysis မသိမ်းရသေးဘူး — အရင် Market Analysis မှာ Qual analyse လုပ်ပြီး Quantitative Analysis မှာ quant summary သိမ်းပါ။"))
+        if st.button(T("Open Market Analysis", "Market Analysis ဖွင့်မယ်"), key="ins_goto_ma"):
+            st.session_state["page"] = "Market Analysis"
+        if st.button(T("Open Quantitative Analysis", "Quantitative Analysis ဖွင့်မယ်"), key="ins_goto_quant"):
+            st.session_state["page"] = "Quantitative Analysis"
+    else:
+        st.subheader(T("Build an insight", "Insight တစ်ခု ဆောက်မယ်"))
+        _q_labels = [f"{q['section']} — {q['statement'][:90]}" for q in _ins_qual]
+        _qi = 0
+        if _q_labels:
+            _qi = st.selectbox(T("Pick a Qual finding", "Qual finding ရွေးပါ"), range(len(_q_labels)),
+                               format_func=lambda i: _q_labels[i], key="ins_pick_qual")
+        _picked = _ins_qual[_qi] if _ins_qual else None
+        if _picked:
+            st.caption(T("Qual evidence:", "Qual evidence:"))
+            for _qq in _picked.get("quotes", []):
+                st.write(f"> \"{_qq.get('quote', '')}\" — Speaker {_qq.get('speaker', '')}, {_qq.get('source', '')}")
+            if not _picked.get("quotes"):
+                st.caption(T("This finding has no verbatim quote attached.", "ဒီ finding မှာ verbatim quote မပါဘူး။"))
+        _qnum_labels = [f"{n['label']}: {n['value']} ({n['source']})" for n in _ins_quant]
+        _picked_nums = []
+        if _qnum_labels:
+            _sel_nums = st.multiselect(T("Attach Quant numbers (optional)", "Quant နံပါတ်တွေ တွဲမယ် (မတွဲလည်းရတယ်)"), range(len(_qnum_labels)),
+                                       format_func=lambda i: _qnum_labels[i], key="ins_pick_quant")
+            _picked_nums = [_ins_quant[i] for i in _sel_nums]
+        _sec_opts = _ins_sections if _ins_sections else [T("General", "အထွေထွေ")]
+        _sec = st.selectbox(T("DG section it answers", "ဘယ် DG section ကို ဖြေတာလဲ"), _sec_opts, key="ins_section")
+        _per_opts = _ins_personas if _ins_personas else [T("All", "အားလုံး")]
+        _per = st.selectbox(T("Persona", "Persona"), _per_opts, key="ins_persona")
+        _stmt_default = _picked["statement"] if _picked else ""
+        _stmt = st.text_area(T("Insight statement (edit freely)", "Insight စာသား (စိတ်ကြိုက် ပြင်လို့ရတယ်)"),
+                             value=_stmt_default, height=120, key=f"ins_statement_{_qi}")
+        if st.button(T("Save insight", "Insight သိမ်းမယ်"), key="ins_save"):
+            if not _stmt.strip():
+                st.warning(T("Write the insight statement first.", "Insight စာသား အရင် ရေးပါ။"))
+            else:
+                _data = load_insights()
+                _now = datetime.datetime.now(ZoneInfo("Asia/Rangoon"))
+                _data.setdefault("insights", []).append({
+                    "id": _now.strftime("%Y%m%d%H%M%S%f"),
+                    "statement": _stmt.strip(),
+                    "qual_evidence": _picked.get("quotes", []) if _picked else [],
+                    "qual_source": _picked.get("analysis_file", "") if _picked else "",
+                    "quant_evidence": _picked_nums,
+                    "section": _sec, "persona": _per,
+                    "created": _now.strftime("%Y-%m-%d %H:%M"),
+                })
+                save_insights(_data)
+                st.success(T("Insight saved.", "Insight သိမ်းပြီးပြီ။"))
+    _saved_ins = load_insights().get("insights", [])
+    if _saved_ins:
+        st.divider()
+        st.subheader(T("Saved insights", "သိမ်းထားတဲ့ insight များ"))
+        for _ins in _saved_ins:
+            st.markdown(f"**{_ins.get('statement', '')}**")
+            st.caption(T(f"Section: {_ins.get('section', '')} | Persona: {_ins.get('persona', '')} | {_ins.get('created', '')}",
+                         f"Section: {_ins.get('section', '')} | Persona: {_ins.get('persona', '')} | {_ins.get('created', '')}"))
+            for _qq in _ins.get("qual_evidence", []):
+                st.write(f"> \"{_qq.get('quote', '')}\" — Speaker {_qq.get('speaker', '')}, {_qq.get('source', '')}")
+            for _qn in _ins.get("quant_evidence", []):
+                st.write(f"- {_qn.get('label', '')}: {_qn.get('value', '')} ({_qn.get('source', '')})")
+            if st.button(T("Delete insight", "Insight ဖျက်မယ်"), key=f"ins_del_{_ins.get('id', '')}"):
+                _data = load_insights()
+                _data["insights"] = [x for x in _data.get("insights", []) if x.get("id") != _ins.get("id")]
+                save_insights(_data)
+                st.rerun()
 
 elif page == "Presentation":
     # Stage 5 shell page: presentation is part of Stage 5 — the PPTX comes
@@ -5909,8 +6502,52 @@ elif page == "Market Analysis":
                 file_name=saved_selected,
                 mime="text/plain",
             )
+            _ec_stem = saved_selected[:-4] if saved_selected.endswith(".txt") else saved_selected
+            _ec_path = NOTES_DIR / f"evidence_check_{_ec_stem}.txt"
+            if _ec_path.exists():
+                _ec_lines = _ec_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                _ec_score = _ec_lines[1] if len(_ec_lines) > 1 else ""
+                st.caption("Evidence: " + _ec_score)
+            else:
+                st.caption(T("Evidence: not yet verified.", "Evidence: မစစ်ရသေးဘူး။"))
+            if st.button(T("🔍 Verify evidence", "🔍 Evidence စစ်မယ်"), key="ma_verify_evidence"):
+                with st.spinner(T("Verifying quotes against transcripts... (no AI call)", "Transcript တွေနဲ့ quote တွေ တိုက်စစ်နေတယ်... (AI မသုံးဘူး)")):
+                    _ev_results, _ev_score, _ev_path = run_evidence_check(saved_selected)
+                st.success(T(f"Verified: {_ev_score[0]} of {_ev_score[1]} findings",
+                             f"စစ်ပြီးပြီ: finding {_ev_score[1]} ခု ထဲက {_ev_score[0]} ခု အတည်ပြုနိုင်တယ်"))
+                _ev_rows = [{
+                    "Finding": r["finding"][:120],
+                    "Quote": r["quote"][:120],
+                    "Source": r["source"],
+                    "Claimed n": r["claimed_n"] if r["claimed_n"] is not None else "",
+                    "Found n": r["found_n"],
+                    "Status": r["status"],
+                    "Reason": r["reason"],
+                } for r in _ev_results]
+                st.dataframe(pd.DataFrame(_ev_rows))
+                st.download_button(
+                    "Download evidence check (.txt)",
+                    data=_ev_path.read_bytes(),
+                    file_name=_ev_path.name,
+                    mime="text/plain",
+                    key="ma_dl_evidence",
+                )
         else:
             st.info(T("No saved analysis yet.", "သိမ်းထားတဲ့ analysis မရှိသေးပါ။"))
+
+        st.divider()
+        st.subheader(T("🔀 Cross-interview themes", "🔀 Theme တွေ — transcript တိုင်းမှာ ပါမပါ"))
+        _th_themes, _th_files = cross_interview_themes()
+        if not _th_themes:
+            st.info(T("No single-transcript analyses yet — analyze transcripts one by one first.",
+                      "Transcript တစ်ခုချင်းစီ analyse လုပ်ထားတာ မရှိသေးဘူး — အရင် တစ်ခုချင်းစီ analyse လုပ်ပါ။"))
+        else:
+            _th_rows = {}
+            for _th, _counts in _th_themes.items():
+                _th_rows[_th] = {f: (f"✓ {_counts[f]}" if _counts.get(f) else "—") for f in _th_files}
+            st.dataframe(pd.DataFrame.from_dict(_th_rows, orient="index"))
+            st.caption(T("✓ n = findings in that theme for that transcript. Multi-interview analyses are not listed here — they already combine interviews.",
+                         "✓ n = အဲဒီ transcript မှာ အဲဒီ theme အောက် finding အရေအတွက်။ Multi-interview analysis တွေ ဒီမှာ မပါဘူး — သူတို့က interview တွေ ပေါင်းပြီးသား။"))
 
 elif page == "Quantitative Analysis":
     st.title("📊 Quantitative Analysis")
