@@ -17,6 +17,7 @@ from pathlib import Path
 from google import genai
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.util import Pt
 from docx import Document
 from docx.shared import RGBColor as DocxRGBColor
 
@@ -28,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.27"
+APP_VERSION = "3.28"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -302,7 +303,7 @@ def ensure_project(name):
 # deliverables, approval (Draft → Approved). Discussion Guide lives here too
 # (moved from the Market Analysis planner — no duplicate input there).
 BRIEF_APPROVALS = ["Draft", "Pending", "Approved", "Revision"]
-BRIEF_DELIVERABLES = ["PPTX Report", "DOCX Report", "PDF Report", "Presentation"]
+BRIEF_DELIVERABLES = ["PPTX Report", "DOCX Report", "Presentation"]
 
 
 def load_brief():
@@ -358,8 +359,7 @@ def save_brief(data):
 #     (user type, behaviour, non-rejector rules from the brief).
 #   recruitment_criteria: text — extra recruitment notes.
 #   rationale: text — why this method was chosen, in the user's own words.
-#     The proposal is drafted FROM the design later (v3.27); no proposal
-#     generator in v3.25.
+#     The proposal is drafted FROM the design (v3.28, Reports page).
 #   dg_language: "English" | "Myanmar" (moderator-script language)
 #   dg_text: the Discussion Guide draft (markup, see DG_DRAFT_TEMPLATE)
 #   dg_file: "discussion_guide.txt" in notes/ (same text, as a file)
@@ -2847,14 +2847,20 @@ def _color_runs(paragraphs, hex_color):
             run.font.color.rgb = RGBColor.from_string(hex_color)
 
 
-def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Clean"):
+def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Clean",
+                    subtitle=None, footer=None):
+    """PPTX export — the main report deliverable (his rule: reports are
+    mostly PowerPoint). subtitle goes on the title slide (client + month);
+    footer (e.g. 'Base: N=82' for Quant reports) is printed small at the
+    bottom of every content slide, so the N base is stated on every slide.
+    Existing templates are unchanged."""
     t = TEMPLATES.get(template, TEMPLATES["Business Clean"])
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     _set_bg(slide, t["bg"])
     slide.shapes.title.text = title_text
     _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
-    slide.placeholders[1].text = "Market Research AI — ResearchFlow"
+    slide.placeholders[1].text = subtitle or "Market Research AI — ResearchFlow"
     _color_runs(slide.placeholders[1].text_frame.paragraphs, t["body"])
     for section in parse_sections(analysis_text):
         # Keep slides readable: split long sections instead of overflowing one slide.
@@ -2881,6 +2887,12 @@ def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Cle
                 p.level = 0
                 for run in p.runs:
                     run.font.color.rgb = RGBColor.from_string(t["body"])
+            if footer:
+                _fp = tf.add_paragraph()
+                _fp.text = footer
+                for run in _fp.runs:
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor.from_string(t["body"])
     prs.save(out_path)
     return out_path
 
@@ -2897,6 +2909,1104 @@ def analysis_to_docx(analysis_text, title_text, out_path):
             doc.add_paragraph(line)
     doc.save(out_path)
     return out_path
+
+
+# --- Professional Reporting (v3.28, Phase 3 Report Quality) ---
+# NO SAMPLE CONTENT RULE (user, 2026-11-17): the real project samples he
+# shared are REFERENCE DATA for the website's STRUCTURE only — their format,
+# section shapes, tables, and ordering. NO sample content may appear in this
+# app: no findings, quotes, prices, dates, venues, client names, contacts,
+# interviewer names, product codes, brand lists, township lists, MMK bands,
+# or respondent data — not as defaults, not as placeholders, not as examples,
+# not in help text, not in prompts. Every value below comes from the
+# project's OWN brief.json / design.json / saved analysis, or from text the
+# user writes on the page. New sections start EMPTY for a new project.
+
+
+def _exec_summary_sections(stem, analysis_text):
+    """Executive Summary for a report export. Returns (sections, source):
+    'topline' — from the saved <stem>_topline.txt (Reports page 'Create
+    executive summary'); 'key_findings' — from the analysis's own Key
+    Findings section (first 5 lines); None — no summary available. The
+    ORIGINAL analysis file is never changed — the summary is prepended only
+    in the exported file."""
+    topline_path = ANALYSIS_DIR / f"{stem}_topline.txt"
+    if topline_path.exists():
+        try:
+            ttext = topline_path.read_text(encoding="utf-8", errors="replace")
+            if looks_like_html(ttext):
+                ttext = html_to_text(ttext)
+            lines = []
+            for sec in parse_sections(ttext):
+                lines.extend(sec["lines"])
+            if lines:
+                return [{"title": "Executive Summary", "lines": lines}], "topline"
+        except Exception:
+            pass
+    for sec in parse_sections(analysis_text):
+        if "key finding" in sec["title"].lower() and sec["lines"]:
+            return [{"title": "Executive Summary", "lines": sec["lines"][:5]}], "key_findings"
+    return [], None
+
+
+def _report_text_with_summary(analysis_text, stem, fallback_text=None):
+    """Compose the export text: an Executive Summary section first, then the
+    full analysis. Returns (text, source). When the analysis already has an
+    Executive Summary section, nothing is prepended (source 'existing').
+    fallback_text (the ORIGINAL analysis, when analysis_text is an assembled
+    report) is where the Key Findings fallback looks — the assembled text
+    may not have a Key Findings section any more."""
+    if any("executive summary" in s["title"].lower() for s in parse_sections(analysis_text)):
+        return str(analysis_text or ""), "existing"
+    summary, source = _exec_summary_sections(stem, fallback_text if fallback_text is not None else analysis_text)
+    if not summary:
+        return str(analysis_text or ""), None
+    parts = []
+    for sec in summary:
+        parts.append(f"## {sec['title']}")
+        for line in sec["lines"]:
+            parts.append(line if line.startswith("> ") else f"- {line}")
+        parts.append("")
+    parts.append(str(analysis_text or "").strip())
+    return "\n".join(parts), source
+
+
+_NON_EN_RE = re.compile(r"[\u1000-\u109F\u0400-\u04FF\u4E00-\u9FFF\u3040-\u30FF\u0600-\u06FF\u0E00-\u0E7F]")
+
+
+def report_english_check(text):
+    """Lines containing non-Latin script (Myanmar, Cyrillic, CJK, Arabic,
+    Thai). Reports are English-only — typographic punctuation (—, –, “ ”)
+    is fine and is NOT flagged. Returns [(line_no, line)]."""
+    out = []
+    for i, line in enumerate(str(text or "").splitlines(), start=1):
+        if _NON_EN_RE.search(line):
+            out.append((i, line.strip()[:160]))
+    return out
+
+
+def report_evidence_warnings(analysis_text):
+    """Run the v3.27 verifier on the ORIGINAL analysis text (not the
+    summary-prepended export, so findings are not double-counted). Returns
+    (unverified_rows, total, note). note is set when there are no
+    transcripts in the project to check against."""
+    full_files, _pending = get_full_transcripts()
+    if not full_files:
+        return [], 0, "No transcripts in this project to check against"
+    ttexts = {f.name: f.read_text(encoding="utf-8", errors="replace") for f in full_files}
+    results, score = verify_analysis(analysis_text, ttexts)
+    unverified = [r for r in results if r["status"] != "VERIFIED"]
+    return unverified, len(results), ""
+
+
+# Report structure template (v3.28, Phase 3 Report Quality): the section
+# order of the house Qual report, from the sample report's structure —
+# Agenda → Goal → Segment Introduction → Competitive Landscape & Strategy →
+# Targeting Strategy → Summary of Segments' Insight → Deep Dive per segment
+# → Winning Menu → Action Plan. _assemble_report() reorders the project's
+# OWN analysis/brief/design/insights data into this shape for the PPTX/DOCX
+# exports; report_template_coverage() shows which sections have source
+# data and which are left out. NOTHING is invented: a template section with
+# no source data is omitted from the export and listed as missing.
+# What the template does NOT do (honest limit): the sample's strategic
+# synthesis, archetype framing, images, and visual layout are the user's
+# craft — the exporter produces the STRUCTURE with the project's real
+# findings; he refines the synthesis/design in Google Docs/PowerPoint.
+REPORT_TEMPLATE_SECTIONS = ["Agenda", "Goal", "Segment Introduction",
+                            "Competitive Landscape & Strategy",
+                            "Targeting Strategy",
+                            "Summary of Segments' Insight",
+                            "Deep Dive per segment", "Winning Menu",
+                            "Action Plan"]
+
+# Keyword buckets for deep-dive lines (heuristic — the exporter groups the
+# project's OWN lines; it never writes new findings). Quote lines default
+# to Motivations; anything else unmatched is Findings.
+def _has_word(text, word):
+    """Word match with a boundary at the START of the word, so 'action'
+    matches 'Actions' but NOT 'satisfaction', and 'want' matches 'wanted'.
+    Plain substring matching misfiled 'Satisfaction' sections under
+    Action Plan (v3.28 fix)."""
+    return re.search(r"\b" + re.escape(word), text or "") is not None
+
+
+_DIVE_BUCKETS = [
+    ("Occasions", ("breakfast", "lunch", "dinner", "morning", "noon",
+                    "afternoon", "evening", "night", "midnight", "occasion",
+                    "meal", "takeaway", "on-the-go")),
+    ("Wishlist", ("want", "wish", "would like", "hope", "wishlist", "future")),
+    ("Landscape & Channels", ("shop", "store", "competitor", "street",
+                              "vendor", "channel", "outlet", "brand",
+                              "market", "price", "location", "visit")),
+    ("Need to Action", ("gap", "need", "action", "dream", "bridge",
+                        "missing", "problem", "pain", "barrier")),
+    ("Ranked Favorites", ("favorite", "favourite", "menu", "ranked",
+                          "top 3", "most consumed", "most often")),
+    ("Motivations", ("because", "motivation", "reason", "feel", "i want",
+                     "love", "enjoy", "prefer", "makes me")),
+]
+
+
+def _dive_bucket(line):
+    """Keyword bucket for one deep-dive line. Quote lines default to
+    Motivations; anything else unmatched is Findings."""
+    text = line[2:].strip().lower() if line.startswith("> ") else line.lower()
+    for label, words in _DIVE_BUCKETS:
+        if any(_has_word(text, w) for w in words):
+            return label
+    return "Motivations" if line.startswith("> ") else "Findings"
+
+
+def _report_slots(analysis_text, brief, design, insights):
+    """Map the project's OWN data onto the house Qual report template.
+    Returns {"slots": {slot: {"lines": [...], "source": str}},
+             "unmatched": [{"title": ..., "lines": [...]}]}.
+    Each analysis section is placed in exactly ONE slot (no duplication, no
+    loss). insights is the dict from load_insights() (or a plain list).
+    Slot lines are already rendered as export markdown ('- ' bullets,
+    '> ' quotes, plain label lines)."""
+    brief = brief or {}
+    design = design or {}
+    if isinstance(insights, dict):
+        insights = insights.get("insights", []) or []
+    insights = insights or []
+    sections = parse_sections(analysis_text or "")
+    personas = [str((p or {}).get("name") or "").strip()
+                for p in (design.get("personas") or [])]
+    personas = [n for n in personas if n]
+    slots = {}
+    unmatched = []
+
+    def _put(slot, lines, source):
+        if not lines:
+            return
+        s = slots.setdefault(slot, {"lines": [], "source": source})
+        s["lines"].extend(lines)
+        if s["source"] != source:
+            s["source"] = s["source"] + " + " + source
+
+    def _bullet(line):
+        return line if line.startswith("> ") else f"- {line}"
+
+    # --- Goal: brief objectives + design method/N + the UNDERSTAND / DEFINE /
+    # OPPORTUNITY framing (structure from the sample, content from his data).
+    goal_lines = []
+    if brief.get("background"):
+        goal_lines.append(brief["background"])
+    if brief.get("objectives"):
+        goal_lines.append(f"UNDERSTAND — {brief['objectives']}")
+    if personas:
+        goal_lines.append(f"DEFINE — Personas: {', '.join(personas)}")
+    _rat = (design.get("rationale") or design.get("goal") or "").strip()
+    if _rat:
+        goal_lines.append(f"OPPORTUNITY — {_rat}")
+    _methods = design.get("methods") or []
+    _approach = design.get("approach") or ""
+    if _approach or _methods:
+        goal_lines.append(f"Method: {(_approach + ' — ') if _approach else ''}{', '.join(_methods) if _methods else '—'}")
+    _sessions = design.get("sessions_count") or 0
+    _per = design.get("participants_per_session") or 0
+    _sample = design.get("sample_size") or 0
+    if _sessions and _per:
+        goal_lines.append(f"Target: {_sessions * _per} respondents ({_sessions} groups × {_per})")
+    elif _sample:
+        goal_lines.append(f"Target: {_sample} respondents")
+    elif (design.get("target") or "").strip():
+        goal_lines.append(f"Target: {design['target'].strip()}")
+    elif (brief.get("target_audience") or "").strip():
+        goal_lines.append(f"Target: {brief['target_audience'].strip()}")
+    _put("goal", goal_lines, "Client Brief + Research Design")
+
+    # --- Segment Introduction + Targeting Strategy: from the design personas.
+    _intro_lines = []
+    if (brief.get("target_audience") or "").strip():
+        _intro_lines.append(brief["target_audience"].strip())
+    _target_lines = []
+    for p in (design.get("personas") or []):
+        _nm = str((p or {}).get("name") or "").strip()
+        if not _nm:
+            continue
+        _ds = str((p or {}).get("description") or "").strip()
+        _vf = str((p or {}).get("value_framing") or "").strip()
+        _intro_lines.append(f"{_nm}: {_ds}" if _ds else _nm)
+        _target_lines.append(f"{_nm} — {_ds if _ds else '—'} (Value: {_vf if _vf else '—'})")
+    for q in (design.get("quotas") or []):
+        _sg = str((q or {}).get("segment") or "").strip()
+        _sh = str((q or {}).get("share") or "").strip()
+        if _sg or _sh:
+            _intro_lines.append(f"Quota: {_sg} — {_sh}")
+            _target_lines.append(f"Quota: {_sg} — {_sh}")
+    _put("segment_intro", _intro_lines, "Research Design personas + Brief")
+    _put("targeting", _target_lines, "Research Design")
+
+    # --- Summary: saved insights first, then summary-classified sections.
+    _sum_lines = []
+    for ins in insights:
+        _st = str((ins or {}).get("statement") or "").strip()
+        if not _st:
+            continue
+        _sum_lines.append(f"- {_st}")
+        for _q in ((ins or {}).get("qual_evidence") or [])[:1]:
+            _qt = str((_q or {}).get("quote") or "").strip()
+            if _qt:
+                _sum_lines.append(f"> \"{_qt}\"")
+    if _sum_lines:
+        _put("summary", _sum_lines, f"{len(_sum_lines)} saved insight(s)")
+
+    # --- Classify the analysis sections (title keywords; persona-name match
+    # takes priority over every keyword slot).
+    def _classify(title):
+        t = title.lower()
+        if "executive summary" in t:
+            return "executive_summary"
+        for n in personas:
+            if n.lower() in t:
+                return ("deep_dive", n)
+        if any(_has_word(t, w) for w in ("goal", "objective")):
+            return "goal"
+        if any(_has_word(t, w) for w in ("summary", "insight")):
+            return "summary"
+        if any(_has_word(t, w) for w in ("landscape", "competitive", "competitor", "positioning", "gap", "price")):
+            return "landscape"
+        if any(_has_word(t, w) for w in ("winning", "menu")):
+            return "winning_menu"
+        if _has_word(t, "strategy"):
+            return "landscape"
+        if any(_has_word(t, w) for w in ("action", "recommendation", "next step")):
+            return "action_plan"
+        if any(_has_word(t, w) for w in ("deep dive", "segment")):
+            return "deep_dive_generic"
+        return None
+
+    for sec in sections:
+        _title = sec["title"]
+        _lines = [_bullet(x) for x in sec["lines"]]
+        _slot = _classify(_title)
+        if _slot == "executive_summary":
+            _put("executive_summary", _lines, "Analysis")
+        elif isinstance(_slot, tuple):
+            _put(f"deep_dive:{_slot[1]}", _lines, f"Analysis: {_title}")
+        elif _slot == "goal":
+            _put("goal", _lines, f"Analysis: {_title}")
+        elif _slot == "summary":
+            _put("summary", _lines, f"Analysis: {_title}")
+        elif _slot == "landscape":
+            _put("landscape", _lines, f"Analysis: {_title}")
+        elif _slot == "winning_menu":
+            _put("winning_menu", _lines, f"Analysis: {_title}")
+        elif _slot == "action_plan":
+            _put("action_plan", _lines, f"Analysis: {_title}")
+        elif _slot == "deep_dive_generic":
+            _mentioned = [n for n in personas
+                          if n.lower() in " ".join(sec["lines"]).lower()]
+            if len(_mentioned) == 1:
+                _put(f"deep_dive:{_mentioned[0]}", _lines, f"Analysis: {_title}")
+            else:
+                _put("deep_dive_generic", _lines, f"Analysis: {_title}")
+        else:
+            # Unmatched section: if its lines mention exactly one persona,
+            # the whole section belongs to that persona's deep dive.
+            _mentioned = [n for n in personas
+                          if n.lower() in " ".join(sec["lines"]).lower()]
+            if len(_mentioned) == 1:
+                _put(f"deep_dive:{_mentioned[0]}", _lines, f"Analysis: {_title}")
+            else:
+                unmatched.append({"title": _title, "lines": sec["lines"]})
+
+    # --- Deep dives: profile lines first, then the persona's lines bucketed
+    # (Occasions → Motivations → Need to Action → Landscape & Channels →
+    # Wishlist → Ranked Favorites → Findings). Insights for the persona join.
+    _bucket_order = ["Occasions", "Motivations", "Need to Action",
+                     "Landscape & Channels", "Wishlist", "Ranked Favorites",
+                     "Findings"]
+    for p in (design.get("personas") or []):
+        _nm = str((p or {}).get("name") or "").strip()
+        if not _nm:
+            continue
+        _key = f"deep_dive:{_nm}"
+        _raw = list(slots.get(_key, {}).get("lines", []))
+        for ins in insights:
+            if str((ins or {}).get("persona") or "").strip() == _nm:
+                _st = str((ins or {}).get("statement") or "").strip()
+                if _st:
+                    _raw.append(f"- {_st}")
+        if not _raw and not str((p or {}).get("description") or "").strip():
+            continue
+        _buckets = {b: [] for b in _bucket_order}
+        for _ln in _raw:
+            _buckets[_dive_bucket(_ln)].append(_ln)
+        _dlines = []
+        _ds = str((p or {}).get("description") or "").strip()
+        _vf = str((p or {}).get("value_framing") or "").strip()
+        if _ds:
+            _dlines.append(f"Profile: {_ds}" + (f" (Value: {_vf})" if _vf else ""))
+        for _b in _bucket_order:
+            if _buckets[_b]:
+                _dlines.append(f"{_b}:")
+                _dlines.extend(_buckets[_b])
+        slots[_key] = {"lines": _dlines, "source": "Research Design + Analysis"}
+    return {"slots": slots, "unmatched": unmatched}
+
+
+def _assemble_report(analysis_text, brief, design, insights):
+    """Assemble the project's data into the house Qual report structure.
+    Returns (text, included, missing): text is the report in template order
+    (Executive Summary first when the analysis has one, then Agenda, Goal →
+    ... → Action Plan, then Additional Findings for sections that fit no
+    slot); included/missing are template section labels. Sections with no
+    source data are omitted (never invented). When nothing maps at all, the
+    original analysis text is returned unchanged (safe fallback)."""
+    data = _report_slots(analysis_text, brief, design, insights)
+    slots = data["slots"]
+    unmatched = data["unmatched"]
+    labels = {"goal": "Goal", "segment_intro": "Segment Introduction",
+              "landscape": "Competitive Landscape & Strategy",
+              "targeting": "Targeting Strategy",
+              "summary": "Summary of Segments' Insight",
+              "winning_menu": "Winning Menu", "action_plan": "Action Plan"}
+    order = ["goal", "segment_intro", "landscape", "targeting", "summary",
+             "winning_menu", "action_plan"]
+    personas = [str((p or {}).get("name") or "").strip()
+                for p in ((design or {}).get("personas") or [])]
+    personas = [n for n in personas if n]
+    parts = []
+    included = []
+    missing = []
+    if "executive_summary" in slots:
+        parts.append("## Executive Summary")
+        parts.extend(slots["executive_summary"]["lines"])
+        parts.append("")
+    # Agenda lists only the sections actually included.
+    _agenda = []
+    for _key in order:
+        if _key in slots:
+            _agenda.append(labels[_key])
+    for _n in personas:
+        if f"deep_dive:{_n}" in slots:
+            _agenda.append(f"Deep Dive: {_n}")
+    if "deep_dive_generic" in slots:
+        _agenda.append("Deep Dive per segment")
+    if unmatched:
+        _agenda.append("Additional Findings")
+    if _agenda:
+        parts.append("## Agenda")
+        parts.extend(f"{i}. {_item}" for i, _item in enumerate(_agenda, start=1))
+        parts.append("")
+        included.append("Agenda")
+    for _key in order:
+        if _key in slots:
+            parts.append(f"## {labels[_key]}")
+            parts.extend(slots[_key]["lines"])
+            parts.append("")
+            included.append(labels[_key])
+        else:
+            missing.append(labels[_key])
+    for _n in personas:
+        _key = f"deep_dive:{_n}"
+        if _key in slots:
+            parts.append(f"## Deep Dive: {_n}")
+            parts.extend(slots[_key]["lines"])
+            parts.append("")
+            included.append(f"Deep Dive: {_n}")
+        else:
+            missing.append(f"Deep Dive: {_n}")
+    if "deep_dive_generic" in slots:
+        parts.append("## Deep Dive per segment")
+        parts.extend(slots["deep_dive_generic"]["lines"])
+        parts.append("")
+        included.append("Deep Dive per segment")
+    if unmatched:
+        parts.append("## Additional Findings")
+        for _sec in unmatched:
+            parts.append(f"{_sec['title']}:")
+            parts.extend(f"- {x}" if not x.startswith("> ") else x for x in _sec["lines"])
+        parts.append("")
+        included.append("Additional Findings")
+    if not included:
+        return str(analysis_text or ""), [], [l for l in REPORT_TEMPLATE_SECTIONS if l != "Agenda"]
+    if not personas and "Deep Dive per segment" not in included:
+        missing.append("Deep Dive per segment")
+    return "\n".join(parts).strip() + "\n", included, missing
+
+
+def report_template_coverage(analysis_text, brief, design, insights=None):
+    """Coverage of the Qual report template in one analysis. Returns a list
+    of {label, present, detail}. Returns [] when the design says
+    Quantitative. Detail names the source, or where the data would come
+    from when the section is missing."""
+    if (design or {}).get("approach") == "Quantitative":
+        return []
+    _text, included, missing = _assemble_report(analysis_text, brief, design, insights)
+    data = _report_slots(analysis_text, brief, design, insights)
+    slots = data["slots"]
+    _hints = {
+        "Goal": "Add objectives in the Client Brief, or a Goal/Objective section in the analysis.",
+        "Segment Introduction": "Add personas in the Research Design, or target audience in the Brief.",
+        "Competitive Landscape & Strategy": "Add a Competitive Landscape / Strategy section in the analysis.",
+        "Targeting Strategy": "Add personas in the Research Design.",
+        "Summary of Segments' Insight": "Save insights on the Insights page, or add a Summary section in the analysis.",
+        "Winning Menu": "Add a Winning Menu / Strategy section in the analysis.",
+        "Action Plan": "Add an Action Plan / Recommendations section in the analysis.",
+        "Deep Dive per segment": "Add findings for this segment in the analysis.",
+    }
+    rows = []
+    for _label in REPORT_TEMPLATE_SECTIONS:
+        if _label == "Agenda":
+            rows.append({"label": "Agenda", "present": bool(included),
+                         "detail": "Lists the sections included in this export"})
+            continue
+        if _label == "Deep Dive per segment":
+            _personas = [str((p or {}).get("name") or "").strip()
+                         for p in ((design or {}).get("personas") or [])]
+            _personas = [n for n in _personas if n]
+            if _personas:
+                for _n in _personas:
+                    _key = f"deep_dive:{_n}"
+                    _present = f"Deep Dive: {_n}" in included
+                    rows.append({"label": f"Deep Dive: {_n}", "present": _present,
+                                 "detail": slots.get(_key, {}).get("source", "") or "Add findings for this persona in the analysis."})
+            else:
+                _present = "Deep Dive per segment" in included
+                rows.append({"label": "Deep Dive per segment", "present": _present,
+                             "detail": slots.get("deep_dive_generic", {}).get("source", "") or _hints["Deep Dive per segment"]})
+            continue
+        _present = _label in included
+        _src = ""
+        _slot_key = {"Goal": "goal", "Segment Introduction": "segment_intro",
+                     "Competitive Landscape & Strategy": "landscape",
+                     "Targeting Strategy": "targeting",
+                     "Summary of Segments' Insight": "summary",
+                     "Winning Menu": "winning_menu",
+                     "Action Plan": "action_plan"}.get(_label, "")
+        if _present and _slot_key:
+            _src = slots.get(_slot_key, {}).get("source", "")
+        rows.append({"label": _label, "present": _present,
+                     "detail": _src or _hints.get(_label, "")})
+    if "Additional Findings" in included:
+        rows.append({"label": "Additional Findings", "present": True,
+                     "detail": "Sections that fit no template slot — kept verbatim at the end"})
+    return rows
+
+
+# Quant report template (v3.28, Phase 3 Report Quality): the section order
+# of the house Quant report, from the Quant sample's STRUCTURE only —
+# Actionable Insights → Project Timeline → Program Overview → Executive
+# Summary → Question Analysis → VOC Feedback → Overall Satisfaction → Tier
+# Evaluation → Customer Sentiment & Feedback → Recommendations / Action
+# Plan → Closing. Numbers come ONLY from the saved quant summaries
+# (quant_*.txt, computed in Python on the Quant page) and the project's own
+# analysis/brief/design — never AI-generated, never sample content. Top-Box
+# = share rating 4–5 on a 1–5 scale, computed here from the saved counts.
+# QUANT CONVENTIONS followed: N base stated on every PPTX slide (the page
+# passes it as the exporter's footer); cross-tabs split Total + segments;
+# every finding keeps its question code [Q: ...] when the question name is
+# a code; VOC direct quotes stay verbatim; counts + % together.
+# What the template does NOT do (honest limit): the per-tier comparison
+# table, VOC theme shares, and archetype framing need the project's tier
+# structure and coded open text — the exporter produces the STRUCTURE with
+# the project's real numbers; he builds those tables in PowerPoint.
+QUANT_TEMPLATE_SECTIONS = ["Actionable Insights", "Project Timeline",
+    "Program Overview", "Executive Summary", "Question Analysis",
+    "VOC Feedback", "Overall Satisfaction", "Tier Evaluation",
+    "Customer Sentiment & Feedback", "Recommendations / Action Plan", "Closing"]
+
+
+def _load_quant_texts():
+    """Saved quant summaries (quant_*.txt, interpretation files excluded):
+    [(name, text)]. Empty when the project has no survey data."""
+    out = []
+    for f in sorted(ANALYSIS_DIR.glob("quant_*.txt")):
+        if f.name.endswith("_interpretation.txt"):
+            continue
+        try:
+            out.append((f.name, f.read_text(encoding="utf-8", errors="replace")))
+        except Exception:
+            pass
+    return out
+
+
+def _quant_total_n(quant_texts):
+    """Total survey base N from the quant files' 'Rows: N' line (the first
+    one found). None when there is no quant data."""
+    for _name, text in (quant_texts or []):
+        for line in str(text or "").splitlines():
+            m = re.match(r"\s*Rows:\s*(\d+)\s*$", line)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+def _quant_question_stats(quant_texts):
+    """Per-question stats from the saved quant summaries. Returns a list of
+    {question, n, counts, percents, mean, top_box, source} for each
+    '## <question> (n=N)' section. Counts come from the 'val: count (pct%)'
+    lines (parse_sections() already stripped the '- ' bullets); mean from
+    the 'Mean: X.XX' line when present, else the weighted mean of numeric
+    values; top_box = share of values 4–5 on a 1–5 scale (None when the
+    question is not a 1–5 numeric scale)."""
+    out = []
+    for _name, text in (quant_texts or []):
+        for sec in parse_sections(text):
+            m = re.match(r"(.+?)\s*\(n=(\d+)\)\s*$", sec["title"])
+            if not m:
+                continue
+            counts, percents, mean = {}, {}, None
+            for line in sec["lines"]:
+                mm = re.match(r"(.+?):\s*(\d+)\s*\(([\d.]+)%\)\s*$", line)
+                if mm:
+                    try:
+                        counts[mm.group(1).strip()] = int(mm.group(2))
+                        percents[mm.group(1).strip()] = float(mm.group(3))
+                    except ValueError:
+                        pass
+                mn = re.match(r"Mean:\s*([\d.]+)\s*$", line)
+                if mn:
+                    try:
+                        mean = float(mn.group(1))
+                    except ValueError:
+                        pass
+            if not counts and mean is None:
+                continue
+            if mean is None:
+                try:
+                    vals = [(float(v), c) for v, c in counts.items()]
+                    tot = sum(c for _v, c in vals)
+                    if tot:
+                        mean = round(sum(v * c for v, c in vals) / tot, 2)
+                except ValueError:
+                    pass
+            top_box = None
+            try:
+                vals = {float(v): c for v, c in counts.items()}
+                if vals and set(vals) <= {1.0, 2.0, 3.0, 4.0, 5.0}:
+                    tot = sum(vals.values())
+                    if tot:
+                        top_box = round((vals.get(4.0, 0) + vals.get(5.0, 0)) / tot * 100, 1)
+            except ValueError:
+                pass
+            out.append({"question": m.group(1).strip(), "n": int(m.group(2)),
+                        "counts": counts, "percents": percents,
+                        "mean": mean, "top_box": top_box, "source": _name})
+    return out
+
+
+def _quant_interpretation_text():
+    """Text of the saved quant interpretation files
+    (quant_*_interpretation.txt), joined. Empty string when there is none."""
+    parts = []
+    for f in sorted(ANALYSIS_DIR.glob("quant_*_interpretation.txt")):
+        try:
+            t = f.read_text(encoding="utf-8", errors="replace")
+            if looks_like_html(t):
+                t = html_to_text(t)
+            parts.append(t)
+        except Exception:
+            pass
+    return "\n".join(parts)
+
+
+def _pick_report_template(design):
+    """Which report structure template the PPTX export uses: 'quant' when
+    the design says Quantitative; 'qual' otherwise. Mixed uses the methods:
+    a survey-only Mixed project gets the Quant template, anything with
+    FGD/IDI gets Qual (its Quant numbers still reach the Summary through
+    saved insights). Returns 'qual' or 'quant'."""
+    design = design or {}
+    if design.get("approach") == "Quantitative":
+        return "quant"
+    if design.get("approach") == "Mixed":
+        methods = [str(m) for m in (design.get("methods") or [])]
+        if methods and all(m == "Survey" for m in methods):
+            return "quant"
+    return "qual"
+
+
+def _assemble_quant_report(analysis_text, brief, design, insights=None, stem=""):
+    """Assemble the project's data into the house Quant report structure.
+    Returns (text, included, missing): text is the report in template order
+    (Actionable Insights → ... → Closing); included/missing are template
+    section labels. Sections with no source data are omitted (never
+    invented). When nothing maps at all, the original analysis text is
+    returned unchanged (safe fallback). Each analysis section is used at
+    most once across the VOC / Sentiment / Tier / Recommendations slots."""
+    brief = brief or {}
+    design = design or {}
+    quant_texts = _load_quant_texts()
+    total_n = _quant_total_n(quant_texts)
+    stats = _quant_question_stats(quant_texts)
+    interp = _quant_interpretation_text()
+    _secs = parse_sections(analysis_text)
+    _used = set()
+
+    def _match(*words, skip_used=True):
+        found = []
+        for _i, _s in enumerate(_secs):
+            if skip_used and _i in _used:
+                continue
+            if any(_has_word(_s["title"].lower(), w) for w in words):
+                found.append((_i, _s))
+        return found
+
+    def _take(pairs):
+        lines = []
+        for _i, _s in pairs:
+            _used.add(_i)
+            lines.extend(_s["lines"])
+        return lines
+
+    def _dedupe(lines):
+        seen, out = set(), []
+        for ln in lines:
+            if ln not in seen:
+                seen.add(ln)
+                out.append(ln)
+        return out
+
+    slots = {}
+    # Key Findings section index — its lines feed Actionable Insights and
+    # the Executive Summary fallback; mark it used so those lines are not
+    # repeated again under Additional Findings below.
+    _kf_idx = None
+    for _i, _s in enumerate(_secs):
+        if "key finding" in _s["title"].lower() and _s["lines"]:
+            _kf_idx = _i
+            break
+    # 1. Actionable Insights — headline from the quant interpretation, else
+    # the analysis Key Findings; the validation sample N first.
+    _ai = []
+    if interp:
+        for _s in parse_sections(interp):
+            if _s["lines"]:
+                _ai = _s["lines"][:5]
+                break
+    if not _ai and _kf_idx is not None:
+        _ai = _secs[_kf_idx]["lines"][:5]
+        _used.add(_kf_idx)
+    if total_n:
+        _ai = [f"Validation sample: N = {total_n}"] + _ai
+    if _ai:
+        slots["insights"] = _dedupe(_ai)
+    # 2. Project Timeline — brief dates + fieldwork plan session dates ONLY.
+    _tl = []
+    if brief.get("timeline_start") or brief.get("timeline_end"):
+        _tl.append(f"Project timeline: {brief.get('timeline_start') or '—'} to {brief.get('timeline_end') or '—'}")
+    for _s in (design.get("fieldwork_plan") or []):
+        _d = str((_s or {}).get("date") or "").strip()
+        if _d:
+            _tl.append(f"{_d} — {str((_s or {}).get('session') or (_s or {}).get('group') or 'Session').strip()}")
+    if _tl:
+        slots["timeline"] = _tl
+    # 3. Program Overview — brief background/scope + design goal + analysis
+    # overview sections.
+    _ov = []
+    if brief.get("background"):
+        _ov.append(brief["background"])
+    if brief.get("scope"):
+        _ov.append(f"Scope: {brief['scope']}")
+    if design.get("goal"):
+        _ov.append(f"Goal: {design['goal']}")
+    _ov_pairs = []
+    for _i, _s in _match("overview", "current"):
+        _t = _s["title"].lower()
+        # A "Current ... Feedback" section is feedback, not overview — leave
+        # it for the VOC slot below. ("program" is deliberately NOT a match
+        # word here: it would eat "New Program Sentiment".)
+        if "current" in _t and any(_has_word(_t, w) for w in ("feedback", "voc", "pain", "friction", "sentiment", "satisfaction")):
+            continue
+        _ov_pairs.append((_i, _s))
+    _ov.extend(_take(_ov_pairs))
+    if _dedupe(_ov):
+        slots["overview"] = _dedupe(_ov)
+    # 4. Executive Summary — KPI lines from the quant stats (N, mean/5.0,
+    # Top-Box) + the topline / Key Findings narrative.
+    _es = []
+    if total_n:
+        _es.append(f"Validation sample: N = {total_n}")
+    for _q in stats:
+        if _q["mean"] is not None:
+            _line = f"{_q['question']} (n={_q['n']}): mean {_q['mean']:.2f}/5.0"
+            if _q["top_box"] is not None:
+                _line += f" · Top-Box (4–5): {_q['top_box']}%"
+            _es.append(_line)
+    _sum_secs, _sum_src = _exec_summary_sections(stem, analysis_text)
+    if _sum_src == "key_findings" and _kf_idx is not None:
+        _used.add(_kf_idx)
+    for _sec in _sum_secs:
+        _es.extend(_sec["lines"])
+    if _dedupe(_es):
+        slots["exec_summary"] = _dedupe(_es)
+    # 5. Question Analysis — one section per survey question (counts + %,
+    # mean, Top-Box) plus the saved cross-tab tables verbatim.
+    _qa = []
+    for _q in stats:
+        _lines = [f"Base: n={_q['n']}"]
+        for _v, _c in _q["counts"].items():
+            _pct = _q["percents"].get(_v)
+            if _pct is None and _q["n"]:
+                _pct = round(_c / _q["n"] * 100, 1)
+            _lines.append(f"{_v}: {_c} ({_pct}%)")
+        if _q["mean"] is not None:
+            _lines.append(f"Mean: {_q['mean']:.2f}")
+        if _q["top_box"] is not None:
+            _lines.append(f"Top-Box (4–5): {_q['top_box']}%")
+        _qn = _q["question"]
+        # Question codes stay cited: a code-like question name gets [Q: ...].
+        _title = f"{_qn} [Q: {_qn}]" if re.match(r"^[A-Za-z]{1,3}\d+[A-Za-z0-9]*$", _qn) else _qn
+        _qa.append((_title, _lines))
+    for _name, _text in quant_texts:
+        for _s in parse_sections(_text):
+            if _s["title"].strip().lower() == "cross-tab" and _s["lines"]:
+                _qa.append((f"Cross-tab: {_s['lines'][0]}", _s["lines"][1:]))
+    if _qa:
+        slots["questions"] = _qa
+    # 6. VOC Feedback — analysis feedback sections + open-text counts.
+    _voc = _take(_match("voc", "voice of customer", "feedback", "friction",
+                        "pain", "complaint", "inconvenient"))
+    for _name, _text in quant_texts:
+        for _s in parse_sections(_text):
+            for _ln in _s["lines"]:
+                if _ln.startswith("Open text"):
+                    _voc.append(f"{_s['title']}: {_ln}")
+    if _dedupe(_voc):
+        slots["voc"] = _dedupe(_voc)
+    # 7. Overall Satisfaction — satisfaction-titled questions (mean +
+    # Top-Box + most common answer, which is the prefer-% when the question
+    # asks what respondents prefer).
+    _sat = []
+    for _q in stats:
+        if any(w in _q["question"].lower() for w in ("satisf", "prefer", "overall", "value", "rating")):
+            _line = f"{_q['question']} (n={_q['n']})"
+            if _q["mean"] is not None:
+                _line += f": mean {_q['mean']:.2f}/5.0"
+            if _q["top_box"] is not None:
+                _line += f" · Top-Box (4–5): {_q['top_box']}%"
+            if _q["counts"]:
+                _top_v = max(_q["counts"], key=lambda v: _q["counts"][v])
+                _top_pct = _q["percents"].get(_top_v)
+                if _top_pct is None and _q["n"]:
+                    _top_pct = round(_q["counts"][_top_v] / _q["n"] * 100, 1)
+                _line += f" · Most common: {_top_v} — {_q['counts'][_top_v]} ({_top_pct}%)"
+            _sat.append(_line)
+    if _sat:
+        slots["satisfaction"] = _sat
+    # 8. Tier Evaluation — analysis tier/benefit sections + tier-titled
+    # survey questions (mean + Top-Box per benefit group).
+    _tier = _take(_match("tier", "benefit"))
+    for _q in stats:
+        if any(w in _q["question"].lower() for w in ("tier", "benefit", "feature", "reward")):
+            _line = f"{_q['question']} (n={_q['n']})"
+            if _q["mean"] is not None:
+                _line += f": mean {_q['mean']:.2f}/5.0"
+            if _q["top_box"] is not None:
+                _line += f" · Top-Box (4–5): {_q['top_box']}%"
+            _tier.append(_line)
+    if _dedupe(_tier):
+        slots["tier"] = _dedupe(_tier)
+    # 9. Customer Sentiment & Feedback — analysis sentiment sections +
+    # saved insights (statement + first verbatim quote).
+    _sent = _take(_match("sentiment", "new program", "improve", "change", "suggest"))
+    for _ins in ((insights or {}).get("insights") or []):
+        _st = str((_ins or {}).get("statement") or "").strip()
+        if _st:
+            _sent.append(_st)
+        for _ev in ((_ins or {}).get("qual_evidence") or [])[:1]:
+            _qt = str((_ev or {}).get("quote") or "").strip()
+            if _qt:
+                _sent.append(f"> \"{_qt}\"")
+    if _dedupe(_sent):
+        slots["sentiment"] = _dedupe(_sent)
+    # 10. Recommendations / Action Plan.
+    _rec = _take(_match("recommendation", "action plan", "action", "next step"))
+    if _dedupe(_rec):
+        slots["action_plan"] = _dedupe(_rec)
+    # 11. Closing — client contact from the brief.
+    _close = []
+    if brief.get("client_name"):
+        _close.append(f"Prepared for: {brief['client_name']}")
+    if brief.get("client_contact"):
+        _close.append(f"Contact: {brief['client_contact']}")
+    if brief.get("client_email"):
+        _close.append(f"Email: {brief['client_email']}")
+    if _close:
+        slots["closing"] = _close
+
+    labels = {"insights": "Actionable Insights", "timeline": "Project Timeline",
+              "overview": "Program Overview", "exec_summary": "Executive Summary",
+              "questions": "Question Analysis", "voc": "VOC Feedback",
+              "satisfaction": "Overall Satisfaction", "tier": "Tier Evaluation",
+              "sentiment": "Customer Sentiment & Feedback",
+              "action_plan": "Recommendations / Action Plan", "closing": "Closing"}
+    order = ["insights", "timeline", "overview", "exec_summary", "questions",
+             "voc", "satisfaction", "tier", "sentiment", "action_plan", "closing"]
+    parts, included, missing = [], [], []
+    for _key in order:
+        if _key == "closing":
+            continue  # emitted last, after Additional Findings
+        if _key not in slots:
+            missing.append(labels[_key])
+            continue
+        included.append(labels[_key])
+        if _key == "questions":
+            for _title, _lines in slots["questions"]:
+                parts.append(f"## {_title}")
+                parts.extend(_lines)
+                parts.append("")
+        else:
+            parts.append(f"## {labels[_key]}")
+            parts.extend(f"- {x}" if not x.startswith("> ") else x for x in slots[_key])
+            parts.append("")
+    # Unmatched analysis sections are kept verbatim (no loss) under
+    # Additional Findings — like the Qual assembler.
+    _extra = [(_i, _s) for _i, _s in enumerate(_secs) if _i not in _used]
+    if _extra:
+        parts.append("## Additional Findings")
+        for _i, _s in _extra:
+            parts.append(f"{_s['title']}:")
+            parts.extend(f"- {x}" if not x.startswith("> ") else x for x in _s["lines"])
+        parts.append("")
+        included.append("Additional Findings")
+    if "closing" in slots:
+        parts.append("## Closing")
+        parts.extend(f"- {x}" if not x.startswith("> ") else x for x in slots["closing"])
+        parts.append("")
+        included.append("Closing")
+    else:
+        missing.append("Closing")
+    if not included:
+        return str(analysis_text or ""), [], list(QUANT_TEMPLATE_SECTIONS)
+    return "\n".join(parts).strip() + "\n", included, missing
+
+
+def report_template_coverage_quant(analysis_text, brief, design, insights=None, stem=""):
+    """Coverage of the Quant report template in one analysis. Returns a list
+    of {label, present, detail}. Returns [] when the design says
+    Qualitative. Detail names the source, or where the data would come from
+    when the section is missing."""
+    if (design or {}).get("approach") == "Qualitative":
+        return []
+    _text, included, missing = _assemble_quant_report(analysis_text, brief, design, insights, stem)
+    _qtexts = _load_quant_texts()
+    _qn = _quant_total_n(_qtexts)
+    _stats = _quant_question_stats(_qtexts)
+    _interp = _quant_interpretation_text()
+    _hints = {
+        "Actionable Insights": "Save a quant interpretation, or add a Key Findings section in the analysis.",
+        "Project Timeline": "Add timeline dates in the Client Brief, or session dates in the Research Design fieldwork plan.",
+        "Program Overview": "Add background / scope in the Client Brief.",
+        "Executive Summary": "Create a topline on the Reports page, or add a Key Findings section.",
+        "Question Analysis": "Upload survey data and save a quant summary on the Quantitative Analysis page.",
+        "VOC Feedback": "Add a Feedback / VOC section in the analysis.",
+        "Overall Satisfaction": "Add a satisfaction question to the survey, or a Satisfaction section in the analysis.",
+        "Tier Evaluation": "Add a tier / benefit evaluation section in the analysis — per-tier comparison tables are built in PowerPoint.",
+        "Customer Sentiment & Feedback": "Add a Sentiment / Feedback section in the analysis, or save insights with quotes.",
+        "Recommendations / Action Plan": "Add a Recommendations / Action Plan section in the analysis.",
+        "Closing": "Add client contact in the Client Brief.",
+    }
+    _src = {
+        "Actionable Insights": ("Headline from the quant interpretation" if _interp else "Headline from the analysis Key Findings") + (f" · N = {_qn}" if _qn else ""),
+        "Project Timeline": "Dates from the Client Brief / fieldwork plan",
+        "Program Overview": "Background / scope from the Client Brief",
+        "Executive Summary": "KPI cards from the saved quant summaries" + (" + topline" if _sum_src_topline(stem) else ""),
+        "Question Analysis": f"{len(_stats)} question(s) from the saved quant summaries",
+        "VOC Feedback": "Feedback sections from the analysis",
+        "Overall Satisfaction": "Mean + Top-Box from the saved quant summaries",
+        "Tier Evaluation": "Tier / benefit sections from the analysis",
+        "Customer Sentiment & Feedback": "Sentiment sections from the analysis / saved insights",
+        "Recommendations / Action Plan": "Recommendations from the analysis",
+        "Closing": "Contact from the Client Brief",
+    }
+    rows = []
+    for _label in QUANT_TEMPLATE_SECTIONS:
+        _present = _label in included
+        rows.append({"label": _label, "present": _present,
+                     "detail": (_src.get(_label, "") if _present else _hints.get(_label, ""))})
+    if "Additional Findings" in included:
+        rows.append({"label": "Additional Findings", "present": True,
+                     "detail": "Sections that fit no template slot — kept verbatim at the end"})
+    return rows
+
+
+def _sum_src_topline(stem):
+    """True when a saved topline exists for this analysis stem."""
+    return bool(stem) and (ANALYSIS_DIR / f"{stem}_topline.txt").exists()
+
+
+# Proposal (v3.28, draft only): sections follow the house proposal's shape —
+# Goal → Research Design → Target → Rationale → Timeline → Deliverables →
+# Costs → Terms. Content comes ONLY from the project's own brief.json +
+# design.json. The Costs section is EMPTY on purpose: fee/tax/payment fields
+# are blank for him to fill — NEVER prefill sample fees or terms.
+PROPOSAL_COST_ROWS = 4  # blank fee lines in the Costs table
+
+
+def _proposal_session_minutes(methods):
+    """Session length in minutes from the design's methods (house convention:
+    FGD 120 min, IDI 60 min). Returns a list of (method, minutes) pairs."""
+    out = []
+    for m in (methods or []):
+        if m == "FGD":
+            out.append(("FGD", 120))
+        elif m == "IDI":
+            out.append(("IDI", 60))
+    return out
+
+
+def proposal_build(brief, design):
+    """Build the proposal content from the project's own brief + design.
+    Returns (blocks, missing): blocks = [{"kind": "title"/"h1"/"para"/
+    "table", "text": ..., "rows": [[...]]}], missing = list of inputs that
+    are absent (brief/design). When brief AND design are both empty, blocks
+    is [] and missing names them — the page then points to Stage 1/2 and
+    never invents a proposal. Unset values show as '—' or an explicit
+    '[fill in]' line, never a guessed number, date, or fee."""
+    brief = brief or {}
+    design = design or {}
+    missing = []
+    if not brief:
+        missing.append("Client Brief")
+    if not design:
+        missing.append("Research Design")
+    if missing:
+        return [], missing
+    blocks = []
+    title = (brief.get("project_code") or brief.get("client_name") or "Research Proposal").strip()
+    blocks.append({"kind": "title", "text": f"Proposal — {title}"})
+    blocks.append({"kind": "para", "text": "Market Research Proposal"})
+    if brief.get("client_name"):
+        blocks.append({"kind": "para", "text": f"Prepared for: {brief['client_name']}"})
+    if brief.get("client_contact"):
+        blocks.append({"kind": "para", "text": f"Contact: {brief['client_contact']}"})
+    blocks.append({"kind": "para", "text": "Prepared by: [Your name]"})
+    # 1. Goal
+    blocks.append({"kind": "h1", "text": "1. Goal"})
+    if brief.get("objectives"):
+        blocks.append({"kind": "para", "text": brief["objectives"]})
+    if brief.get("background"):
+        blocks.append({"kind": "para", "text": brief["background"]})
+    if not brief.get("objectives") and not brief.get("background"):
+        blocks.append({"kind": "para", "text": "[Add the goal — fill in the Client Brief objectives.]"})
+    # 2. Research Design
+    blocks.append({"kind": "h1", "text": "2. Research Design"})
+    methods = design.get("methods") or []
+    approach = design.get("approach") or ""
+    sessions = design.get("sessions_count") or 0
+    per = design.get("participants_per_session") or 0
+    sample = design.get("sample_size") or 0
+    rows = [["Item", "Detail"]]
+    rows.append(["Approach", approach or "—"])
+    rows.append(["Method", ", ".join(methods) if methods else "—"])
+    rows.append(["Sessions", str(sessions) if sessions else "—"])
+    rows.append(["Respondents per session", str(per) if per else "—"])
+    if sessions and per:
+        rows.append(["Total respondents", str(sessions * per)])
+    elif sample:
+        rows.append(["Total respondents", str(sample)])
+    else:
+        rows.append(["Total respondents", "—"])
+    minutes = _proposal_session_minutes(methods)
+    if minutes:
+        rows.append(["Session length", ", ".join(f"{m}: {n} min" for m, n in minutes)])
+    else:
+        rows.append(["Session length", "—"])
+    blocks.append({"kind": "table", "rows": rows})
+    if design.get("rationale"):
+        blocks.append({"kind": "para", "text": design["rationale"]})
+    # 3. Target
+    blocks.append({"kind": "h1", "text": "3. Target"})
+    if brief.get("target_audience"):
+        blocks.append({"kind": "para", "text": brief["target_audience"]})
+    personas = design.get("personas") or []
+    if personas:
+        prows = [["Persona", "Description", "Value framing"]]
+        for p in personas:
+            prows.append([str((p or {}).get("name") or "—"),
+                          str((p or {}).get("description") or "—"),
+                          str((p or {}).get("value_framing") or "—")])
+        blocks.append({"kind": "table", "rows": prows})
+    quotas = design.get("quotas") or []
+    if quotas:
+        qrows = [["Segment", "Share", "Notes"]]
+        for q in quotas:
+            qrows.append([str((q or {}).get("segment") or "—"),
+                          str((q or {}).get("share") or "—"),
+                          str((q or {}).get("notes") or "—")])
+        blocks.append({"kind": "table", "rows": qrows})
+    if design.get("screening_criteria"):
+        blocks.append({"kind": "para", "text": f"Screening: {design['screening_criteria']}"})
+    if not brief.get("target_audience") and not personas and not quotas and not design.get("screening_criteria"):
+        blocks.append({"kind": "para", "text": "[Add the target — fill in the Research Design sampling.]"})
+    # 4. Rationale
+    blocks.append({"kind": "h1", "text": "4. Rationale"})
+    blocks.append({"kind": "para", "text": (design.get("rationale") or "").strip()
+                   or "[Add rationale — write why this method was chosen.]"})
+    # 5. Timeline — brief dates + fieldwork plan session dates ONLY.
+    blocks.append({"kind": "h1", "text": "5. Timeline"})
+    if brief.get("timeline_start") or brief.get("timeline_end"):
+        blocks.append({"kind": "para", "text": f"Project timeline: {brief.get('timeline_start') or '—'} to {brief.get('timeline_end') or '—'}"})
+    plan = design.get("fieldwork_plan") or []
+    dated = [s for s in plan if str((s or {}).get("date") or "").strip()]
+    if dated:
+        trows = [["Session", "Group", "Date"]]
+        for s in dated:
+            trows.append([str(s.get("session") or "—"), str(s.get("group") or "—"),
+                          str(s.get("date") or "—")])
+        blocks.append({"kind": "table", "rows": trows})
+    if not brief.get("timeline_start") and not brief.get("timeline_end") and not dated:
+        blocks.append({"kind": "para", "text": "Timeline to be confirmed — add dates in the Brief and Fieldwork Plan."})
+    # 6. Deliverables
+    blocks.append({"kind": "h1", "text": "6. Deliverables"})
+    deliverables = brief.get("deliverables") or []
+    if deliverables:
+        for d in deliverables:
+            blocks.append({"kind": "para", "text": f"- {d}"})
+    else:
+        blocks.append({"kind": "para", "text": "To be confirmed."})
+    # 7. Costs — EMPTY on purpose. No fees, tax, or terms are ever prefilled.
+    blocks.append({"kind": "h1", "text": "7. Costs"})
+    crows = [["Item", "Amount (MMK)"]]
+    for _ in range(PROPOSAL_COST_ROWS):
+        crows.append(["", ""])
+    crows.append(["Total (excl. tax)", ""])
+    blocks.append({"kind": "table", "rows": crows})
+    blocks.append({"kind": "para", "text": "Tax: [fill in]"})
+    blocks.append({"kind": "para", "text": "Fill in before sending — no fees are prefilled."})
+    # 8. Terms — blank for him to fill.
+    blocks.append({"kind": "h1", "text": "8. Terms"})
+    blocks.append({"kind": "para", "text": "Payment terms: [fill in]"})
+    blocks.append({"kind": "para", "text": "Valid until: [fill in]"})
+    return blocks, []
+
+
+def proposal_to_docx(blocks):
+    """Render proposal blocks to DOCX bytes (python-docx). Tables get the
+    'Table Grid' style with a bold header row; Costs rows stay blank."""
+    doc = Document()
+    for b in blocks:
+        kind = b.get("kind")
+        if kind == "title":
+            doc.add_heading(b["text"], level=0)
+        elif kind == "h1":
+            doc.add_heading(b["text"], level=1)
+        elif kind == "para":
+            doc.add_paragraph(b["text"])
+        elif kind == "table":
+            rows = b.get("rows") or []
+            if not rows:
+                continue
+            table = doc.add_table(rows=1, cols=len(rows[0]))
+            table.style = "Table Grid"
+            for ri, row in enumerate(rows):
+                cells = table.rows[0].cells if ri == 0 else table.add_row().cells
+                for ci, val in enumerate(row):
+                    cells[ci].text = str(val or "")
+                    if ri == 0:
+                        for p in cells[ci].paragraphs:
+                            for run in p.runs:
+                                run.bold = True
+    import io
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
 
 # --- Discussion Guide (v3.25, Stage 2) ---
@@ -4608,6 +5718,7 @@ def stage_status():
     an_n = len(list(ANALYSIS_DIR.glob("*_analysis.txt")))
     rep_n = len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx")))
     pptx_n = len(list(REPORTS_DIR.glob("*.pptx")))
+    proposal_n = 1 if (NOTES_DIR / "proposal.docx").exists() else 0
     quant_n = len(list(ANALYSIS_DIR.glob("quant_*.txt")))
     multi_n = len(list(ANALYSIS_DIR.glob("multi_*_analysis.txt")))
     note_n = len([f for f in NOTES_DIR.glob("*")
@@ -4688,7 +5799,8 @@ def stage_status():
              _stage_item("Qual analysis", "Qual ခွဲခြမ်းစိတ်ဖြာမှု", "done" if an_n > 0 else "todo"),
              _stage_item("Quant analysis", "Quant ခွဲခြမ်းစိတ်ဖြာမှု", "done" if quant_n > 0 else "todo"),
              _stage_item("Insights (Qual + Quant)", "Insights (Qual + Quant)", "done" if _ins_saved_n > 0 else "todo"),
-             _stage_item("Report (PPTX / DOCX / PDF)", "Report (PPTX / DOCX / PDF)", "done" if rep_n > 0 else "todo"),
+             _stage_item("Report (PPTX / DOCX)", "Report (PPTX / DOCX)", "done" if rep_n > 0 else "todo"),
+             _stage_item("Proposal (draft)", "Proposal (မူကြမ်း)", "done" if proposal_n > 0 else "todo"),
              _stage_item("Presentation (PPTX export)", "တင်ပြမှု (PPTX export)", "done" if pptx_n > 0 else "todo"),
          ]),
     ]
@@ -6633,6 +7745,10 @@ elif page == "Quantitative Analysis":
 
 elif page == "Reports":
     st.title(T("📑 Reports", "📑 Report များ"))
+    # v3.28: page-level brief + design — the export wiring above and the
+    # Proposal (draft) below both use them.
+    _pbrief = load_brief()
+    _pdesign = load_design()
 
     saved = sorted(ANALYSIS_DIR.glob("*_analysis.txt"), key=lambda f: f.name)
     if not saved:
@@ -6641,15 +7757,74 @@ elif page == "Reports":
         saved_names = [f.name for f in saved]
         selected = st.selectbox(T("Pick an analysis", "Analysis ရွေးပါ"), saved_names)
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
+        _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
+        _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+        if looks_like_html(_analysis_text):
+            _analysis_text = html_to_text(_analysis_text)
+        title_text = selected.replace("_analysis.txt", "").replace("_", " ")
+        # v3.28: PPTX is the main deliverable — it uses the assembled report
+        # structure template (Qual or Quant, picked from the design method);
+        # DOCX stays topline/summary — the original analysis + Executive
+        # Summary. The summary comes from the saved topline when it exists,
+        # else from the analysis's Key Findings.
+        _insights = load_insights()
+        _struct = _pick_report_template(_pdesign)
+        if _struct == "quant":
+            _assembled_text, _rep_included, _rep_missing = _assemble_quant_report(_analysis_text, _pbrief, _pdesign, _insights, _stem)
+            _qn = _quant_total_n(_load_quant_texts())
+            _pptx_footer = f"Base: N={_qn}" if _qn else None
+            st.caption(T("Structure template: Quantitative report — picked from the design method.", "ပုံစံ: Quantitative report — design method ကနေ ရွေးထားတာ။"))
+        else:
+            _assembled_text, _rep_included, _rep_missing = _assemble_report(_analysis_text, _pbrief, _pdesign, _insights)
+            _pptx_footer = None
+            st.caption(T("Structure template: Qualitative report — picked from the design method.", "ပုံစံ: Qualitative report — design method ကနေ ရွေးထားတာ။"))
+        _pptx_text, _summary_src = _report_text_with_summary(_assembled_text, _stem, _analysis_text)
+        _docx_text, _ = _report_text_with_summary(_analysis_text, _stem)
+        if _struct == "quant" and _summary_src == "existing":
+            st.caption(T("Executive Summary is in the template order, with KPI cards from the survey data.", "Executive Summary က ပုံစံအစီအစဉ်အတိုင်း ပါတယ်, survey data က KPI cards နဲ့အတူ။"))
+        elif _summary_src == "topline":
+            st.caption(T("Executive Summary at the top is from the saved topline.", "အပေါ်က Executive Summary က သိမ်းထားတဲ့ topline ကနေ ယူထားတာ။"))
+        elif _summary_src == "key_findings":
+            st.caption(T("Executive Summary at the top is from the analysis Key Findings.", "အပေါ်က Executive Summary က analysis ရဲ့ Key Findings ကနေ ယူထားတာ။"))
+        elif _summary_src == "existing":
+            st.caption(T("This analysis already has an Executive Summary section.", "ဒီ analysis မှာ Executive Summary အပိုင်း ရှိနေပြီးသားမို့ ထပ်မထည့်ဘူး။"))
+        else:
+            st.caption(T("No Executive Summary available — create a topline below, or add a Key Findings section.", "Executive Summary မရှိသေးဘူး — အောက်မှာ topline လုပ်ပါ၊ ဒါမှမဟုတ် Key Findings အပိုင်း ထည့်ပါ။"))
+
+        # v3.28: pre-export checks — warnings only, exports are never blocked.
+        st.subheader(T("Pre-export checks", "ထုတ်ခင် စစ်ဆေးခြင်း"))
+        if st.button(T("🔍 Run pre-export checks", "🔍 ထုတ်ခင် စစ်မယ်"), key="report_precheck_btn"):
+            _en_issues = report_english_check(_pptx_text)
+            _unverified, _ev_total, _ev_note = report_evidence_warnings(_analysis_text)
+            st.session_state["report_precheck"] = {"en": _en_issues, "unverified": _unverified, "total": _ev_total, "note": _ev_note, "stem": _stem}
+        _pc = st.session_state.get("report_precheck") or {}
+        if _pc.get("stem") == _stem:
+            if _pc.get("en"):
+                _en_list = "; ".join(f"line {n}: {t[:80]}" for n, t in _pc["en"][:5])
+                st.warning(T(f"English-only check: {len(_pc['en'])} non-English line(s) found.", f"English-only စစ်ဆေးမှု: English မဟုတ်တဲ့ စာကြောင်း {len(_pc['en'])} ကြောင်း တွေ့တယ်။") + " " + _en_list)
+            else:
+                st.success(T("English-only check: no non-English lines.", "English-only စစ်ဆေးမှု: English မဟုတ်တဲ့ စာကြောင်း မရှိဘူး။"))
+            if _pc.get("note"):
+                st.info(T(_pc["note"], "စစ်ဆေးဖို့ transcript မရှိသေးဘူး။"))
+            elif _pc.get("total"):
+                _uv = _pc["unverified"]
+                if _uv:
+                    _uv_list = "; ".join(r["finding"][:80] for r in _uv[:5])
+                    st.warning(T(f"Evidence check: {len(_uv)} of {_pc['total']} finding(s) UNVERIFIED.", f"Evidence စစ်ဆေးမှု: finding {_pc['total']} ခုမှာ {len(_uv)} ခု အတည်မပြုနိုင်သေးဘူး။") + " " + _uv_list)
+                else:
+                    st.success(T(f"Evidence check: all {_pc['total']} finding(s) verified.", f"Evidence စစ်ဆေးမှု: finding {_pc['total']} ခု လုံး အတည်ပြုပြီးပြီ။"))
+
+        # PPTX title slide: client + export month, like the sample title slides.
+        _pptx_subtitle = "Market Research AI — ResearchFlow"
+        if _pbrief.get("client_name"):
+            _pptx_subtitle += f" · {_pbrief['client_name']}"
+        _pptx_subtitle += f" · {datetime.date.today().strftime('%b %Y')}"
         col_pptx, col_docx = st.columns(2)
         if col_pptx.button("Export PPTX"):
-            analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
-            if looks_like_html(analysis_text):
-                analysis_text = html_to_text(analysis_text)
-            title_text = selected.replace("_analysis.txt", "").replace("_", " ")
             out_path = REPORTS_DIR / selected.replace("_analysis.txt", ".pptx")
             with st.spinner(T("Exporting PPTX...", "PPTX ထုတ်နေပါတယ်...")):
-                analysis_to_pptx(analysis_text, title_text, out_path, template)
+                analysis_to_pptx(_pptx_text, title_text, out_path, template,
+                                 subtitle=_pptx_subtitle, footer=_pptx_footer)
             store_upload_existing("reports", out_path.name)
             st.success(f"Done — {out_path.name} ({template})")
             st.download_button(
@@ -6659,13 +7834,9 @@ elif page == "Reports":
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             )
         if col_docx.button("Export DOCX"):
-            analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
-            if looks_like_html(analysis_text):
-                analysis_text = html_to_text(analysis_text)
-            title_text = selected.replace("_analysis.txt", "").replace("_", " ")
             out_path = REPORTS_DIR / selected.replace("_analysis.txt", ".docx")
             with st.spinner("DOCX ထုတ်နေပါတယ်..."):
-                analysis_to_docx(analysis_text, title_text, out_path)
+                analysis_to_docx(_docx_text, title_text, out_path)
             store_upload_existing("reports", out_path.name)
             st.success(f"Done — {out_path.name}")
             st.download_button(
@@ -6701,9 +7872,10 @@ elif page == "Reports":
         if reports:
             report_names = [f.name for f in reports]
             report_selected = st.selectbox(T("Pick a saved report", "သိမ်းထားတဲ့ report ရွေးပါ"), report_names)
-            mime = ("application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    if report_selected.endswith(".pptx")
-                    else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            if report_selected.endswith(".pptx"):
+                mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            else:
+                mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             st.download_button(
                 "Download saved report",
                 data=(REPORTS_DIR / report_selected).read_bytes(),
@@ -6712,6 +7884,54 @@ elif page == "Reports":
             )
         else:
             st.info(T("No saved report yet.", "သိမ်းထားတဲ့ report မရှိသေးပါ။"))
+
+        st.divider()
+        with st.expander(T(f"Report structure template ({'Quant' if _struct == 'quant' else 'Qual'})", f"Report ပုံစံ ({'Quant' if _struct == 'quant' else 'Qual'})")):
+            if _struct == "quant":
+                st.caption(T("Template order: Actionable Insights → Timeline → Overview → Executive Summary → Question Analysis → VOC → Satisfaction → Tier Evaluation → Sentiment → Action Plan.", "ပုံစံ အစီအစဉ်: Actionable Insights → Timeline → Overview → Executive Summary → Question Analysis → VOC → Satisfaction → Tier Evaluation → Sentiment → Action Plan။"))
+                _rows = report_template_coverage_quant(_analysis_text, _pbrief, _pdesign, _insights, _stem)
+            else:
+                st.caption(T("Template order: Goal → Personas → Deep Dive per segment → Strategy → Action Plan.", "ပုံစံ အစီအစဉ်: Goal → Personas → Deep Dive → Strategy → Action Plan။"))
+                _rows = report_template_coverage(_analysis_text, _pbrief, _pdesign, _insights)
+            if not _rows:
+                st.info(T("This report template does not apply to this project's method.", "ဒီ report ပုံစံက ဒီ project ရဲ့ method နဲ့ မကိုက်ဘူး။"))
+            else:
+                for _row in _rows:
+                    st.write(("✅ " if _row["present"] else "○ ") + _row["label"]
+                             + (f" — {_row['detail']}" if _row.get("detail") else ""))
+            if _rep_missing:
+                st.caption(T("Sections with no source data are left out of the export — add them in Google Docs/PowerPoint.", "Source data မရှိတဲ့ အပိုင်းတွေ export မှာ မပါဘူး — Google Docs/PowerPoint မှာ ဖြည့်ပါ။"))
+            st.caption(T("The template covers structure only. Strategic synthesis, archetype framing, images and layout still need your manual refinement.", "ပုံစံက structure ပဲ ပါတယ်။ Strategic synthesis, archetype framing, ပုံ နဲ့ layout က ကိုယ်တိုင် ပြင်ရဦးမယ်။"))
+
+    # v3.28: Proposal (draft) — needs brief + design only, no analysis.
+    st.divider()
+    st.subheader(T("Proposal (draft)", "Proposal (မူကြမ်း)"))
+    st.caption(T("Draft only — check and edit before sending. Costs are always blank.", "မူကြမ်းပဲ — ပို့ခင် စစ်ပြီး ပြင်ပါ။ Costs က အမြဲ ဗလာပဲ။"))
+    _pblocks, _pmissing = proposal_build(_pbrief, _pdesign)
+    if _pmissing:
+        st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင် သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
+        _pc1, _pc2 = st.columns(2)
+        if _pc1.button(T("Go to Client Brief", "Client Brief သွားမယ်"), key="prop_go_brief"):
+            st.session_state["page"] = "Client Brief"
+            st.rerun()
+        if _pc2.button(T("Go to Research Design", "Research Design သွားမယ်"), key="prop_go_design"):
+            st.session_state["page"] = "Research Design"
+            st.rerun()
+    else:
+        _rat = st.text_area(T("Rationale — why this method", "Rationale — ဘာကြောင့် ဒီ method လဲ"), value=_pdesign.get("rationale", ""), height=100, key="proposal_rationale")
+        if st.button(T("Generate proposal (DOCX)", "Proposal (DOCX) ထုတ်မယ်"), key="proposal_generate"):
+            _pdesign["rationale"] = _rat.strip()
+            save_design(_pdesign)
+            _pblocks, _ = proposal_build(_pbrief, _pdesign)
+            _prop_bytes = proposal_to_docx(_pblocks)
+            _prop_path = store_write_bytes("notes", "proposal.docx", _prop_bytes)
+            st.success(T(f"Done — {_prop_path.name} (draft, costs blank)", f"ပြီးပြီ — {_prop_path.name} (မူကြမ်း, costs ဗလာ)"))
+            st.download_button(
+                "Download proposal (DOCX)",
+                data=_prop_bytes,
+                file_name=_prop_path.name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
 elif page == "Report Editor":
     st.title("✏️ Report Editor")
