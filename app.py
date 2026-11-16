@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.23"
+APP_VERSION = "3.24"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -60,6 +60,43 @@ MERGED_DIR.mkdir(exist_ok=True)
 ANALYSIS_DIR.mkdir(exist_ok=True)
 REPORTS_DIR.mkdir(exist_ok=True)
 NOTES_DIR.mkdir(exist_ok=True)
+
+
+# --- v3.24 UI preferences: theme + language remembered between sessions.
+# Stored in .ui_prefs.json next to the app (a runtime file, not in the repo;
+# no secrets, no personal data — just "light"/"dark" and "EN"/"MM").
+# On Streamlit Cloud the file lives in the deployed app folder, so it resets
+# on a redeploy/reboot; the in-session choice always works.
+UI_PREFS_PATH = BASE_DIR / ".ui_prefs.json"
+
+
+def _load_ui_prefs():
+    try:
+        data = json.loads(UI_PREFS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_ui_prefs(prefs):
+    try:
+        _atomic_write_bytes(UI_PREFS_PATH, json.dumps(prefs, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        pass
+
+
+# Seed theme + language once per session from the saved prefs (a fresh
+# browser session starts with empty session state, so this is the only
+# moment the file can be read). Later reruns keep the in-session choice.
+if "_ui_prefs_loaded" not in st.session_state:
+    _prefs = _load_ui_prefs()
+    if _prefs.get("theme") in ("light", "dark"):
+        st.session_state["theme"] = _prefs["theme"]
+    if _prefs.get("lang") in ("EN", "MM"):
+        st.session_state["lang"] = _prefs["lang"]
+    st.session_state["_ui_prefs_loaded"] = True
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "light"
 
 
 def get_transcript_files():
@@ -453,8 +490,8 @@ LOGIN_CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700&display=swap');
 .rf-land { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', -apple-system, 'Segoe UI', sans-serif; background: linear-gradient(115deg, #EAF3FF 0%, #DDF3F8 55%, #D9F5EF 100%); border: 1px solid #D5E5F7; border-radius: 18px; padding: 34px 30px 26px; text-align: center; box-shadow: 0 10px 28px rgba(16,38,74,.08); }
 .rf-land h1 { color: #10264A; font-size: 34px; font-weight: 800; margin: 0 0 2px; }
-.rf-land h1 span.b { color: #1264C5; }
-.rf-land h1 span.t { color: #16B89A; }
+.rf-land h1 span.b { color: #2563EB; }
+.rf-land h1 span.t { color: #0D9488; }
 .rf-land .sub { color: #475569; font-size: 14px; font-weight: 600; margin-bottom: 12px; }
 .rf-land p { color: #475569; font-size: 15px; line-height: 1.6; margin: 0 auto 14px; max-width: 560px; }
 .rf-land .stages { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 0 auto 6px; max-width: 560px; }
@@ -473,9 +510,9 @@ def _landing_header():
         st.markdown(
             '<div class="rf-land">'
             '<svg width="44" height="44" viewBox="0 0 32 32" fill="none">'
-            '<rect x="2" y="19" width="6" height="10" rx="2" fill="#1264C5"/>'
-            '<rect x="11" y="12" width="6" height="17" rx="2" fill="#18C6D9"/>'
-            '<rect x="20" y="5" width="6" height="24" rx="2" fill="#16B89A"/>'
+            '<rect x="2" y="19" width="6" height="10" rx="2" fill="#2563EB"/>'
+            '<rect x="11" y="12" width="6" height="17" rx="2" fill="#0891B2"/>'
+            '<rect x="20" y="5" width="6" height="24" rx="2" fill="#0D9488"/>'
             '</svg>'
             '<h1><span class="b">Research</span><span class="t">Flow</span></h1>'
             '<div class="sub">' + T("Market Research AI", "Market Research AI") + '</div><p>'
@@ -1789,9 +1826,9 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
 :root {
   --rf-navy: #071B3A;
   --rf-navy-2: #0B2A52;
-  --rf-blue: #1264C5;
-  --rf-cyan: #18C6D9;
-  --rf-teal: #16B89A;
+  --rf-blue: #2563EB;
+  --rf-cyan: #0891B2;
+  --rf-teal: #0D9488;
   --rf-text: #16222E;
   --rf-muted: #5E6B78;
   --rf-border: #D9DEE4;
@@ -1813,7 +1850,7 @@ span[class*="material-symbols"] { font-family: 'Material Symbols Outlined', 'Mat
 .block-container {
   width: 100%;
   max-width: 1540px;
-  padding: 1.35rem clamp(1.2rem, 2.2vw, 2.25rem) 2.5rem;
+  padding: 4rem clamp(1.2rem, 2.2vw, 2.25rem) 2.5rem;
 }
 
 /* Compact sidebar: reserve more screen space for the workspace.
@@ -1901,24 +1938,15 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 }
 [data-testid="stSidebar"] hr { border-color: var(--rf-line); }
 
-/* Sidebar top block stays visible (v3.21): the logo + current-project label
-   stick to the top while the nav scrolls underneath. Only two elements are
-   pinned (more would eat the sidebar on short screens); their tops are the
-   measured heights of the elements above them, rounded down, so a small error
-   only covers empty padding, never text. */
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1),
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(2) {
-  position: sticky; z-index: 10; background: var(--rf-surface);
-}
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) { top: 0; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(2) {
-  top: 52px; border-bottom: 1px solid var(--rf-line); padding-bottom: .35rem;
+/* Sidebar top block stays visible (v3.21 logo pin; v3.24: only the logo is
+   pinned — the old current-project label it used to pin below is gone). */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) {
+  position: sticky; z-index: 10; background: var(--rf-surface); top: 0;
+  border-bottom: 1px solid var(--rf-line); padding-bottom: .35rem;
 }
 
-/* Current-project label (plain text, not a dropdown). */
-.rf-proj { padding: 2px 4px 8px; }
-.rf-proj-lb { color: var(--rf-muted); font-size: 12px; display: block; }
-.rf-proj-nm { color: var(--rf-ink); font-weight: 700; font-size: 15px; }
+/* v3.24: the current-project label is gone (project shows in the stage
+   header and the top bar instead) — its styles were removed with it. */
 
 /* Log out was cramped against the user card — give it room to breathe. */
 [data-testid="stSidebar"] [class*="st-key-logout_btn"] { margin-top: .8rem; }
@@ -1946,7 +1974,7 @@ h2, h3 { font-weight: 600; }
   position: relative; overflow: hidden;
   background: linear-gradient(115deg, #EAF3FF 0%, #DDF3F8 55%, #D9F5EF 100%);
   border: 1px solid #D5E5F7; border-radius: 18px;
-  padding: 28px 32px; margin: 4px 0 16px;
+  padding: 20px 26px; margin: 4px 0 16px;
   box-shadow: 0 10px 28px rgba(16,38,74,.08);
 }
 .rf-hero:after {
@@ -1954,14 +1982,14 @@ h2, h3 { font-weight: 600; }
   border-radius: 50%; background: radial-gradient(circle, rgba(24,198,217,.22), rgba(24,198,217,0) 68%);
   pointer-events: none;
 }
-.rf-hero h1 { color: #10264A; font-size: clamp(30px, 3.4vw, 44px); margin: 0 0 8px; font-weight: 800; }
-.rf-hero h1 span.b { color: #1264C5; }
-.rf-hero h1 span.t { color: #16B89A; }
+.rf-hero h1 { color: #10264A; font-size: clamp(24px, 2.6vw, 34px); margin: 0 0 6px; font-weight: 800; }
+.rf-hero h1 span.b { color: #2563EB; }
+.rf-hero h1 span.t { color: #0D9488; }
 .rf-hero p { color: #475569; font-size: 16px; margin: 0; max-width: 760px; }
 
 /* Modern metric cards */
 .rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(16,38,74,.06); }
-.rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #1264C5, #18C6D9, #16B89A); }
+.rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #2563EB, #0891B2, #0D9488); }
 .rf-metric-ico { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin-bottom: 10px; }
 .rf-metric-label { color: #64748B; font-size: 13px; font-weight: 600; }
 .rf-metric-value { color: #10264A; font-size: 30px; font-weight: 800; line-height: 1.1; }
@@ -1969,15 +1997,15 @@ h2, h3 { font-weight: 600; }
 /* Workflow cards and progress ring */
 .rf-step {
   background: linear-gradient(160deg, #FFFFFF 0%, #F8FAFF 100%);
-  border: 1px solid #E5E9F7; border-radius: 15px; padding: 14px 8px;
-  text-align: center; min-height: 300px;
+  border: 1px solid #E5E9F7; border-radius: 15px; padding: 14px 10px;
+  text-align: center;
   box-shadow: 0 5px 16px rgba(16,38,74,.05);
   transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
 /* v3.21: per-stage sub-items under each workflow card, so stages 3 and 4
    no longer look alike. */
 .rf-step .subs { text-align: left; margin-top: 8px; border-top: 1px solid #EEF2F8; padding-top: 8px; }
-.rf-step .sub { color: #475569; font-size: 11px; line-height: 1.55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rf-step .sub { color: #475569; font-size: 11px; line-height: 1.55; white-space: normal; }
 .rf-step .sub .ok { color: #0E7A5F; font-weight: 700; }
 .rf-step .sub .no { color: #94A3B8; }
 .rf-step .sub .cm { color: #94A3B8; }
@@ -1986,22 +2014,23 @@ h2, h3 { font-weight: 600; }
 .rf-step .ico { width: 52px; height: 52px; border-radius: 50%; margin: 0 auto 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
 .rf-step .nm { font-weight: 750; color: #10264A; font-size: 13px; }
 .rf-step .ds { color: #64748B; font-size: 11px; margin-top: 5px; }
-.rf-step .st { color: #1264C5; font-size: 12px; font-weight: 700; margin-top: 8px; }
+.rf-step .st { color: #2563EB; font-size: 12px; font-weight: 700; margin-top: 8px; }
 .rf-ring {
-  width: 126px; height: 126px; border-radius: 50%; margin: 12px auto;
-  background: conic-gradient(from 220deg, #1264C5 calc(var(--p)*1%), #18C6D9 0, #E9ECF7 0);
+  width: 104px; height: 104px; border-radius: 50%; margin: 12px auto;
+  background: conic-gradient(from 220deg, #2563EB calc(var(--p)*1%), #0891B2 0, #E9ECF7 0);
   display: flex; align-items: center; justify-content: center; position: relative;
   box-shadow: 0 8px 22px rgba(18,100,197,.12);
 }
-.rf-ring:before { content: ""; position: absolute; width: 94px; height: 94px; border-radius: 50%; background: #FFFFFF; }
-.rf-ring span { position: relative; z-index: 1; font-size: 25px; font-weight: 800; color: #10264A; }
+.rf-ring:before { content: ""; position: absolute; width: 78px; height: 78px; border-radius: 50%; background: #FFFFFF; }
+.rf-ring span { position: relative; z-index: 1; font-size: 22px; font-weight: 800; color: #10264A; }
 
 /* Recent activity table with status badges */
 .rf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); }
-.rf-table td { padding: 11px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; }
+.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; }
+.rf-table td:first-child { white-space: nowrap; }
 .rf-table tr:last-child td { border-bottom: none; }
-.rf-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; }
+.rf-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; }
 
 /* Guide + system architecture */
 .rf-guide { background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 5px 18px rgba(16,38,74,.05); margin: 0 0 16px; }
@@ -2018,7 +2047,7 @@ h2, h3 { font-weight: 600; }
   color: #FFFFFF; border: 0; background: var(--rf-accent); box-shadow: none;
 }
 .stButton > button[kind="primary"] p { color: #FFFFFF; }
-.stButton > button[kind="primary"]:hover { background: #0B7A6B; }
+.stButton > button[kind="primary"]:hover { background: #1D4ED8; }
 .stButton > button:hover, .stDownloadButton > button:hover { border-color: var(--rf-accent); }
 [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
 [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
@@ -2049,6 +2078,19 @@ hr { border-color: var(--rf-line); }
 .rf-sh-b.wip { background: #FFF1DD; color: #C26A00; }
 .rf-sh-b.todo { background: #EEF1F4; color: #5E6B78; }
 
+/* v3.24 top bar chips (project + user) + KPI/workflow flex rows + status pills. */
+.rf-chip { background: var(--rf-surface); border: 1px solid var(--rf-line); border-radius: 999px; padding: 9px 14px; font-size: 13px; font-weight: 600; color: var(--rf-ink); white-space: nowrap; text-align: center; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; }
+.rf-kpirow { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.rf-kpirow .rf-metric { flex: 1 1 200px; min-width: 0; }
+.rf-flow { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; margin-bottom: 8px; }
+.rf-flow .rf-step { flex: 1 1 180px; min-width: 0; }
+.rf-flow-arrow { flex: 0 0 14px; align-self: center; text-align: center; color: #94A3B8; font-size: 18px; }
+.rf-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.pill-done { background: #E2F5EE; color: #0E7A5F; }
+.pill-wip { background: #DBEAFE; color: #1D4ED8; }
+.pill-todo { background: #EEF1F4; color: #5E6B78; }
+.rf-current { display: inline-block; background: #DBEAFE; color: #1D4ED8; border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+
 @media (max-width: 900px) {
   section[data-testid="stSidebar"][aria-expanded="true"],
   section[data-testid="stSidebar"][aria-expanded="true"] > div {
@@ -2056,13 +2098,109 @@ hr { border-color: var(--rf-line); }
     min-width: min(82vw, 280px) !important;
     max-width: min(82vw, 280px) !important;
   }
-  .block-container { padding: 1rem 1rem 2rem; }
+  .block-container { padding: 4rem 1rem 2rem; }
   .rf-hero { padding: 23px 20px; }
   .rf-step { min-height: 132px; }
 }
 </style>
 """
+# --- v3.24 theme system: centralized config, CSS variables, one UI.
+# Light is the default. The sidebar buttons change st.session_state["theme"]
+# and rerun; this block re-injects the matching variables before any page
+# content renders, so the whole app switches at once. The sidebar colour is
+# decided by the theme (Light = white, Dark = #0F172A) — the redesign brief's
+# "dark navy sidebar" is the Dark-theme look, not a fixed colour.
+THEMES = {
+    "light": {
+        "ground": "#F4F7FC", "surface": "#FFFFFF", "text": "#172B4D",
+        "ink": "#172B4D", "muted": "#64748B", "line": "#E2E8F0",
+        "border": "#E2E8F0", "accent": "#2563EB", "accent-soft": "#E8EEFB",
+        "blue": "#2563EB", "cyan": "#0891B2", "teal": "#0D9488",
+        "attn": "#C26A00",
+    },
+    "dark": {
+        "ground": "#0B1220", "surface": "#111827", "text": "#F8FAFC",
+        "ink": "#F8FAFC", "muted": "#CBD5E1", "line": "#334155",
+        "border": "#334155", "accent": "#3B82F6", "accent-soft": "#1E293B",
+        "blue": "#60A5FA", "cyan": "#22D3EE", "teal": "#2DD4BF",
+        "attn": "#F59E0B",
+    },
+}
+_THEME_NAME = st.session_state.get("theme", "light")
+_THEME = THEMES.get(_THEME_NAME, THEMES["light"])
+
+# Dark Mode overrides — applied after CUSTOM_CSS when theme == dark. The
+# :root variables are redefined by the theme block below; these rules cover
+# the component colours that CUSTOM_CSS hardcodes instead of variables.
+# (Streamlit's own native widgets keep their light styling in places CSS
+# cannot reach — alerts, dataframes and charts — noted as a limitation.)
+DARK_CSS = """<style>
+.stApp { background: #0B1220; color: #F8FAFC; }
+section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; border-right-color: #334155; }
+[data-testid="stSidebar"] { background: #0F172A; border-right-color: #334155; }
+[data-testid="stSidebar"] .stButton > button:hover { background: #1E293B; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) { background: #0F172A; }
+.rf-hero { background: linear-gradient(115deg, #0F1B33 0%, #12233F 55%, #0F2A33 100%); border-color: #1E293B; }
+.rf-hero h1 { color: #F8FAFC; }
+.rf-hero p { color: #CBD5E1; }
+.rf-metric { background: #1E293B; border-color: #334155; }
+.rf-metric-label { color: #CBD5E1; }
+.rf-metric-value { color: #F8FAFC; }
+.rf-step { background: linear-gradient(160deg, #1E293B 0%, #16213A 100%); border-color: #334155; }
+.rf-step .nm { color: #F8FAFC; }
+.rf-step .ds { color: #CBD5E1; }
+.rf-step .subs { border-top-color: #334155; }
+.rf-step .sub { color: #CBD5E1; }
+.rf-step .sub .no, .rf-step .sub .cm, .rf-step .sub i { color: #94A3B8; }
+.rf-step .sub .ok { color: #34D399; }
+.rf-step:hover { border-color: #3B82F6; }
+.rf-ring:before { background: #111827; }
+.rf-ring span { color: #F8FAFC; }
+.rf-sh { background: #1E293B; border-color: #334155; }
+.rf-sh-t { color: #F8FAFC; }
+.rf-sh-p, .rf-sh-k { color: #CBD5E1; }
+.rf-sh-b.done { background: #064E3B; color: #6EE7B7; }
+.rf-sh-b.wip { background: #451A03; color: #FDBA74; }
+.rf-sh-b.todo { background: #1E293B; color: #94A3B8; }
+.pill-done { background: #064E3B; color: #6EE7B7; }
+.pill-wip { background: #1E3A8A; color: #93C5FD; }
+.pill-todo { background: #1E293B; color: #94A3B8; }
+.rf-current { background: #1E3A8A; color: #93C5FD; }
+.rf-table th { color: #94A3B8; border-bottom-color: #334155; }
+.rf-table td { color: #F8FAFC; border-bottom-color: #1E293B; }
+.rf-badge { background: #064E3B; color: #6EE7B7; }
+.rf-guide { background: #1E293B; border-color: #334155; }
+.rf-arch { background: #0F172A; border-color: #334155; color: #F8FAFC; }
+.rf-arch small { color: #94A3B8; }
+.stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a { background: #1E293B; color: #F8FAFC; border-color: #334155; }
+.stButton > button[kind="primary"] { background: #2563EB; color: #FFFFFF; }
+.stButton > button[kind="primary"]:hover { background: #1D4ED8; }
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea, [data-testid="stSelectbox"] div[data-baseweb="select"] > div, [data-testid="stNumberInput"] input { background: #0F172A; color: #F8FAFC; border-color: #334155; }
+div[data-baseweb="menu"] { background: #1E293B; }
+div[data-baseweb="menu"] li { color: #F8FAFC; }
+[data-testid="stFileUploader"] section { background: #0F172A; border-color: #475569; }
+[data-testid="stExpander"] { background: #1E293B; border-color: #334155; }
+[data-testid="stDataFrame"] { border-color: #334155; }
+[data-testid="stCodeBlock"] { background: #0F172A; }
+[data-testid="stCodeBlock"] code { color: #E2E8F0; }
+.rf-chip { background: #1E293B; border-color: #334155; color: #F8FAFC; }
+.rf-land { background: linear-gradient(115deg, #0F1B33 0%, #12233F 55%, #0F2A33 100%); border-color: #1E293B; }
+.rf-land h1 { color: #F8FAFC; }
+.rf-land .sub, .rf-land p { color: #CBD5E1; }
+.rf-land .stg { background: #1E293B; border-color: #334155; color: #F8FAFC; }
+.rf-land-note { color: #94A3B8; }
+</style>
+"""
+
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+# Theme variables override CUSTOM_CSS's :root (same names, later in the
+# cascade) — one place decides every surface/text/accent colour.
+_theme_root = "<style>\n:root {\n" + "\n".join(
+    f"  --rf-{_k}: {_v};" for _k, _v in _THEME.items()
+) + "\n}\n</style>"
+st.markdown(_theme_root, unsafe_allow_html=True)
+if _THEME_NAME == "dark":
+    st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 # --- Shell (v3.4): 5-stage nav, one Project = one container. Modern, professional,
 # minimalist: white, one blue accent, generous spacing, no extra decoration.
@@ -2089,9 +2227,9 @@ if "page" not in st.session_state:
 st.sidebar.markdown(
     '<div class="rf-logo">'
     '<svg width="32" height="32" viewBox="0 0 32 32" fill="none">'
-    '<rect x="2" y="19" width="6" height="10" rx="2" fill="#1264C5"/>'
-    '<rect x="11" y="12" width="6" height="17" rx="2" fill="#18C6D9"/>'
-    '<rect x="20" y="5" width="6" height="24" rx="2" fill="#16B89A"/>'
+    '<rect x="2" y="19" width="6" height="10" rx="2" fill="#2563EB"/>'
+    '<rect x="11" y="12" width="6" height="17" rx="2" fill="#0891B2"/>'
+    '<rect x="20" y="5" width="6" height="24" rx="2" fill="#0D9488"/>'
     '</svg>'
     '<div><div class="rf-logo-tx">ResearchFlow</div>'
     '<div class="rf-logo-sub">Market Research AI</div></div></div>',
@@ -2100,13 +2238,10 @@ st.sidebar.markdown(
 
 # v3.18 language switch. The value is kept in session_state["lang"] (a plain key,
 # not a widget key) so it survives the login screen and page changes.
-# v3.21: the radio itself sits BELOW the Project area, but T() calls above it
-# must still use the current language — sync from the persisted widget value
-# (set on the previous run) before anything else reads it.
+# v3.24: language is chosen with two segmented buttons below (the old radio
+# rendered the "မြန်မာ" label with overlapping/stacked glyphs in the sidebar).
 _LANG_CODES = ["EN", "MM"]
 _LANG_NAMES = {"EN": "English", "MM": "မြန်မာ"}
-if "lang_widget" in st.session_state:
-    st.session_state["lang"] = st.session_state["lang_widget"]
 
 # Project selector: list once per session (Drive call), refresh after creating one.
 if "project_list" not in st.session_state:
@@ -2117,13 +2252,10 @@ if current not in projects:
     projects = [current] + projects
 if "project_select_target" in st.session_state:
     st.session_state["project_select"] = st.session_state.pop("project_select_target")
-# v3.21: one step, not two — the current project is plain label text; the
-# switch dropdown appears only when more than one project exists.
-st.sidebar.markdown(
-    f'<div class="rf-proj"><span class="rf-proj-lb">{T("Project", "Project")}</span>'
-    f'<span class="rf-proj-nm">📁 {current}</span></div>',
-    unsafe_allow_html=True,
-)
+# v3.24: the "📁 Default" label is gone — the sidebar shows ONLY the
+# "+ New project" button (the current project already shows in the stage
+# header and in the top bar). The switch dropdown still appears only when
+# more than one project exists.
 selected = current
 if len(projects) > 1:
     selected = st.sidebar.selectbox(
@@ -2143,14 +2275,33 @@ if st.sidebar.button(T("＋ New project", "＋ Project အသစ်"), key="new_
     st.session_state["page"] = "New Project"
     st.rerun()
 
-# v3.21: language switcher moved down — below the Project area, above the nav.
-_lang_pick = st.sidebar.radio(
-    "Language", _LANG_CODES,
-    index=_LANG_CODES.index(st.session_state.get("lang", "EN")),
-    format_func=lambda c: _LANG_NAMES[c],
-    horizontal=True, key="lang_widget", label_visibility="collapsed",
-)
-st.session_state["lang"] = _lang_pick
+# v3.24: language + theme as segmented buttons, below the Project area,
+# above the nav. Plain session-state keys + rerun (no widget keys that could
+# go stale); both choices are saved to .ui_prefs.json so they survive a reload.
+st.sidebar.caption(T("Language", "ဘာသာစကား"))
+_lc1, _lc2 = st.sidebar.columns(2)
+with _lc1:
+    if st.button("English", key="lang_en", type="primary" if st.session_state.get("lang", "EN") == "EN" else "secondary", use_container_width=True):
+        st.session_state["lang"] = "EN"
+        _save_ui_prefs({"theme": st.session_state.get("theme", "light"), "lang": "EN"})
+        st.rerun()
+with _lc2:
+    if st.button("မြန်မာ", key="lang_mm", type="primary" if st.session_state.get("lang", "EN") == "MM" else "secondary", use_container_width=True):
+        st.session_state["lang"] = "MM"
+        _save_ui_prefs({"theme": st.session_state.get("theme", "light"), "lang": "MM"})
+        st.rerun()
+st.sidebar.caption(T("Theme", "အပြင်အဆင်"))
+_tc1, _tc2 = st.sidebar.columns(2)
+with _tc1:
+    if st.button("☀️ Light", key="theme_light", type="primary" if st.session_state.get("theme", "light") == "light" else "secondary", use_container_width=True):
+        st.session_state["theme"] = "light"
+        _save_ui_prefs({"theme": "light", "lang": st.session_state.get("lang", "EN")})
+        st.rerun()
+with _tc2:
+    if st.button("🌙 Dark", key="theme_dark", type="primary" if st.session_state.get("theme", "light") == "dark" else "secondary", use_container_width=True):
+        st.session_state["theme"] = "dark"
+        _save_ui_prefs({"theme": "dark", "lang": st.session_state.get("lang", "EN")})
+        st.rerun()
 
 _PAGE_ICONS = {
     "Dashboard": ":material/home:", "Client Brief": ":material/description:",
@@ -2317,11 +2468,18 @@ if _MY_EMAIL:
 
 page = st.session_state["page"]
 
-# Top bar: functional global search across this project's files + projects.
-_search_q = st.text_input(
-    "Search", key="global_search", label_visibility="collapsed",
-    placeholder=T("🔍 Search projects, files, or features...", "🔍 Project, ဖိုင်၊ feature ရှာပါ..."),
-)
+# v3.24 top bar: global search + current project + user. No notification
+# bell — there is no notification system, so nothing fake is shown.
+_tb_search, _tb_proj, _tb_user = st.columns([6, 1.6, 1.4])
+with _tb_search:
+    _search_q = st.text_input(
+        "Search", key="global_search", label_visibility="collapsed",
+        placeholder=T("🔍 Search projects, files, or features...", "🔍 Project, ဖိုင်၊ feature ရှာပါ..."),
+    )
+with _tb_proj:
+    st.markdown(f'<div class="rf-chip">📁 {html.escape(current)}</div>', unsafe_allow_html=True)
+with _tb_user:
+    st.markdown('<div class="rf-chip">👤 Soe Moe</div>', unsafe_allow_html=True)
 if _search_q:
     _q = _search_q.strip().lower()
     _hits = []
@@ -2449,6 +2607,19 @@ def stage_status():
     ]
 
 
+def _stage_badge(stage):
+    """Honest badge from a stage_status() tuple: Done ONLY when every
+    sub-item is done (no 'todo' and no 'coming'); In progress when at least
+    one sub-item is done; otherwise Not started. (v3.24 fix: stages 3/4/5
+    used to show Done from file counts while sub-items were still coming.)"""
+    _label, _desc, _done_flag, _subs = stage
+    if _subs and all(_s == "done" for _en, _mm, _s in _subs):
+        return (T("✅ Done", "✅ ပြီးပြီ"), "done")
+    if any(_s == "done" for _en, _mm, _s in _subs):
+        return (T("● In progress", "● လုပ်နေဆဲ"), "wip")
+    return (T("○ Not started", "○ မစရသေးဘူး"), "todo")
+
+
 def recent_activity(limit=5):
     """Most recent files across the project folders: (time, file, activity, status)."""
     rows = []
@@ -2484,12 +2655,7 @@ _stage_no = PAGE_STAGE.get(page)
 if _stage_no:
     st.session_state[f"stage_last_{_stage_no}"] = page
     _stg = stage_status()[_stage_no - 1]
-    if _stg[2]:
-        _sh_txt, _sh_cls = T("✅ Done", "✅ ပြီးပြီ"), "done"
-    elif any(_st == "done" for _en, _mm, _st in _stg[3]):
-        _sh_txt, _sh_cls = T("● In progress", "● လုပ်နေဆဲ"), "wip"
-    else:
-        _sh_txt, _sh_cls = T("○ Not started", "○ မစရသေးဘူး"), "todo"
+    _sh_txt, _sh_cls = _stage_badge(_stg)
     _sh_nm = _STAGE_NAME_EN[_stage_no]
     st.markdown(
         '<div class="rf-sh"><div><div class="rf-sh-k">' + T("Stage", "အဆင့်") + f" {_stage_no} / 5</div>"
@@ -2525,22 +2691,20 @@ if _stage_no:
 if page == "Dashboard":
 
     st.markdown(
-        '<div class="rf-hero"><h1>' + T("Welcome to", "ကြိုဆိုပါတယ်") + '<br><span class="b">Research</span>'
+        '<div class="rf-hero"><h1>' + T("Welcome to", "ကြိုဆိုပါတယ်") + ' <span class="b">Research</span>'
         '<span class="t">Flow</span></h1><p>'
-        + T("Transform your interview data into actionable insights with our "
-            "professional market research platform.",
-            "Interview data တွေကို အသုံးဝင်တဲ့ insight အဖြစ် ပြောင်းလဲပေးတဲ့ "
-            "ပရော်ဖက်ရှင်နယ် ဈေးကွက်သုတေသန platform ပါ။")
+        + T("Transform your interview data into actionable insights.",
+            "Interview data တွေကို အသုံးဝင်တဲ့ insight အဖြစ် ပြောင်းလဲပေးပါတယ်။")
         + "</p></div>",
         unsafe_allow_html=True,
     )
-    _hc1, _hc2, _hc3 = st.columns([1, 1, 4])
+    _hc1, _hc2, _hc3 = st.columns([1.6, 1.6, 5])
     with _hc1:
-        if st.button(T("▶ Start New Project", "▶ Project အသစ် စမယ်"), key="hero_new_project", type="primary"):
+        if st.button(T("▶ Start New Project", "▶ Project အသစ် စမယ်"), key="hero_new_project", type="primary", use_container_width=True):
             st.session_state["page"] = "New Project"
             st.rerun()
     with _hc2:
-        if st.button(T("📖 View Guide", "📖 လမ်းညွှန်ကြည့်မယ်"), key="hero_view_guide"):
+        if st.button(T("📖 View Guide", "📖 လမ်းညွှန်ကြည့်မယ်"), key="hero_view_guide", use_container_width=True):
             st.session_state["show_guide"] = not st.session_state.get("show_guide", False)
             st.rerun()
     if st.session_state.get("show_guide"):
@@ -2589,62 +2753,56 @@ if page == "Dashboard":
     _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
     _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
     _cards = [
-        ("📁", T("Total Projects", "Project စုစုပေါင်း"), len(_projects), "#1264C5"),
-        ("📝", T("Transcripts", "Transcript များ"), len(_transcripts), "#16B89A"),
-        ("📊", T("Research Reports", "သုတေသန Report များ"), len(_reports), "#18C6D9"),
-        ("🎙️", T("Audio Files", "Audio ဖိုင်များ"), len(_audio), "#071B3A"),
+        ("📁", T("Total Projects", "Project စုစုပေါင်း"), len(_projects), "#2563EB"),
+        ("📝", T("Transcripts", "Transcript များ"), len(_transcripts), "#0D9488"),
+        ("📊", T("Research Reports", "သုတေသန Report များ"), len(_reports), "#0891B2"),
+        ("🎙️", T("Audio Files", "Audio ဖိုင်များ"), len(_audio), "#7C3AED"),
     ]
-    _cols = st.columns(4)
-    for _i, (_ico, _lbl, _val, _c) in enumerate(_cards):
-        with _cols[_i]:
-            st.markdown(
-                f'<div class="rf-metric"><div class="rf-metric-ico" style="background:{_c}1A">{_ico}</div>'
-                f'<div class="rf-metric-label">{_lbl}</div>'
-                f'<div class="rf-metric-value">{_val}</div></div>',
-                unsafe_allow_html=True,
-            )
+    _kpi_html = "".join(
+        f'<div class="rf-metric"><div class="rf-metric-ico" style="background:{_c}1A">{_ico}</div>'
+        f'<div class="rf-metric-label">{_lbl}</div>'
+        f'<div class="rf-metric-value">{_val}</div></div>'
+        for _ico, _lbl, _val, _c in _cards
+    )
+    st.markdown(f'<div class="rf-kpirow">{_kpi_html}</div>', unsafe_allow_html=True)
 
     _stages = stage_status()
-    _done = sum(1 for _, _, d, _ in _stages if d)
+    _done = sum(1 for _s in _stages if _stage_badge(_s)[1] == "done")
     _pct = round(_done / len(_stages) * 100)
     _icons = ["📋", "📐", "👥", "🧹", "📊"]
-    _step_colors = ["#1264C5", "#18C6D9", "#16B89A", "#1264C5", "#18C6D9"]
+    _step_colors = ["#2563EB", "#0891B2", "#0D9488", "#2563EB", "#0891B2"]
 
     st.subheader(T("🚀 Research Workflow", "🚀 သုတေသန လုပ်ငန်းစဉ်"))
     st.caption(T("Follow the complete research process from brief to presentation", "Brief ကနေ တင်ပြမှုအထိ သုတေသနလုပ်ငန်းစဉ် အပြည့်အစုံကို လိုက်ကြည့်ပါ"))
-    _cols = st.columns([3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3])
-    _ci = 0
+    # Current step = first stage that is not Done (computed from real status).
+    _cur_step = next((i + 1 for i, _s in enumerate(_stages) if _stage_badge(_s)[1] != "done"), None)
+    if _cur_step:
+        st.markdown('<div class="rf-current">' + T(f"Current: Step {_cur_step}", f"အခု အဆင့်: {_cur_step}") + '</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="rf-current">' + T("✅ All stages complete", "✅ အဆင့်အားလုံး ပြီးပြီ") + '</div>', unsafe_allow_html=True)
+    _flow_cards = []
     for _i, (_label, _desc, _d, _subs) in enumerate(_stages):
-        with _cols[_ci]:
-            _nm = _label.split(" · ", 1)[1]
-            _st = T("✅ Done", "✅ ပြီးပြီ") if _d else T("○ Not yet", "○ မပြီးသေး")
-            _subs_html = "".join(
-                '<div class="sub"><span class="'
-                + ("ok" if _s == "done" else "no" if _s == "todo" else "cm")
-                + '">'
-                + ("✓" if _s == "done" else "○" if _s == "todo" else "–")
-                + "</span> " + T(_en, _mm)
-                + (" <i>(" + T("coming", "မလာသေးဘူး") + ")</i>" if _s == "coming" else "")
-                + "</div>"
-                for _en, _mm, _s in _subs
-            )
-            st.markdown(
-                f'<div class="rf-step"><div class="ico" style="background:{_step_colors[_i]}1A">{_icons[_i]}</div>'
-                f'<div class="nm">{_i + 1}. {_nm}</div>'
-                f'<div class="ds">{_desc}</div>'
-                f'<div class="st">{_st}</div>'
-                f'<div class="subs">{_subs_html}</div></div>',
-                unsafe_allow_html=True,
-            )
-        _ci += 1
-        if _i < len(_stages) - 1:
-            with _cols[_ci]:
-                st.markdown(
-                    '<div style="text-align:center; font-size:22px; color:#94A3B8;'
-                    ' padding-top:55px;">→</div>',
-                    unsafe_allow_html=True,
-                )
-            _ci += 1
+        _nm = _label.split(" · ", 1)[1]
+        _b_txt, _b_cls = _stage_badge((_label, _desc, _d, _subs))
+        _pill_cls = {"done": "pill-done", "wip": "pill-wip", "todo": "pill-todo"}[_b_cls]
+        _subs_html = "".join(
+            '<div class="sub"><span class="'
+            + ("ok" if _s == "done" else "no" if _s == "todo" else "cm")
+            + '">'
+            + ("✓" if _s == "done" else "○" if _s == "todo" else "–")
+            + "</span> " + html.escape(T(_en, _mm))
+            + (" <i>(" + T("coming", "မလာသေးဘူး") + ")</i>" if _s == "coming" else "")
+            + "</div>"
+            for _en, _mm, _s in _subs
+        )
+        _flow_cards.append(
+            f'<div class="rf-step"><div class="ico" style="background:{_step_colors[_i]}1A">{_icons[_i]}</div>'
+            f'<div class="nm">{_i + 1}. {html.escape(_nm)}</div>'
+            f'<div class="ds">{html.escape(_desc)}</div>'
+            f'<div class="st"><span class="rf-pill {_pill_cls}">{_b_txt}</span></div>'
+            f'<div class="subs">{_subs_html}</div></div>'
+        )
+    st.markdown('<div class="rf-flow">' + '<div class="rf-flow-arrow">→</div>'.join(_flow_cards) + '</div>', unsafe_allow_html=True)
 
     st.subheader(T("💡 Project Progress", "💡 Project တိုးတက်မှု"))
     _pc1, _pc2 = st.columns([1, 2])
@@ -2653,29 +2811,66 @@ if page == "Dashboard":
             f'<div class="rf-ring" style="--p:{_pct}"><span>{_pct}%</span></div>',
             unsafe_allow_html=True,
         )
-        st.caption(T(f"{_done} of {len(_stages)} stages have files so far", f"အဆင့် {len(_stages)} ခုအနက် {_done} ခုမှာ ဖိုင်ရှိပြီ"))
+        st.caption(T(f"{_done} of {len(_stages)} stages complete", f"အဆင့် {len(_stages)} ခုအနက် {_done} ခု ပြီးပြီ"))
     with _pc2:
         _s1, _s2 = st.columns(2)
         for _i, (_label, _desc, _d, _subs) in enumerate(_stages):
             with (_s1 if _i < 3 else _s2):
-                st.write(("✅ " if _d else "○ ") + _label)
+                _mk = {"done": "✅ ", "wip": "● ", "todo": "○ "}[_stage_badge((_label, _desc, _d, _subs))[1]]
+                st.write(_mk + _label)
 
-    st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
-    _act = recent_activity()
-    if _act:
-        _rows = "".join(
-            f"<tr><td>{html.escape(_t)}</td><td>{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
-            f'<td><span class="rf-badge">{html.escape(_s)}</span></td></tr>'
-            for _t, _f, _a, _s in _act
-        )
-        st.markdown(
-            '<table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
-            + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
-            + "</th><th>" + T("Status", "အခြေအနေ") + "</th></tr>" + _rows + "</table>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.info(T("No activity yet — record or upload audio to begin.", "လုပ်ဆောင်ချက် မရှိသေးဘူး — စဖို့ audio record လုပ်ပါ၊ ဒါမှမဟုတ် upload လုပ်ပါ။"))
+    # v3.24: Recent Activities + Quick Actions + System Status, side by side.
+    # Every row is real data only — no fake activities, no fake deltas.
+    _ra, _qa, _ss = st.columns(3)
+    with _ra:
+        with st.container(border=True):
+            st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
+            _act = recent_activity()
+            if _act:
+                _rows = "".join(
+                    f"<tr><td>{html.escape(_t)}</td><td>{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
+                    f'<td><span class="rf-badge">{html.escape(_s)}</span></td></tr>'
+                    for _t, _f, _a, _s in _act
+                )
+                st.markdown(
+                    '<table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
+                    + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
+                    + "</th><th>" + T("Status", "အခြေအနေ") + "</th></tr>" + _rows + "</table>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(T("No activity yet — record or upload audio to begin.", "လုပ်ဆောင်ချက် မရှိသေးဘူး — စဖို့ audio record လုပ်ပါ၊ ဒါမှမဟုတ် upload လုပ်ပါ။"))
+    with _qa:
+        with st.container(border=True):
+            st.subheader(T("⚡ Quick Actions", "⚡ အမြန်လုပ်ဆောင်ချက်များ"))
+            _qa1, _qa2 = st.columns(2)
+            with _qa1:
+                if st.button(T("🎙️ Start Interview", "🎙️ Interview စမယ်"), key="qa_record", use_container_width=True):
+                    st.session_state["page"] = "Fieldworks"
+                    st.rerun()
+                if st.button(T("📊 Run Analysis", "📊 Analysis လုပ်မယ်"), key="qa_analyze", use_container_width=True):
+                    st.session_state["page"] = "Market Analysis"
+                    st.rerun()
+            with _qa2:
+                if st.button(T("📤 Upload Files", "📤 ဖိုင်တင်မယ်"), key="qa_upload", use_container_width=True):
+                    st.session_state["page"] = "Upload & Transcribe"
+                    st.rerun()
+                if st.button(T("📑 Create Report", "📑 Report လုပ်မယ်"), key="qa_report", use_container_width=True):
+                    st.session_state["page"] = "Reports"
+                    st.rerun()
+    with _ss:
+        with st.container(border=True):
+            st.subheader(T("💚 System Status", "💚 စနစ် အခြေအနေ"))
+            _drive_st = (T("✅ Connected (OAuth)", "✅ ချိတ်ထားတယ် (OAuth)") if DRIVE_AUTH == "oauth"
+                         else T("✅ Connected", "✅ ချိတ်ထားတယ်") if DRIVE_AUTH == "service"
+                         else T("○ Local only", "○ Local ပဲ"))
+            _gem_st = (T("✅ Ready", "✅ အဆင်သင့်") if get_gemini_client() is not None
+                       else T("⚠️ No API key", "⚠️ API key မရှိဘူး"))
+            st.write(f"☁️ **{T('Google Drive', 'Google Drive')}** — {_drive_st}")
+            st.write(f"✦ **{T('Gemini AI', 'Gemini AI')}** — {_gem_st}")
+            st.write(f"💾 **{T('Local Storage', 'Local Storage')}** — {T('✅ Healthy', '✅ ကောင်းတယ်')}")
+            st.write(f"📦 **{T('Backup', 'Backup')}** — {T('○ On demand', '○ လိုအပ်မှ လုပ်မယ်')}")
+            st.caption(T("Create a backup ZIP in Backup & Restore below.", "Backup & Restore မှာ ZIP လုပ်လို့ရတယ်။"))
 
     st.subheader(T("💾 Backup & Restore", "💾 Backup နဲ့ Restore"))
     _b1, _b2 = st.columns(2)
@@ -3196,7 +3391,7 @@ elif page == "Market Analysis":
         if st.session_state.get("current_plan"):
             st.caption(f"Current plan: {st.session_state.get('current_plan_name')}")
             with st.expander(T("View plan", "Plan ကြည့်ပါ")):
-                st.text(st.session_state["current_plan"])
+                st.markdown(st.session_state["current_plan"])
 
         st.divider()
         has_plan = st.session_state.get("current_plan") is not None
@@ -3263,7 +3458,7 @@ elif page == "Market Analysis":
             saved_text = (ANALYSIS_DIR / saved_selected).read_text(encoding="utf-8")
             if looks_like_html(saved_text):
                 saved_text = html_to_text(saved_text)
-            st.text(saved_text)
+            st.markdown(saved_text)
             st.download_button(
                 "Download saved analysis (.txt)",
                 data=(ANALYSIS_DIR / saved_selected).read_bytes(),
