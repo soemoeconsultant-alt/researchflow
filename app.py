@@ -29,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.28"
+APP_VERSION = "3.29"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -88,15 +88,41 @@ def _save_ui_prefs(prefs):
         pass
 
 
-# Seed theme + language once per session from the saved prefs (a fresh
-# browser session starts with empty session state, so this is the only
-# moment the file can be read). Later reruns keep the in-session choice.
+def _update_ui_prefs(**kw):
+    """v3.29: merge keys into the saved prefs instead of replacing the file,
+    so saving theme/lang never wipes the persisted active project (and
+    vice versa). No secrets, no personal data — just theme/lang/project."""
+    _p = _load_ui_prefs()
+    _p.update(kw)
+    _save_ui_prefs(_p)
+
+
+def _flash(msg, kind="success"):
+    """v3.29: queue a one-shot confirmation to show once after the next
+    st.rerun(). A plain st.success() before st.rerun() is wiped by the rerun
+    (trial FAIL: "Brief saved." never appeared), so save handlers call this
+    instead and the message is rendered once on the next run, then cleared.
+    kind is "success", "error", "warning" or "info"."""
+    st.session_state["_flash_msg"] = (kind, msg)
+
+
+# Seed theme + language + active project once per session from the saved
+# prefs (a fresh browser session starts with empty session state, so this is
+# the only moment the file can be read). Later reruns keep the in-session
+# choice. v3.29: the active project is persisted too — a full page reload
+# used to forget it and reopen on "Default" (trial FAIL, revised: the
+# step-1 Dashboard checkmarks were Default's data, not a leak). The
+# persisted name is validated against the project list at the selector
+# below; a name that no longer exists falls back to "Default".
 if "_ui_prefs_loaded" not in st.session_state:
     _prefs = _load_ui_prefs()
     if _prefs.get("theme") in ("light", "dark"):
         st.session_state["theme"] = _prefs["theme"]
     if _prefs.get("lang") in ("EN", "MM"):
         st.session_state["lang"] = _prefs["lang"]
+    if isinstance(_prefs.get("active_project"), str) and _prefs["active_project"].strip():
+        st.session_state["active_project"] = _prefs["active_project"].strip()
+        st.session_state["_active_from_prefs"] = True
     st.session_state["_ui_prefs_loaded"] = True
 if "theme" not in st.session_state:
     st.session_state["theme"] = "light"
@@ -2101,7 +2127,8 @@ def store_write_text(dir_key, name, text):
     _atomic_write_bytes(path, data)
     if drive_available():
         try:
-            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+            with st.spinner(T("Saving to Google Drive...", "Google Drive မှာ သိမ်းနေပါတယ်...")):
+                drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
             queue_upload(dir_key, name, e)
             st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
@@ -2119,7 +2146,8 @@ def store_write_bytes(dir_key, name, data):
     _atomic_write_bytes(path, data)
     if drive_available():
         try:
-            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+            with st.spinner(T("Saving to Google Drive...", "Google Drive မှာ သိမ်းနေပါတယ်...")):
+                drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
             queue_upload(dir_key, name, e)
             st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
@@ -2134,7 +2162,8 @@ def store_upload_existing(dir_key, name):
     path = _safe_storage_path(dir_key, name)
     if path.exists():
         try:
-            drive_upload(path, DIR_TO_DRIVE[dir_key], name)
+            with st.spinner(T("Saving to Google Drive...", "Google Drive မှာ သိမ်းနေပါတယ်...")):
+                drive_upload(path, DIR_TO_DRIVE[dir_key], name)
         except Exception as e:
             queue_upload(dir_key, name, e)
             st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
@@ -2603,7 +2632,10 @@ DG_DRAFT_TEMPLATE = (
     "objectives, brands, personas, prices, or questions the brief does not "
     "support. If a detail is missing (brand name, moderator name, incentive), "
     "write it as a [bracketed placeholder] such as [Brand X], [Moderator Name], "
-    "[Incentive/Gift] — never guess a real name. Number sections correctly "
+    "[Incentive/Gift] — never guess a real name. Never invent a recording "
+    "setup, dates, venues, participant names, or fees either — use "
+    "[bracketed placeholders] such as [Recording — confirm], [Venue], "
+    "[Date] or leave them out. Number sections correctly "
     "1, 2, 3, ... in order — never repeat a section number. Section timings "
     "must SUM to the session length: FGD = 120 minutes, IDI = 60 minutes. "
     "Keep the tone conversational and colloquial, like a friendly host — never "
@@ -2616,8 +2648,10 @@ DG_DRAFT_TEMPLATE = (
     "# DISCUSSION GUIDE FOR <Project name> (<Client name>)\n"
     "Qualitative Market Research (FGD) — or (IDI) for IDI projects\n"
     "## Welcome\n"
-    "<welcome script: greeting, moderator intro, 'no right or wrong answer', "
-    "recording note, session length>\n"
+    "<welcome script: greeting, moderator intro ('I am [Moderator Name]'), "
+    "'no right or wrong answer', recording note ONLY if the brief or design "
+    "states recording (audio/video) — otherwise write '[Recording — confirm]' "
+    "and do not assume the session is recorded, session length>\n"
     "## Section 1: <Name> (10 Mins)\n"
     "Objective: <one sentence — what this section must find out>\n"
     "### 1. <Question group name>\n"
@@ -2643,7 +2677,10 @@ QUESTIONNAIRE_DRAFT_TEMPLATE = (
     "questions in their everyday spoken language.\n"
     "Rules: Base everything ONLY on the brief and the design. Do not invent "
     "brands, products, prices, or screening rules the brief does not support — "
-    "use [Brand X] style placeholders where a real name is missing. Start "
+    "use [Brand X] style placeholders where a real name is missing. Never "
+    "invent dates, venues, fees, interviewer or moderator names, or a "
+    "recording setup — use [Venue], [Date], [Interviewer] style placeholders "
+    "or leave them out. Start "
     "with a short screening section (simple fail to end: category use, "
     "frequency, and any age/area/education/spend rule the brief states). Then "
     "sections that follow the brief objectives, using the brief's respondent "
@@ -5424,11 +5461,39 @@ st.sidebar.markdown(
 _LANG_CODES = ["EN", "MM"]
 _LANG_NAMES = {"EN": "English", "MM": "မြန်မာ"}
 
+# v3.29: per-project editor/widget state lives in session state keyed by
+# widget name, NOT per project — switching projects without clearing it
+# would show the old project's text in the new project's editors (brief
+# form, design editors, DG/questionnaire editors). Clear it on every
+# project change; the editors re-seed from the new project's saved files.
+def _clear_project_editor_state():
+    for _k in ("dg_editor", "dg_pending_draft", "dg_confirm_overwrite",
+               "q_pending_draft", "q_confirm_overwrite", "q_editor_version",
+               "q_intro_en", "q_intro_mm", "q_closing_en", "q_closing_mm",
+               "q_header", "q_json_editor", "q_lang", "dg_lang",
+               "brief_client_name", "brief_client_contact", "brief_client_email",
+               "brief_project_code", "brief_background", "brief_objectives",
+               "brief_target_audience", "brief_scope", "brief_start", "brief_end",
+               "brief_deliverables", "brief_dg", "brief_approval",
+               "design_approach", "design_methods", "design_rationale",
+               "design_goal", "design_target", "design_sample_size",
+               "design_sessions", "design_pps", "design_personas",
+               "design_quotas", "design_screening", "design_recruitment"):
+        st.session_state.pop(_k, None)
+    for _k in [k for k in list(st.session_state.keys()) if k.startswith("q_editor_v")]:
+        st.session_state.pop(_k, None)
+
+
 # Project selector: list once per session (Drive call), refresh after creating one.
 if "project_list" not in st.session_state:
     st.session_state["project_list"] = list_projects()
 projects = st.session_state["project_list"]
 current = st.session_state.get("active_project", "Default")
+if current not in projects and st.session_state.pop("_active_from_prefs", None):
+    # v3.29: the persisted project no longer exists — fall back to Default
+    # instead of opening a project with no folder.
+    current = "Default"
+    st.session_state["active_project"] = "Default"
 if current not in projects:
     projects = [current] + projects
 if "project_select_target" in st.session_state:
@@ -5444,9 +5509,14 @@ if len(projects) > 1:
         index=projects.index(current),
         key="project_select",
     )
+    # v3.29: the dropdown truncates long names — the full name is shown
+    # here as a caption (it wraps; no fragile CSS on the native selectbox).
+    st.sidebar.caption("📁 " + selected)
 if selected != current:
     st.session_state["active_project"] = selected
     st.session_state["drive_synced"] = False
+    _clear_project_editor_state()
+    _update_ui_prefs(active_project=selected)
     st.rerun()
 refresh_project_dirs(selected)
 
@@ -5464,24 +5534,24 @@ _lc1, _lc2 = st.sidebar.columns(2)
 with _lc1:
     if st.button("English", key="lang_en", type="primary" if st.session_state.get("lang", "EN") == "EN" else "secondary", use_container_width=True):
         st.session_state["lang"] = "EN"
-        _save_ui_prefs({"theme": st.session_state.get("theme", "light"), "lang": "EN"})
+        _update_ui_prefs(theme=st.session_state.get("theme", "light"), lang="EN")
         st.rerun()
 with _lc2:
     if st.button("မြန်မာ", key="lang_mm", type="primary" if st.session_state.get("lang", "EN") == "MM" else "secondary", use_container_width=True):
         st.session_state["lang"] = "MM"
-        _save_ui_prefs({"theme": st.session_state.get("theme", "light"), "lang": "MM"})
+        _update_ui_prefs(theme=st.session_state.get("theme", "light"), lang="MM")
         st.rerun()
 st.sidebar.caption(T("Theme", "အပြင်အဆင်"))
 _tc1, _tc2 = st.sidebar.columns(2)
 with _tc1:
     if st.button("☀️ Light", key="theme_light", type="primary" if st.session_state.get("theme", "light") == "light" else "secondary", use_container_width=True):
         st.session_state["theme"] = "light"
-        _save_ui_prefs({"theme": "light", "lang": st.session_state.get("lang", "EN")})
+        _update_ui_prefs(theme="light", lang=st.session_state.get("lang", "EN"))
         st.rerun()
 with _tc2:
     if st.button("🌙 Dark", key="theme_dark", type="primary" if st.session_state.get("theme", "light") == "dark" else "secondary", use_container_width=True):
         st.session_state["theme"] = "dark"
-        _save_ui_prefs({"theme": "dark", "lang": st.session_state.get("lang", "EN")})
+        _update_ui_prefs(theme="dark", lang=st.session_state.get("lang", "EN"))
         st.rerun()
 
 _PAGE_ICONS = {
@@ -5849,6 +5919,20 @@ if DRIVE_MODE and not st.session_state.get("drive_synced"):
         retry_sync_queue()
     st.session_state["drive_synced"] = True
 
+# v3.29 one-shot confirmation (see _flash): a save handler queues its
+# message here and it is shown once on the run after the rerun, then
+# cleared. Rendered here, above every page's content.
+if st.session_state.get("_flash_msg"):
+    _fm_kind, _fm_text = st.session_state.pop("_flash_msg")
+    if _fm_kind == "error":
+        st.error(_fm_text)
+    elif _fm_kind == "warning":
+        st.warning(_fm_text)
+    elif _fm_kind == "info":
+        st.info(_fm_text)
+    else:
+        st.success(_fm_text)
+
 # v3.23 stage header + section / step bars (shown on stage pages only).
 _stage_no = PAGE_STAGE.get(page)
 if _stage_no:
@@ -6165,6 +6249,12 @@ elif page == "New Project":
                     "description": _np_desc.strip(),
                     "members": [m.strip() for m in _np_members.split(",") if m.strip()],
                 }, ensure_ascii=False, indent=2))
+            # v3.29: clear the old project's editor state, remember this
+            # project across reloads, and confirm (a plain st.success here
+            # would be wiped by the rerun below).
+            _clear_project_editor_state()
+            _update_ui_prefs(active_project=_created)
+            _flash(T(f"Project created: {_created}.", f"Project ဖွင့်ပြီးပြီ: {_created}။"))
             st.session_state["project_select_target"] = _created
             st.session_state["page"] = "Client Brief"
             st.rerun()
@@ -6201,9 +6291,12 @@ elif page == "Client Brief":
         st.subheader(T("Scope", "Scope"))
         _scope = st.text_area(T("What is in scope — and out of scope?", "ဘာတွေ ပါမလဲ — ဘာတွေ မပါဘူး။"), value=_brief.get("scope", ""), height=80, key="brief_scope")
         st.subheader(T("Timeline", "အချိန်ဇယား"))
+        # v3.29: these are TEXT fields, not a calendar picker and not a
+        # dropdown — say so, so nobody waits for a picker that never comes.
+        st.caption(T("Type the date as text (YYYY-MM-DD). No calendar picker — an empty date stays empty, never today's date.", "ရက်စွဲကို စာရိုက်ထည့်ပါ (YYYY-MM-DD)။ Calendar မရှိဘူး — မထည့်ရင် ဗလာအတိုင်း ကျန်မယ်, ဒီနေ့ရက် အလိုအလျောက် မထည့်ဘူး။"))
         _bt1, _bt2 = st.columns(2)
-        _start = _bt1.text_input(T("Start date (YYYY-MM-DD)", "စမည့်ရက် (YYYY-MM-DD)"), value=_brief.get("timeline_start", ""), key="brief_start")
-        _end = _bt2.text_input(T("End date (YYYY-MM-DD)", "ပြီးမည့်ရက် (YYYY-MM-DD)"), value=_brief.get("timeline_end", ""), key="brief_end")
+        _start = _bt1.text_input(T("Start date (YYYY-MM-DD, type as text)", "စမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ)"), value=_brief.get("timeline_start", ""), key="brief_start")
+        _end = _bt2.text_input(T("End date (YYYY-MM-DD, type as text)", "ပြီးမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ)"), value=_brief.get("timeline_end", ""), key="brief_end")
         st.subheader(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"))
         _delivs = st.multiselect(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"), BRIEF_DELIVERABLES, default=[d for d in _brief.get("deliverables", []) if d in BRIEF_DELIVERABLES], key="brief_deliverables")
         st.subheader(T("Discussion Guide", "Discussion Guide"))
@@ -6221,7 +6314,7 @@ elif page == "Client Brief":
                 "approval": _approval,
             }
             save_brief(_data)
-            st.success(T("Brief saved.", "Brief သိမ်းပြီးပြီ။"))
+            _flash(T("Brief saved.", "Brief သိမ်းပြီးပြီ။"))
             st.rerun()
 
 elif page == "Research Design":
@@ -6269,7 +6362,7 @@ elif page == "Research Design":
                         "rationale": _rationale.strip(), "goal": _goal.strip(),
                         "target": _target.strip(), "target_audience": _brief.get("target_audience", "")})
         save_design(_design)
-        st.success(T("Method saved.", "Method သိမ်းပြီးပြီ။"))
+        _flash(T("Method saved.", "Method သိမ်းပြီးပြီ။"))
         st.rerun()
 
     # ---- 2. Sampling ----
@@ -6309,7 +6402,7 @@ elif page == "Research Design":
                         "recruitment_criteria": _recruitment.strip(),
                         "target_audience": _brief.get("target_audience", "")})
         save_design(_design)
-        st.success(T("Sampling saved.", "Sampling သိမ်းပြီးပြီ။"))
+        _flash(T("Sampling saved.", "Sampling သိမ်းပြီးပြီ။"))
         st.rerun()
     # Design as the AI drafts see it: saved values + what is on screen now.
     _draft_design = dict(_design)
@@ -6337,7 +6430,13 @@ elif page == "Research Design":
             _draft, _model_used = ask_gemini(_prompt)
         if _draft:
             st.session_state["dg_pending_draft"] = _draft
-            st.session_state.pop("dg_editor", None)
+            # v3.29: set the editor value directly through the Session State
+            # API — the reliable way to set a widget value. The old code
+            # popped the widget key and passed the draft as value= to the
+            # text_area, but once the key exists value= is ignored on later
+            # reruns, so the editor stayed empty while the Preview showed
+            # the draft (trial FAIL) and Save stored nothing.
+            st.session_state["dg_editor"] = _draft
             st.session_state.pop("dg_confirm_overwrite", None)
             st.rerun()
         else:
@@ -6360,19 +6459,36 @@ elif page == "Research Design":
             st.rerun()
     if st.session_state.get("dg_pending_draft"):
         st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
-    _dg_value = st.session_state.get("dg_pending_draft", _design.get("dg_text", ""))
-    st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), value=_dg_value, height=400, key="dg_editor")
+    # v3.29: the editor value lives in session state — seeded once from the
+    # saved guide (or empty for a new project) and set directly when a
+    # draft arrives. Never pass value= here: it is ignored once the widget
+    # key exists, which is what desynced the editor. Project switches clear
+    # this key (see _clear_project_editor_state), so a new project re-seeds.
+    if "dg_editor" not in st.session_state:
+        st.session_state["dg_editor"] = _design.get("dg_text", "")
+    st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), height=400, key="dg_editor")
     _dc1, _dc2 = st.columns(2)
     if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
         _dg_final = st.session_state.get("dg_editor", "")
-        _design["dg_text"] = _dg_final
-        _design["dg_language"] = _dg_lang
-        _design["dg_file"] = "discussion_guide.txt"
-        save_design(_design)
-        store_write_text("notes", "discussion_guide.txt", _dg_final)
-        st.session_state.pop("dg_pending_draft", None)
-        st.success(T("Discussion Guide saved.", "Discussion Guide သိမ်းပြီးပြီ။"))
-        st.rerun()
+        if not _dg_final.strip():
+            # v3.29: never destroy a draft (or a saved guide) with an empty
+            # save — warn and keep everything. No rerun on this path, so the
+            # warning stays visible.
+            if (st.session_state.get("dg_pending_draft") or "").strip():
+                st.warning(T("The editor is empty but a new AI draft exists — it was NOT saved. Click “✨ AI Draft Discussion Guide” again, or paste the draft into the editor, then Save.", "Editor ဗလာဖြစ်နေတယ်၊ ဒါပေမယ့် AI draft အသစ် ရှိတယ် — မသိမ်းလိုက်ဘူး။ “✨ AI Draft Discussion Guide” ကို ပြန်နှိပ်ပါ၊ ဒါမှမဟုတ် draft ကို editor ထဲ paste လုပ်ပြီး Save နှိပ်ပါ။"))
+            elif (_design.get("dg_text") or "").strip():
+                st.warning(T("The editor is empty — the saved Discussion Guide was kept, not erased.", "Editor ဗလာဖြစ်နေတယ် — သိမ်းပြီးသား Discussion Guide ကို ဖျက်မပစ်ဘူး၊ ထားထားတယ်။"))
+            else:
+                st.warning(T("Nothing to save — the Discussion Guide is empty.", "သိမ်းစရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
+        else:
+            _design["dg_text"] = _dg_final
+            _design["dg_language"] = _dg_lang
+            _design["dg_file"] = "discussion_guide.txt"
+            save_design(_design)
+            store_write_text("notes", "discussion_guide.txt", _dg_final)
+            st.session_state.pop("dg_pending_draft", None)
+            _flash(T("Discussion Guide saved.", "Discussion Guide သိမ်းပြီးပြီ။"))
+            st.rerun()
     if _dc2.button(T("Export DOCX", "DOCX ထုတ်မယ်"), key="dg_export"):
         _dg_final = st.session_state.get("dg_editor", "")
         if not _dg_final.strip():
@@ -6420,7 +6536,17 @@ elif page == "Research Design":
                 st.code(_draft)
             return
         st.session_state["q_pending_draft"] = _parsed
-        st.session_state.pop("q_editor", None)
+        # v3.29: same fix as the DG editor — the grid + intro/closing fields
+        # are value+key widgets, so a new draft must be pushed into session
+        # state directly (and the grid given a fresh key) instead of relying
+        # on pop-key + value=, which desyncs on later reruns.
+        st.session_state["q_editor_version"] = st.session_state.get("q_editor_version", 0) + 1
+        st.session_state["q_intro_en"] = _parsed.get("intro_en", "")
+        st.session_state["q_intro_mm"] = _parsed.get("intro_mm", "")
+        st.session_state["q_closing_en"] = _parsed.get("closing_en", "")
+        st.session_state["q_closing_mm"] = _parsed.get("closing_mm", "")
+        st.session_state["q_header"] = ", ".join(_parsed.get("header_fields", []) or [])
+        st.session_state["q_json_editor"] = json.dumps(_parsed, ensure_ascii=False, indent=2)
         st.session_state.pop("q_confirm_overwrite", None)
         st.rerun()
 
@@ -6440,11 +6566,24 @@ elif page == "Research Design":
             st.rerun()
     if st.session_state.get("q_pending_draft") is not None:
         st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
-    _q_intro_en = st.text_area(T("Intro script (English)", "Intro script (English)"), value=_q_saved.get("intro_en", ""), height=70, key="q_intro_en")
-    _q_intro_mm = st.text_area(T("Intro script (Myanmar)", "Intro script (မြန်မာ)"), value=_q_saved.get("intro_mm", ""), height=70, key="q_intro_mm")
-    _q_closing_en = st.text_area(T("Closing script (English)", "Closing script (English)"), value=_q_saved.get("closing_en", ""), height=60, key="q_closing_en")
-    _q_closing_mm = st.text_area(T("Closing script (Myanmar)", "Closing script (မြန်မာ)"), value=_q_saved.get("closing_mm", ""), height=60, key="q_closing_mm")
-    _q_header = st.text_input(T("Header fields (comma-separated)", "Header fields (ကော်မာနဲ့ ခွဲပါ)"), value=", ".join(_q_saved.get("header_fields", [])), key="q_header")
+    # v3.29: seed these fields from the saved/draft questionnaire on first
+    # view, then let the widgets own their values (same fix as the DG
+    # editor — value= is ignored once the key exists).
+    if "q_intro_en" not in st.session_state:
+        st.session_state["q_intro_en"] = _q_saved.get("intro_en", "")
+    if "q_intro_mm" not in st.session_state:
+        st.session_state["q_intro_mm"] = _q_saved.get("intro_mm", "")
+    if "q_closing_en" not in st.session_state:
+        st.session_state["q_closing_en"] = _q_saved.get("closing_en", "")
+    if "q_closing_mm" not in st.session_state:
+        st.session_state["q_closing_mm"] = _q_saved.get("closing_mm", "")
+    if "q_header" not in st.session_state:
+        st.session_state["q_header"] = ", ".join(_q_saved.get("header_fields", []) or [])
+    _q_intro_en = st.text_area(T("Intro script (English)", "Intro script (English)"), height=70, key="q_intro_en")
+    _q_intro_mm = st.text_area(T("Intro script (Myanmar)", "Intro script (မြန်မာ)"), height=70, key="q_intro_mm")
+    _q_closing_en = st.text_area(T("Closing script (English)", "Closing script (English)"), height=60, key="q_closing_en")
+    _q_closing_mm = st.text_area(T("Closing script (Myanmar)", "Closing script (မြန်မာ)"), height=60, key="q_closing_mm")
+    _q_header = st.text_input(T("Header fields (comma-separated)", "Header fields (ကော်မာနဲ့ ခွဲပါ)"), key="q_header")
     _q_cols = ["Code", "Section", "Question (EN)", "Question (MM)", "Type", "Options (EN)", "Options (MM)", "Outcome", "Required", "Relevant"]
     _q_rows = []
     for _qq in _qs:
@@ -6458,7 +6597,10 @@ elif page == "Research Design":
                         "Outcome": _ed_str(_qq.get("outcome")), "Required": _ed_bool(_qq.get("required")),
                         "Relevant": _ed_str(_qq.get("relevant"))})
     _q_df = pd.DataFrame(_q_rows, columns=_q_cols)
-    _q_edited = st.data_editor(_q_df, num_rows="dynamic", use_container_width=True, key="q_editor", column_config={
+    # v3.29: the grid key carries a version that bumps on every new draft,
+    # so the grid is rebuilt from the draft instead of showing stale rows.
+    _q_editor_key = f"q_editor_v{st.session_state.get('q_editor_version', 0)}"
+    _q_edited = st.data_editor(_q_df, num_rows="dynamic", use_container_width=True, key=_q_editor_key, column_config={
         "Type": st.column_config.SelectboxColumn(T("Type", "Type"), options=QUESTION_TYPES),
         "Required": st.column_config.CheckboxColumn(T("Required", "Required")),
     })
@@ -6496,7 +6638,10 @@ elif page == "Research Design":
         _design["questionnaire_language"] = _q_lang
         save_design(_design)
         st.session_state.pop("q_pending_draft", None)
-        st.success(T("Questionnaire saved.", "Questionnaire သိမ်းပြီးပြီ။"))
+        # v3.29: the JSON view is derived from the saved questionnaire —
+        # drop it so it re-seeds from the just-saved design.
+        st.session_state.pop("q_json_editor", None)
+        _flash(T("Questionnaire saved.", "Questionnaire သိမ်းပြီးပြီ။"))
         st.rerun()
     if st.button(T("Export Kobo XLSForm (.xlsx)", "Kobo XLSForm (.xlsx) ထုတ်မယ်"), key="q_export_kobo"):
         _q_now = _design.get("questionnaire") or {}
@@ -6516,7 +6661,9 @@ elif page == "Research Design":
         st.download_button(T("Download questionnaire_kobo.xlsx", "questionnaire_kobo.xlsx ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / "questionnaire_kobo.xlsx").read_bytes(), file_name="questionnaire_kobo.xlsx", key="q_kobo_download")
     with st.expander(T("Questionnaire JSON (advanced — XLSForm fields)", "Questionnaire JSON (အဆင့်မြင့် — XLSForm fields)")):
         st.caption(T("Hint, appearance, relevant, and constraint live here — edit the JSON and save it.", "Hint, appearance, relevant, constraint တို့ ဒီမှာ ရှိတယ် — JSON ပြင်ပြီး သိမ်းပါ။"))
-        _q_json = st.text_area(T("Questionnaire JSON", "Questionnaire JSON"), value=json.dumps(_q_saved, ensure_ascii=False, indent=2), height=200, key="q_json_editor")
+        if "q_json_editor" not in st.session_state:
+            st.session_state["q_json_editor"] = json.dumps(_q_saved, ensure_ascii=False, indent=2)
+        _q_json = st.text_area(T("Questionnaire JSON", "Questionnaire JSON"), height=200, key="q_json_editor")
         if st.button(T("Save questionnaire JSON", "Questionnaire JSON သိမ်းမယ်"), key="q_json_save"):
             _parsed, _perr = _parse_questionnaire_json(_q_json)
             if _parsed is None:
@@ -6525,7 +6672,7 @@ elif page == "Research Design":
                 _design["questionnaire"] = _parsed
                 save_design(_design)
                 st.session_state.pop("q_pending_draft", None)
-                st.success(T("Questionnaire JSON saved.", "Questionnaire JSON သိမ်းပြီးပြီ။"))
+                _flash(T("Questionnaire JSON saved.", "Questionnaire JSON သိမ်းပြီးပြီ။"))
                 st.rerun()
 
     # ---- 5. Fieldwork Plan ----
@@ -6565,7 +6712,7 @@ elif page == "Research Design":
                             "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
         _design["fieldwork_plan"] = _new_fw
         save_design(_design)
-        st.success(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
+        _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
         st.rerun()
 
 elif page == "Data Cleansing":
@@ -7060,7 +7207,7 @@ elif page == "Fieldworks":
                     if isinstance(_s, dict) and _fw_session_key(_s) == _fw_sel:
                         _s["confirmed"] = int(_fw_new_conf)
                 save_design(_d)
-                st.success(T("Confirmed count saved.", "Confirmed အရေအတွက် သိမ်းပြီးပြီ။"))
+                _flash(T("Confirmed count saved.", "Confirmed အရေအတွက် သိမ်းပြီးပြီ။"))
                 st.rerun()
             _fw_conf_parts = sum(1 for _p in _fw_sel_parts if isinstance(_p, dict) and _p.get("confirmed"))
             st.caption(T(f"Participants in this session: {len(_fw_sel_parts)} (confirmed: {_fw_conf_parts}) — over-recruitment shows when Recruited is above Seats.",
@@ -7092,7 +7239,7 @@ elif page == "Fieldworks":
                 _new_parts.append(_np)
             _fw.setdefault("participants", {})[_fw_sel] = _new_parts
             save_fieldwork(_fw)
-            st.success(T("Participants saved.", "Participants သိမ်းပြီးပြီ။"))
+            _flash(T("Participants saved.", "Participants သိမ်းပြီးပြီ။"))
             st.rerun()
         with st.expander(T("Screener answers (from import)", "Screener အဖြေများ (import ကနေ)")):
             _any_scr = False
@@ -7139,9 +7286,12 @@ elif page == "Fieldworks":
                     _added += 1
                 _fw.setdefault("participants", {})[_key] = _existing
             save_fieldwork(_fw)
-            st.success(T(f"Imported {_added} participants from {len(_groups)} sheet(s) ({_stats['skipped']} rows skipped).", f"Sheet {len(_groups)} ခုကနေ participants {_added} ယောက် import ပြီးပြီ (row {_stats['skipped']} ခု ကျော်သွားတယ်)။"))
+            # v3.29: the success AND the unlinked-sheets note below are both
+            # wiped by the rerun — queue them together as one flash message.
+            _imp_msg = T(f"Imported {_added} participants from {len(_groups)} sheet(s) ({_stats['skipped']} rows skipped).", f"Sheet {len(_groups)} ခုကနေ participants {_added} ယောက် import ပြီးပြီ (row {_stats['skipped']} ခု ကျော်သွားတယ်)။")
             if _unlinked:
-                st.info(T(f"Sheets not matching any planned group (kept as separate groups): {', '.join(_unlinked)}", f"Plan နဲ့ မကိုက်တဲ့ sheet တွေ (သပ်သပ် group အနေနဲ့ သိမ်းထားတယ်): {', '.join(_unlinked)}"))
+                _imp_msg += " " + T(f"Sheets not matching any planned group (kept as separate groups): {', '.join(_unlinked)}", f"Plan နဲ့ မကိုက်တဲ့ sheet တွေ (သပ်သပ် group အနေနဲ့ သိမ်းထားတယ်): {', '.join(_unlinked)}")
+            _flash(_imp_msg)
             st.rerun()
 
     # ---- 4. Seating plan ----
@@ -7178,7 +7328,7 @@ elif page == "Fieldworks":
             _fw["survey_files"].append({"name": _sv_safe, "rows": int(len(_sv_df)), "columns": int(len(_sv_df.columns)),
                                         "uploaded": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
             save_fieldwork(_fw)
-            st.success(T(f"Survey file saved: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns).", f"Survey file သိမ်းပြီးပြီ: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns)။"))
+            _flash(T(f"Survey file saved: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns).", f"Survey file သိမ်းပြီးပြီ: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns)။"))
             st.rerun()
         except Exception as _e:
             st.error(T(f"Could not read the file: {_e}", f"File ဖတ်မရဘူး: {_e}"))
@@ -7210,7 +7360,7 @@ elif page == "Fieldworks":
             _fw.setdefault("notes", []).append({"session": _fn_sess, "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "text": _fn_text.strip()})
             save_fieldwork(_fw)
             st.session_state.pop("fw_fn_text", None)
-            st.success(T("Note saved.", "မှတ်စု သိမ်းပြီးပြီ။"))
+            _flash(T("Note saved.", "မှတ်စု သိမ်းပြီးပြီ။"))
             st.rerun()
     _fn_list = [n for n in reversed(_fw.get("notes", [])) if not _fn_sess or n.get("session") == _fn_sess]
     if _fn_list:
@@ -7282,7 +7432,7 @@ elif page == "Fieldworks":
         if st.button(T("Save status", "Status သိမ်းမယ်"), key="fw_trk_save"):
             _fw.setdefault("session_status", {})[_trk_sel] = _trk_new
             save_fieldwork(_fw)
-            st.success(T("Status saved.", "Status သိမ်းပြီးပြီ။"))
+            _flash(T("Status saved.", "Status သိမ်းပြီးပြီ။"))
             st.rerun()
         st.caption(T(f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}",
                     f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}"))
@@ -7324,15 +7474,18 @@ elif page == "Fieldworks":
             store_write_bytes("audio", chunk_path.name, audio_bytes)
             st.session_state["last_recorded_key"] = record_key
             st.session_state["last_chunk"] = (current_project(), session_name, chunk_path.name)
-            st.success(f"Saved: {chunk_path.name}")
+            # v3.29: both messages below are wiped by the rerun — collect
+            # them and flash once (the error case flashes as an error).
+            _rec_msgs = [f"Saved: {chunk_path.name}"]
             txt_path = OUTPUT_DIR / (chunk_path.stem + ".txt")
             with st.spinner(T(f"Transcribing chunk {next_n}... (long audio can take a few minutes)", f"Chunk {next_n} ကို transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)")):
                 text, model = transcribe_audio(chunk_path)
             if text:
                 store_write_text("transcripts", txt_path.name, text)
-                st.success(f"Done — model: {model}")
+                _rec_msgs.append(f"Done — model: {model}")
+                _flash(" ".join(_rec_msgs))
             else:
-                st.error(T(f"Failed: {model} — retry with Transcribe pending below.", f"Failed: {model} — အောက်က Transcribe pending နဲ့ ပြန်လုပ်လို့ရတယ်။"))
+                _flash(T(f"Failed: {model} — retry with Transcribe pending below.", f"Failed: {model} — အောက်က Transcribe pending နဲ့ ပြန်လုပ်လို့ရတယ်။"), kind="error")
             st.rerun()
         else:
             st.caption(T(f"This chunk is already saved: {st.session_state.get('last_chunk')}", f"ဒီ chunk က သိမ်းပြီးသား: {st.session_state.get('last_chunk')}"))
