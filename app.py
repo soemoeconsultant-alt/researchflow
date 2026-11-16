@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24.2"
+APP_VERSION = "3.24.3"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1848,10 +1848,12 @@ CUSTOM_CSS = """
 /* Myanmar script needs open line height; tight tracking breaks stacked marks. */
 [data-testid="stMarkdownContainer"] p { line-height: 1.7; }
 [data-testid="stMarkdownContainer"] li { line-height: 1.7; }
-[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label { line-height: 1.6; }
+[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label { line-height: 1.7; }
 [data-testid="stCaptionContainer"] { line-height: 1.6; }
-.stApp h1, .stApp h2, .stApp h3, .stApp h4 { line-height: 1.6; }
-.stApp button, .stApp label { line-height: 1.6; }
+.stApp h1, .stApp h2, .stApp h3, .stApp h4 { line-height: 1.7; }
+/* v3.24.3 (#7): Myanmar stacking diacritics render tight in buttons and
+   labels at 1.6 — open them to 1.8 (headings 1.7 above). */
+.stApp button, .stApp label { line-height: 1.8; }
 [data-testid="stSelectboxVirtualDropdown"] li, [data-testid="stMultiSelectDropdown"] li { line-height: 1.6; }
 input::placeholder, textarea::placeholder { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; color: #64748B; opacity: 1; line-height: 1.6; }
 [data-testid="stSelectbox"] input::placeholder, [data-testid="stMultiSelect"] input::placeholder { color: #64748B; opacity: 1; }
@@ -1933,9 +1935,25 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 /* v3.24.1: the Streamlit header/toolbar is platform chrome, not app content.
    Give it a solid theme background so scrolled content disappears cleanly
    behind it instead of showing through / over a floating light bar (#7, #13).
-   Dark theme overrides this below with its own solid colour. */
-[data-testid="stHeader"] { background: #FFFFFF; }
-[data-testid="stToolbar"] { color: #172B4D; }
+   Dark theme overrides this below with its own solid colour.
+   v3.24.3 (#5): the header background MUST be fully opaque with !important
+   (the 1.67 header is transparent when it has no logo/nav/toolbar content,
+   so headings sliding under it stayed half-visible); the bottom border marks
+   where content disappears, and the high z-index keeps it above page content. */
+[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; z-index: 1000000 !important; }
+[data-testid="stToolbar"] { color: #172B4D; background: #FFFFFF !important; }
+/* v3.24.3 (#4, #6): collapse Streamlit 1.67's sidebar header. The header is
+   3.75rem tall with a 2rem logo spacer (stLogoSpacer — rendered because the
+   app sets no st.logo) plus a bottom margin, which together with the 3.5rem
+   scroll-container padding put the logo ~185px from the top. The spacer
+   serves no purpose here, so hide it; shrink the header to the collapse
+   button alone and drop its margin. The collapse button (stSidebarCollapseButton)
+   is visibility:hidden until the sidebar is hovered (verified in the 1.67
+   bundle: the jx wrapper toggles visibility on showSidebarCollapse) — force
+   it visible on load so it is always reachable. */
+[data-testid="stSidebarHeader"] { height: auto !important; min-height: 2.5rem !important; margin-bottom: 0 !important; justify-content: flex-end !important; }
+[data-testid="stLogoSpacer"] { display: none !important; }
+[data-testid="stSidebarCollapseButton"] { visibility: visible !important; opacity: 1 !important; }
 
 /* v3.24.1 (#7): the fixed Streamlit header overlays the top ~56px of the
    viewport, INCLUDING the sidebar. Sidebar content must start BELOW it, or
@@ -1944,12 +1962,18 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 [data-testid="stSidebar"] > div {
   padding-top: 3.5rem !important;
   /* v3.24.2 (#6): anchor/focus scrolling in the sidebar stops below the
-     pinned logo instead of sliding a nav item under it. */
-  scroll-padding-top: 7rem !important;
+     pinned logo instead of sliding a nav item under it.
+     v3.24.3: 8rem — the stuck logo's bottom edge sits ~122px down (3.75rem
+     sticky top + ~62px logo block), so anchor scrolling must clear 128px. */
+  scroll-padding-top: 8rem !important;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
   padding-top: 0 !important;
 }
+/* v3.24.3 (#4): Streamlit 1.67's stSidebarUserContent adds padding-top
+   (spacing.twoXL when page nav sits above) — remove it; the logo must start
+   right below the collapsed sidebar header. */
+[data-testid="stSidebarUserContent"] { padding-top: 0 !important; }
 
 /* v3.19 light sidebar: hairline border, no gradient. The active page is marked
    by an accent bar on its left edge. Stage entries carry the stage number;
@@ -1976,7 +2000,7 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 /* Streamlit centers nav content in an inner div INSIDE the button, so
    justify-content on the button alone cannot move it (v3.13 lesson). */
 [data-testid="stSidebar"] .stButton button div { justify-content: flex-start !important; }
-[data-testid="stSidebar"] .stButton > button p { color: var(--rf-ink); text-align: left; line-height: 1.6; white-space: normal; }
+[data-testid="stSidebar"] .stButton > button p { color: var(--rf-ink); text-align: left; line-height: 1.8; white-space: normal; }
 [data-testid="stSidebar"] .stButton > button:hover {
   background: #EEF1F4; border: none; color: var(--rf-ink); transform: none;
 }
@@ -2007,21 +2031,29 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 
 /* Sidebar top block stays visible (v3.21 logo pin; v3.24: only the logo is
    pinned — the old current-project label it used to pin below is gone).
-   v3.24.2 (#6): the pin stays (logo visible while scrolling), but the
-   block is compacted and the scroll container gets scroll-padding so any
-   focus/anchor scroll stops below the logo. Honest limit: a sticky header
-   inside a single scroll container inherently covers the one nav item that
-   passes beneath it while scrolling — CSS alone cannot clip the nav's
-   scrollport below the logo in Streamlit's DOM (the logo and the nav share
-   one scroll container), and moving the logo to position:fixed would need
-   exact pixel heights the code cannot measure. What this version fixes:
-   the logo no longer floats mid-sidebar (it sticks at the top edge, just
-   below the fixed toolbar, solid background, same as v3.21) and nothing is
-   hidden at rest. If zero coverage even while scrolling is required, the
-   logo must scroll away with the content (unpin it) — a user decision. */
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) {
-  position: sticky; z-index: 10; background: var(--rf-surface); top: 3.5rem;
+   v3.24.3 — DECISION (b), user-chosen: the logo STAYS pinned, with a SOLID
+   OPAQUE backing so scrolling content can neither show through it nor cover
+   it. Root cause of the v3.24.2 overlap, verified against the 1.67 DOM: the
+   old selector matched EVERY vertical block in the sidebar, INCLUDING the
+   nested blocks inside the Language/Theme columns — so the "English" and
+   "🌙 Dark" buttons were themselves position:sticky at top:3.5rem with
+   z-index 10, and (same z-index, later in the DOM) they painted OVER the
+   logo while scrolling. The rule below is scoped to the TOP-LEVEL block
+   only (stSidebarUserContent > stVerticalBlock), and the nested-block rule
+   after it explicitly un-sticks anything inside columns. The wrapper gets
+   an opaque sidebar-coloured background (!important) plus z-index 20, and
+   the .rf-logo element itself gets the same solid background as a second
+   layer. Sticky top is 3.75rem (exactly the fixed main header's height) so
+   the stuck logo sits just below the header instead of sliding 4px under
+   it. At rest nothing is hidden; while scrolling, nav items pass behind the
+   opaque logo — that is the intended pinned behaviour. */
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"] > div:nth-child(1) {
+  position: sticky; z-index: 20; background: var(--rf-surface) !important; top: 3.75rem;
   border-bottom: 1px solid var(--rf-line); padding-bottom: .15rem;
+}
+/* Never let a button inside a sidebar column become sticky (see above). */
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] [data-testid="stVerticalBlock"] > div {
+  position: static !important;
 }
 
 /* v3.24: the current-project label is gone (project shows in the stage
@@ -2034,7 +2066,10 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 }
 
 /* Sidebar logo + user card */
-.rf-logo { display: flex; align-items: center; gap: 10px; padding: 0 4px 14px; }
+/* v3.24.3 (logo decision b): the logo element itself carries the same solid
+   opaque sidebar background as its sticky wrapper, so the logo text can
+   never be covered by scrolling content even if the wrapper rule is missed. */
+.rf-logo { display: flex; align-items: center; gap: 10px; padding: 0 4px 14px; background: var(--rf-surface); }
 .rf-logo-tx { color: var(--rf-ink); font-size: 19px; font-weight: 700; line-height: 1.5; }
 .rf-logo-sub { color: var(--rf-muted); font-size: 11px; margin-top: 2px; }
 .rf-user { display: flex; align-items: center; gap: 10px; padding: 12px 10px 4px; margin-top: 8px; border-top: 1px solid var(--rf-line); }
@@ -2044,8 +2079,21 @@ section[data-testid="stSidebar"][aria-expanded="true"] > div {
 
 /* Typography and section headings */
 h1, h2, h3 { color: var(--rf-ink); letter-spacing: 0; }
-/* v3.24.1: headings must never slide under the fixed Streamlit header (#13). */
-h1, h2, h3, .rf-sh { scroll-margin-top: 5rem; }
+/* v3.24.1: headings must never slide under the fixed Streamlit header (#13).
+   v3.24.3 (#5): 6rem — the header is 3.75rem tall, so anchor-scrolled
+   headings stop 36px clear of it; html scroll-padding covers the same for
+   any other anchor jump.
+   KNOWN LIMIT (v3.24.3 #5, not fixable in CSS/Python): a page can still OPEN
+   scrolled down (e.g. Data Cleansing opening with its heading below the
+   fold) because Streamlit preserves the scroll position across reruns and
+   this app navigates with session_state + st.rerun(). CSS cannot force a
+   scroll-to-top, and st.html strips <script> in its default path (verified
+   in the 1.67 Html chunk — scripts run only when unsafeAllowJavascript is
+   set, which the Python st.html API does not expose). The proper fix is
+   native navigation (st.navigation scrolls to top on page change) or a
+   custom component — a bigger change, left for a later version. */
+h1, h2, h3, .rf-sh { scroll-margin-top: 6rem; }
+html { scroll-padding-top: 6rem; }
 h1 { font-weight: 600; }
 h2, h3 { font-weight: 600; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
@@ -2109,12 +2157,25 @@ h2, h3 { font-weight: 600; }
 /* v3.24.2 (#7): table-layout fixed + overflow-wrap anywhere squeezed the
    table at 1341px and broke headers/cells mid-word ("Dat e & Tim e").
    Cells are now nowrap and the table scrolls horizontally inside its own
-   wrapper instead of squeezing — the wrapper's overflow-x already handles it. */
+   wrapper instead of squeezing — the wrapper's overflow-x already handles it.
+   v3.24.3 (#3): the nowrap fix kept the Status column cut off at the right
+   edge (only a green sliver of the "Completed" pill showed, behind the
+   table's own horizontal scrollbar). The table's natural width (~690px) is
+   far wider than its ~440px column, so scrolling was unavoidable. Now the
+   table is fixed-layout at 100% of its container: Date/Activity/Status wrap
+   at WORD boundaries only (never mid-word), the long File name truncates
+   with an ellipsis (full name on hover via the title attribute), and the
+   Status column gets a guaranteed 20% so the whole pill always fits — no
+   horizontal scrolling at 1341px. */
 .rf-table-wrap { overflow-x: auto; }
-.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: auto; }
-.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; letter-spacing: 0; padding: 10px 12px; border-bottom: 1px solid var(--rf-border); line-height: 1.6; white-space: nowrap; }
-.rf-table td { padding: 8px 12px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; line-height: 1.6; white-space: nowrap; }
-.rf-table td:first-child { white-space: nowrap; }
+.rf-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
+.rf-table th:nth-child(1), .rf-table td:nth-child(1) { width: 26%; }
+.rf-table th:nth-child(2), .rf-table td:nth-child(2) { width: 30%; }
+.rf-table th:nth-child(3), .rf-table td:nth-child(3) { width: 24%; }
+.rf-table th:nth-child(4), .rf-table td:nth-child(4) { width: 20%; }
+.rf-table th { text-align: left; color: #64748B; font-size: 12px; font-weight: 700; letter-spacing: 0; padding: 10px 8px; border-bottom: 1px solid var(--rf-border); line-height: 1.6; white-space: normal; overflow-wrap: normal; word-break: normal; overflow: hidden; }
+.rf-table td { padding: 8px; border-bottom: 1px solid #EEF2F8; color: #10264A; vertical-align: middle; line-height: 1.6; white-space: normal; overflow-wrap: normal; word-break: normal; overflow: hidden; }
+.rf-table td:nth-child(2) { white-space: nowrap; text-overflow: ellipsis; }
 .rf-table tr:last-child td { border-bottom: none; }
 .rf-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #E2F5EE; color: #0E7A5F; white-space: nowrap; }
 /* v3.24.2 (#7) safety net: on narrow screens the Dashboard bottom row
@@ -2173,7 +2234,7 @@ hr { border-color: var(--rf-line); }
   background: #FFFFFF; border: 1px solid var(--rf-line); border-left: 4px solid var(--rf-accent);
   border-radius: 10px; padding: 12px 18px; margin: 0 0 10px; }
 .rf-sh-k { color: var(--rf-muted); font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 1.6; }
-.rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.6; overflow-wrap: anywhere; }
+.rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.7; overflow-wrap: anywhere; }
 .rf-sh-p { color: var(--rf-muted); font-size: 13px; line-height: 1.6; }
 .rf-sh-b { padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .rf-sh-b.done { background: #E2F5EE; color: #0E7A5F; }
@@ -2250,7 +2311,8 @@ DARK_CSS = """<style>
 section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; border-right-color: #334155; }
 [data-testid="stSidebar"] { background: #0F172A; border-right-color: #334155; }
 [data-testid="stSidebar"] .stButton > button:hover { background: #1E293B; }
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div:nth-child(1) { background: #0F172A; }
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > [data-testid="stVerticalBlock"] > div:nth-child(1) { background: #0F172A !important; }
+.rf-logo { background: #0F172A !important; }
 .rf-hero { background: linear-gradient(115deg, #0F1B33 0%, #12233F 55%, #0F2A33 100%); border-color: #1E293B; }
 .rf-hero h1 { color: #F8FAFC; }
 .rf-hero p { color: #CBD5E1; }
@@ -2305,19 +2367,27 @@ section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; bo
 .rf-land-note { color: #94A3B8; }
 /* v3.24.1 — Dark theme widget re-theming (#2-#8, #12). */
 /* Streamlit chrome: solid themed header so no white bar floats over dark
-   content or over the sidebar header when the sidebar scrolls (#7, #13). */
-[data-testid="stHeader"] { background: #0F172A !important; }
+   content or over the sidebar header when the sidebar scrolls (#7, #13).
+   v3.24.3 (#5): bottom border so the header's edge is visible against dark
+   content; the collapse button (forced visible in CUSTOM_CSS) gets a light
+   colour here — the 1.67 bundle gives its icon fadedText60 from the LIGHT
+   theme, which is faint dark-grey on the dark sidebar. */
+[data-testid="stHeader"] { background: #0F172A !important; border-bottom: 1px solid #334155; }
 [data-testid="stHeader"] button { color: #F8FAFC !important; }
 [data-testid="stHeader"] a { color: #F8FAFC !important; }
-[data-testid="stToolbar"] { color: #F8FAFC !important; }
-/* Widget labels, captions and radio/checkbox option text (#2, #3). */
+[data-testid="stToolbar"] { color: #F8FAFC !important; background: #0F172A !important; }
+[data-testid="stSidebarCollapseButton"] { color: #CBD5E1 !important; }
+[data-testid="stSidebarCollapseButton"] span, [data-testid="stSidebarCollapseButton"] svg { color: #CBD5E1 !important; fill: #CBD5E1 !important; }
+/* Widget labels, captions and radio/checkbox option text (#2, #3).
+   v3.24.3 (#7): radio/checkbox option labels (e.g. "ခွဲခြမ်းစိတ်ဖြာမှု") get
+   line-height 1.8 so Myanmar stacking diacritics are not cramped. */
 [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
-[data-testid="stWidgetLabel"] div { color: #F8FAFC !important; line-height: 1.6; }
+[data-testid="stWidgetLabel"] div { color: #F8FAFC !important; line-height: 1.7; }
 [data-testid="stCaptionContainer"] { color: #CBD5E1 !important; }
 [data-testid="stRadio"] label p, [data-testid="stRadio"] label div,
 [data-testid="stRadio"] label span,
 [data-testid="stCheckbox"] label p, [data-testid="stCheckbox"] label div,
-[data-testid="stCheckbox"] label span { color: #F8FAFC !important; line-height: 1.6; }
+[data-testid="stCheckbox"] label span { color: #F8FAFC !important; line-height: 1.8; }
 [data-testid="stRadio"] label:has(input:checked) p,
 [data-testid="stRadio"] label:has(input:checked) div { color: #FFFFFF !important; font-weight: 700; }
 [data-testid="stRadio"] input[type="radio"], [data-testid="stCheckbox"] input[type="checkbox"] { accent-color: #3B82F6; }
@@ -2337,6 +2407,19 @@ section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; bo
 [data-testid="stSelectbox"] input::placeholder, [data-testid="stMultiSelect"] input::placeholder { color: #94A3B8 !important; opacity: 1 !important; }
 [data-testid="stSelectbox"] button, [data-testid="stMultiSelect"] button { color: #F8FAFC !important; }
 [data-testid="stSelectbox"] svg, [data-testid="stMultiSelect"] svg { fill: #CBD5E1 !important; }
+/* v3.24.3 (#1): the multiselect's WHITE CHEVRON PATCH. The v3.24.2 rule
+   themed only div:has(> input) — inside a multiselect that is the TAGS
+   container, not the field itself. Verified against the 1.67 bundle
+   (Multiselect chunk): the field container is the div directly holding
+   [data-testid="stMultiSelectTagsContainer"], with backgroundColor
+   secondaryBg (white in the light theme Streamlit runs) and the "Open"
+   button (aria-label="Open", transparent background) sitting on it at the
+   right end — so the tags area went dark while the strip behind the chevron
+   stayed white. Theme the field container itself dark, and keep the Open
+   button transparent with a light chevron so the patch disappears. */
+[data-testid="stMultiSelect"] div:has(> [data-testid="stMultiSelectTagsContainer"]) { background-color: #0F172A !important; border-color: #334155 !important; }
+[data-testid="stMultiSelect"] button[aria-label="Open"] { background-color: transparent !important; color: #F8FAFC !important; }
+[data-testid="stMultiSelect"] button[aria-label="Open"] span { color: #F8FAFC !important; }
 [data-testid="stSelectboxVirtualDropdown"],
 [data-testid="stMultiSelectDropdown"] { background-color: #1E293B !important; border: 1px solid #334155 !important; }
 [data-testid="stSelectboxVirtualDropdown"] ul, [data-testid="stMultiSelectDropdown"] ul,
@@ -2376,7 +2459,14 @@ input::placeholder, textarea::placeholder { color: #94A3B8 !important; opacity: 
 [data-testid="stAudioInput"] { border: 1px solid #334155 !important; border-radius: 8px; }
 [data-testid="stAudioInput"] div { background-color: #1E293B !important; }
 [data-testid="stAudioInput"] p, [data-testid="stAudioInput"] span { color: #F8FAFC !important; }
-[data-testid="stAudioInputWaveformTimeCode"] { color: #F8FAFC !important; }
+/* v3.24.3 (#2): the TIMER WHITE RECTANGLE. The v3.24.2 rule set only the
+   timer's text colour — but the timer (stAudioInputWaveformTimeCode) is a
+   <span> with its OWN backgroundColor: secondaryBg (verified in the 1.67
+   AudioInput chunk: the ge component is i(`span`, ...) with
+   backgroundColor: e.colors.secondaryBg), and the broad div rule never
+   matched a span — so the digits went white on a white box. Theme the
+   span's background dark as well as its text. */
+[data-testid="stAudioInputWaveformTimeCode"] { color: #F8FAFC !important; background-color: #1E293B !important; }
 [data-testid="stAudioInput"] button { background-color: #334155 !important; color: #F8FAFC !important; border-color: #475569 !important; }
 [data-testid="stAudioInput"] button svg { fill: #F8FAFC !important; }
 /* Tabs, expander headers, number-input steppers, date/time inputs. */
@@ -3017,17 +3107,17 @@ if page == "Dashboard":
 
     # v3.24: Recent Activities + Quick Actions + System Status, side by side.
     # Every row is real data only — no fake activities, no fake deltas.
-    _ra, _qa, _ss = st.columns([1.35, 1, 1])  # v3.24.1 (#9): Recent Activity needs the most room
+    _ra, _qa, _ss = st.columns([1.6, 0.85, 1])  # v3.24.3 (#3): Recent Activity needs more room so the Status column fits; Quick Actions buttons are short and System Status wraps fine in less width
     with _ra:
         with st.container(border=True):
             st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
             _act = recent_activity()
             if _act:
                 _rows = "".join(
-                    f"<tr><td>{html.escape(_t)}</td><td>{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
+                    f"<tr><td>{html.escape(_t)}</td><td title=\"{html.escape(_f, quote=True)}\">{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
                     f'<td><span class="rf-badge">{html.escape(_s)}</span></td></tr>'
                     for _t, _f, _a, _s in _act
-                )
+                )  # v3.24.3 (#3): the File cell truncates with an ellipsis in CSS — the title attribute keeps the full name on hover.
                 st.markdown(
                     '<div class="rf-table-wrap"><table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
                     + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
