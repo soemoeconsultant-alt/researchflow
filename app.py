@@ -26,7 +26,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.24.4"
+APP_VERSION = "3.24.5"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1830,7 +1830,13 @@ CUSTOM_CSS = """
    matched anything (Streamlit 1.67 sets the icon font via an emotion
    hashed class, not a material-symbols-* class). v3.24.2 restores the icon
    font on the real identifiers (see the stIconMaterial rule below). */
-.stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; }
+.stApp { font-family: 'IBM Plex Sans', 'Noto Sans Myanmar', 'Myanmar Text', 'Pyidaungsu', -apple-system, 'Segoe UI', sans-serif; font-synthesis: none; }
+/* v3.24.5 (#2): font-synthesis:none — if a bold face is ever missing for the
+   font in use, the browser must NOT fake bold by stroking the glyphs: faux
+   bold is what crushes Myanmar stacked/medial marks together. Real bold
+   faces exist for Noto Sans Myanmar (variable wght 100-900) and IBM Plex
+   Sans, so this changes nothing when the fonts load; it only protects the
+   fallback case. */
 .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6, .stApp p,
 .stApp div, .stApp span, .stApp label, .stApp button, .stApp input,
 .stApp textarea, .stApp select, .stApp li, .stApp td, .stApp th,
@@ -1962,8 +1968,17 @@ section[data-testid="stSidebar"][aria-expanded="true"] > [data-testid="stSidebar
    button alone and drop its margin. The collapse button (stSidebarCollapseButton)
    is visibility:hidden until the sidebar is hovered (verified in the 1.67
    bundle: the jx wrapper toggles visibility on showSidebarCollapse) — force
-   it visible on load so it is always reachable. */
-[data-testid="stSidebarHeader"] { height: auto !important; min-height: 2.5rem !important; margin-bottom: 0 !important; justify-content: flex-end !important; }
+   it visible on load so it is always reachable.
+   v3.24.5 (#3): the Light gap above the logo is ~2x the Dark gap (~95-105px
+   vs ~48-50px) and NO theme-dependent geometry rule exists in code — every
+   gap rule is theme-independent and DARK_CSS touches no sidebar-header
+   geometry, so the cause could not be identified statically. Fix by
+   construction: pin the header row to exactly 2.5rem (fixed height,
+   overflow hidden, zero padding/margin) in BOTH theme blocks, so both
+   themes MUST render the same 40px header + 0.5rem padding = ~48px gap.
+   If the Light gap is still ~100px live, the next step is a live DOM
+   inspection of the header's children in Light mode. */
+[data-testid="stSidebarHeader"] { height: 2.5rem !important; min-height: 2.5rem !important; max-height: 2.5rem !important; padding: 0 !important; margin-bottom: 0 !important; overflow: hidden !important; justify-content: flex-end !important; }
 [data-testid="stLogoSpacer"] { display: none !important; }
 [data-testid="stSidebarCollapseButton"] { visibility: visible !important; opacity: 1 !important; }
 
@@ -2113,10 +2128,28 @@ h1, h2, h3 { color: var(--rf-ink); letter-spacing: 0; }
    st.html strips <script> was WRONG for 1.67: the Python API exposes
    st.html(body, unsafe_allow_javascript=True) (html.py:52) and the
    frontend Html chunk re-creates <script> elements so they run in the main
-   document (not iframed). No native-navigation refactor was needed. */
-h1, h2, h3, .rf-sh { scroll-margin-top: 6rem; }
+   document (not iframed). No native-navigation refactor was needed.
+   v3.24.5 (#1b): free manual scrolling can still stop with content
+   half-under the fixed toolbar — scroll-padding/scroll-margin only affect
+   anchor jumps, not free scroll stops. The CSS mechanism for scroll stops
+   is scroll-snap: `y proximity` on the real scroll container + `start`
+   alignment on headings, the stage card, radio rows and stat cards. With
+   proximity (not mandatory) the snap only engages when the stop is already
+   near a snap point, so normal scrolling feels unchanged; a heading/radio/
+   card that would rest half-under the toolbar instead settles with its top
+   6rem below the viewport top (scroll-padding), i.e. just below the 60px
+   toolbar. If the user dislikes the feel, delete the two scroll-snap lines
+   below — everything else still works.
+   v3.24.5 (#1a): main vertical-block gap 1rem -> 0.65rem. The stage pages
+   stack search bar + stage card + two radio rows + step title; at 743px
+   viewport the title sat half below the fold. Together with the compacted
+   stage card above this reclaims ~35px so the title fits in the first
+   viewport. 0.65rem is still generous spacing everywhere else. */
+h1, h2, h3, .rf-sh, [data-testid="stRadio"], .rf-metric { scroll-margin-top: 6rem; }
 html { scroll-padding-top: 6rem; }
-[data-testid="stMain"] { scroll-padding-top: 6rem; }
+[data-testid="stMain"] { scroll-padding-top: 6rem; scroll-snap-type: y proximity; }
+h1, h2, h3, .rf-sh, [data-testid="stRadio"], .rf-metric { scroll-snap-align: start; }
+[data-testid="stMainBlockContainer"] [data-testid="stVerticalBlock"] { gap: 0.65rem; }
 h1 { font-weight: 600; }
 h2, h3 { font-weight: 600; }
 [data-testid="stCaptionContainer"] { color: var(--rf-muted); }
@@ -2255,7 +2288,10 @@ hr { border-color: var(--rf-line); }
 /* v3.23 stage header: stage number + name + project + status badge. */
 .rf-sh { display: flex; align-items: center; justify-content: space-between; gap: 16px;
   background: #FFFFFF; border: 1px solid var(--rf-line); border-left: 4px solid var(--rf-accent);
-  border-radius: 10px; padding: 12px 18px; margin: 0 0 10px; }
+  border-radius: 10px; padding: 8px 18px; margin: 0 0 6px; }
+/* v3.24.5 (#1a): stage card compacted (padding 12px->8px, margin 10px->6px)
+   so the step title below the Section/Step radio rows fits in the first
+   viewport at 743px height instead of sitting half below the fold. */
 .rf-sh-k { color: var(--rf-muted); font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 1.6; }
 .rf-sh-t { color: var(--rf-ink); font-size: 20px; font-weight: 700; line-height: 1.7; overflow-wrap: anywhere; }
 .rf-sh-p { color: var(--rf-muted); font-size: 13px; line-height: 1.6; }
@@ -2333,6 +2369,9 @@ DARK_CSS = """<style>
 .stApp { background: #0B1220; color: #F8FAFC; }
 section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; border-right-color: #334155; }
 [data-testid="stSidebar"] { background: #0F172A; border-right-color: #334155; }
+/* v3.24.5 (#3): pin the sidebar header row to exactly 2.5rem in Dark too,
+   so both theme blocks render the same ~48px gap above the logo. */
+[data-testid="stSidebarHeader"] { height: 2.5rem !important; min-height: 2.5rem !important; max-height: 2.5rem !important; padding: 0 !important; margin-bottom: 0 !important; overflow: hidden !important; }
 [data-testid="stSidebar"] .stButton > button:hover { background: #1E293B; }
 [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] > div[data-testid="stElementContainer"]:has(.rf-logo) { background: #0F172A !important; }
 .rf-logo { background: #0F172A !important; }
@@ -2511,31 +2550,57 @@ st.markdown(_theme_root, unsafe_allow_html=True)
 if _THEME_NAME == "dark":
     st.markdown(DARK_CSS, unsafe_allow_html=True)
 
-# v3.24.4 (#4): make sure Noto Sans Myanmar actually LOADS. The font stack
-# and the @import in CUSTOM_CSS look right on paper, yet bold Myanmar text
-# (the "မြန်မာ" button, "တင်ပြမှု" heading, "ခွဲခြမ်းစိတ်ဖြာမှု" radio
-# labels — all weight 600/700) still renders with stacked/medial marks
-# piled up, while regular-weight Myanmar is clean, and raising line-height
-# to 1.8 had no visible effect. That pattern points at the FONT, not the
-# spacing: if Noto Sans Myanmar never loads, the text falls back to the
-# system Myanmar font, whose bold face positions stacked marks tightly.
-# The @import lives inside a <style> block injected through st.markdown,
-# which is sanitised — the import may never reach the browser. So load the
-# same Google Fonts stylesheet a second way: a tiny script (st.html with
-# unsafe_allow_javascript=True — the Python API DOES expose it in 1.67,
-# html.py:52; the frontend re-creates <script> elements so they run in the
-# main document, not an iframe) that appends a <link> to document.head.
-# A script-created <link> is not subject to HTML sanitising, so it loads
-# even if the @import is stripped. The URL is identical to the @import, so
-# the browser de-duplicates it if the @import did load. Runs once per
-# session (the <link> stays in <head> after this element unmounts).
-# If the marks are STILL tight after this, check in the live browser whether
-# fonts.googleapis.com is reachable at all (computed font-family /
-# document.fonts) — a blocked font CDN would need a bundled font instead.
+# v3.24.5 (#2): Myanmar diacritics — full diagnosis, verified 2026-11-16.
+# What was RULED OUT (with evidence):
+# (a) Font weights: Google Fonts serves Noto Sans Myanmar as a VARIABLE font
+#     (fvar wght 100-900, GPOS/GSUB present) — one woff2 per subset covers
+#     ALL weights 400-800, each with the Myanmar subset (U+1000-109F).
+#     Verified with curl: HTTP 200, 39 @font-face blocks, all five weights
+#     of the Myanmar subset point at the same file. Bold faces are REAL,
+#     not synthesised — weights are NOT the problem.
+# (b) Shaping: HarfBuzz shaping of the three problem strings ("မြန်မာ",
+#     "တင်ပြမှု", "ခွဲခြမ်းစိတ်ဖြာမှု") with the real variable font gives
+#     IDENTICAL glyph sequences, offsets and advances at wght 400 and 700
+#     — the shaper positions marks identically at both weights, so Noto
+#     itself shapes correctly.
+# (c) Loader gating: the v3.24.4 loader sets _font_link_loaded before
+#     emitting st.html, guards duplicates via link[data-rf-font], uses the
+#     exact @import URL, and unsafe_allow_javascript=True is set. Scripts
+#     DO execute (the scroll-to-top script on the same mechanism works
+#     live). No gating bug found.
+# (d) Font stack: the .stApp stack covers buttons/headings/labels; the only
+#     font-family rules without Noto are the Material Symbols icon rules
+#     (correct). No stack bug found.
+# CONCLUSION: the code-side font pipeline is correct, yet the v3.24.4 loader
+# produced NO visible change — so the font almost certainly never reaches
+# the user's browser (fonts.googleapis.com / fonts.gstatic.com unreachable
+# or blocked from his browser/network) and the fallback font renders bold
+# Myanmar marks tight. The fix is to stop depending on Google Fonts:
+# BUNDLED FONT. The Noto Sans Myanmar variable woff2 files are served from
+# the project's own GitHub Pages (same host as the privacy page, already
+# proven reachable) via @font-face rules injected by this script as a
+# script-created <style> (never sanitised). The Google Fonts <link> stays
+# as well: the bundled face is appended first, so CSS font matching tries
+# it first and falls through to Google's face if the bundled file 404s —
+# the app works before AND after the files are uploaded.
+# *** FILES THE USER MUST UPLOAD TO THE REPO (GitHub web UI, Add file): ***
+#   static/fonts/noto-sans-myanmar-myanmar.woff2  (153,980 bytes, Myanmar subset, wght 100-900)
+#   static/fonts/noto-sans-myanmar-latin.woff2    (31,596 bytes, latin subset, wght 100-900)
+#   Staging copies are in the workspace at files/static/fonts/ (same names).
+#   Until they are uploaded, the @font-face rules 404 harmlessly and the
+#   Google Fonts link remains the only source (current behaviour).
+# If the marks are STILL tight after the files are uploaded and the app is
+# reloaded, the cause is NOT the font at all — then check live in the
+# browser: getComputedStyle(el).fontFamily on the "မြန်မာ" button and
+# document.fonts.check('700 16px "Noto Sans Myanmar"', 'မြ') — that tells
+# whether Noto is actually the used font.
+# v3.24.5 also adds font-synthesis:none on .stApp (see CUSTOM_CSS): if a
+# bold face is ever missing, the browser must not fake bold by stroking
+# glyphs — faux bold is what crushes stacked marks.
 if "_font_link_loaded" not in st.session_state:
     st.session_state["_font_link_loaded"] = True
     st.html(
-        """<script>(function(){if(!document.querySelector('link[data-rf-font]')){var l=document.createElement('link');l.rel='stylesheet';l.setAttribute('data-rf-font','1');l.href='https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap';document.head.appendChild(l);}})();</script>""",
+        """<script>(function(){if(!document.querySelector('style[data-rf-font-face]')){var s=document.createElement('style');s.setAttribute('data-rf-font-face','1');s.textContent="@font-face{font-family:'Noto Sans Myanmar';font-style:normal;font-weight:100 900;font-display:swap;src:url('https://soemoeconsultant-alt.github.io/researchflow/static/fonts/noto-sans-myanmar-myanmar.woff2') format('woff2');unicode-range:U+1000-109F,U+200C-200D,U+25CC,U+A92E,U+A9E0-A9FE,U+AA60-AA7F,U+116D0-116E3;}"+"@font-face{font-family:'Noto Sans Myanmar';font-style:normal;font-weight:100 900;font-display:swap;src:url('https://soemoeconsultant-alt.github.io/researchflow/static/fonts/noto-sans-myanmar-latin.woff2') format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;}";document.head.appendChild(s);}if(!document.querySelector('link[data-rf-font]')){var l=document.createElement('link');l.rel='stylesheet';l.setAttribute('data-rf-font','1');l.href='https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+Myanmar:wght@400;500;600;700;800&display=swap';document.head.appendChild(l);}})();</script>""",
         unsafe_allow_javascript=True,
     )
 
@@ -3043,8 +3108,12 @@ if _stage_no:
 # view; that cannot (and should not) be prevented with CSS.
 if st.session_state.get("_last_scrolled_page") != page:
     st.session_state["_last_scrolled_page"] = page
+    # v3.24.5 (#1): second attempt at 300ms — cheap insurance in case
+    # Streamlit restores the old scroll position after the 60ms attempt on a
+    # slow rerun. Gated on a real page change only, and it runs within 300ms
+    # of the page-change render, so the user cannot have scrolled yet.
     st.html(
-        """<script>setTimeout(function(){var m=document.querySelector('[data-testid="stMain"]');if(m){m.scrollTop=0;}window.scrollTo(0,0);},60);</script>""",
+        """<script>(function(){function t(){var m=document.querySelector('[data-testid="stMain"]');if(m){m.scrollTop=0;}window.scrollTo(0,0);}setTimeout(t,60);setTimeout(t,300);})();</script>""",
         unsafe_allow_javascript=True,
     )
 
