@@ -29,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.29"
+APP_VERSION = "3.30"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2642,7 +2642,16 @@ DG_DRAFT_TEMPLATE = (
     "formal. Mostly English with an occasional Myanmar line where the moderator "
     "needs it; never mix English and Myanmar in the same line. Build "
     "persona-specific probe blocks ONLY from the personas listed in the design; "
-    "if the design lists no personas, do not invent persona groups. Length: "
+    "if the design lists no personas, do not invent persona groups. Adapt the "
+    "format to this project — use the sample format as a starting structure "
+    "only and write fresh questions from this project's own brief, objectives "
+    "and target; do not copy sample questions word for word. Go deep: use "
+    "laddering follow-ups ('why is that important?') and at least one "
+    "projective question where the objectives allow it; add segment-specific "
+    "probes where the design lists personas or bands. Before finishing, "
+    "verify: every brief objective has a section; section timings sum to the "
+    "session length; no invented moderator, recording, venue, date, or fee. "
+    "Fix any failure before returning the guide. Length: "
     "FGD about 2,000-2,500 words, IDI about 1,000-1,500 words.\n\n"
     "Write the guide EXACTLY in this markup (the app turns it into a Word file):\n"
     "# DISCUSSION GUIDE FOR <Project name> (<Client name>)\n"
@@ -2680,22 +2689,20 @@ QUESTIONNAIRE_DRAFT_TEMPLATE = (
     "use [Brand X] style placeholders where a real name is missing. Never "
     "invent dates, venues, fees, interviewer or moderator names, or a "
     "recording setup — use [Venue], [Date], [Interviewer] style placeholders "
-    "or leave them out. Start "
-    "with a short screening section (simple fail to end: category use, "
-    "frequency, and any age/area/education/spend rule the brief states). Then "
-    "sections that follow the brief objectives, using the brief's respondent "
-    "criteria for who the questions fit. EVERY question carries an outcome "
-    "rule in plain words: Terminate (which answer ends the interview), "
-    "Continue, a group assignment (e.g. '<answer> → Group <n>'), or a quota "
-    "tag (e.g. '<segment>'). Use the design's personas, quotas, and "
-    "screening criteria for those rules. Question types: single_select, "
+    "or leave them out. Never invent an exclusion criterion (for example a "
+    "prior-research time window) — only use exclusions stated in the brief or "
+    "in the design's screening criteria. Never assign a group unless the "
+    "design lists quotas or groups — otherwise the outcome is only Continue "
+    "or Terminate. Sensitive demographic questions (for example gender, "
+    "observed) are recorded, never Terminate. The mode block after this "
+    "template (screener-only, or full questionnaire) says which sections to "
+    "build — follow it exactly. Question types: single_select, "
     "multi_select, ranking_top3 (pick the top 3), likert_1_5 (a statement, "
     "answered 1-5), rating (1-5 or 1-10), open_text, numeric, observed "
     "(observe and record — do not ask, e.g. gender with a quota note), "
-    "contact (name + phone capture). No complex skip logic. About 15-30 "
-    "questions in total — do not pad. Include an intro script the recruiter "
-    "reads (study intro, session length, incentive, venue as [Venue]) and a "
-    "short closing thank-you.\n"
+    "contact (name + phone capture). No complex skip logic. Include an intro "
+    "script the recruiter reads (study intro, session length, incentive, "
+    "venue as [Venue]) and a short closing thank-you.\n"
     "Language: store every question ONCE with BOTH English and Myanmar text in "
     "parallel (same Q numbers and codes for both versions). Write the Myanmar "
     "in everyday colloquial Myanmar, no English mixed in — except food-category "
@@ -2718,6 +2725,39 @@ QUESTIONNAIRE_DRAFT_TEMPLATE = (
     '"required": true, "appearance": "", "relevant": "", "constraint": "", "constraint_message": ""}]}\n'
     "Options are separated by ' | ' (options contain commas, so never use commas as the separator). "
     "For numeric, date, note, observed, and contact questions, leave options empty.\n"
+)
+
+# v3.30 (P1/P2): the questionnaire draft is mode-aware. Qualitative IDI/FGD
+# studies get a screener ONLY — the old template's "sections that follow the
+# brief objectives" instruction put 14 discussion questions into the trial
+# screener (Q8-Q21), and its group-assignment instruction made the model
+# invent a six-group split the brief left to-confirm (Q21). Survey studies
+# keep the full questionnaire. _run_q_draft() appends the matching block to
+# the prompt; both blocks are also shown as Prompt Library variants.
+QUESTIONNAIRE_SCREENER_MODE = (
+    "MODE: SCREENER ONLY (Qualitative IDI/FGD, no Survey). Produce a "
+    "screening section ONLY — as many questions as the screening criteria "
+    "require (few criteria, about 10-15 questions; many criteria, 30-40 or "
+    "more), eligibility only: who qualifies for the interview and who is "
+    "screened out (category use, frequency, and any age/area/education/spend "
+    "rule the brief states). Do not fix the count — follow the criteria. "
+    "Do NOT add sections that follow the brief objectives — motivations, "
+    "aspirations, culture, comparisons and opinions belong in the Discussion "
+    "Guide, not in a screener. EVERY question carries an outcome rule in "
+    "plain words: Terminate (which answer ends the interview) or Continue — "
+    "nothing else. No group assignment, no quota tag. Use the design's "
+    "screening criteria for those rules."
+)
+QUESTIONNAIRE_SURVEY_MODE = (
+    "MODE: FULL QUESTIONNAIRE (Survey present). Start with a short screening "
+    "section (simple fail to end: category use, frequency, and any "
+    "age/area/education/spend rule the brief states). Then sections that "
+    "follow the brief objectives, using the brief's respondent criteria for "
+    "who the questions fit. EVERY question carries an outcome rule in plain "
+    "words: Terminate (which answer ends the interview), Continue, a group "
+    "assignment (e.g. '<answer> → Group <n>'), or a quota tag (e.g. "
+    "'<segment>'). Use the design's personas, quotas, and screening criteria "
+    "for those rules. About 15-30 questions in total — do not pad."
 )
 
 PROMPT_LIBRARY = {
@@ -2782,9 +2822,13 @@ PROMPT_LIBRARY = {
     "questionnaire": {
         "name": "9. Questionnaire Draft Engine",
         "icon": "📋",
-        "purpose": "Drafts a questionnaire structure from the saved brief + research design as JSON (section, question, type, options). Screening first (simple fail to end), then objective sections. Respondent language: everyday colloquial Myanmar unless the design says English. One Gemini request per draft.",
+        "purpose": "Drafts a questionnaire structure from the saved brief + research design as JSON (section, question, type, options). Screener-only for Qualitative IDI/FGD (eligibility only; question count follows the screening criteria); screening first, then objective sections, when a Survey is present. Respondent language: everyday colloquial Myanmar unless the design says English. One Gemini request per draft.",
         "used_by": "Research Design page (AI draft Questionnaire)",
         "template": QUESTIONNAIRE_DRAFT_TEMPLATE,
+        "variants": {
+            "Screener only (Qualitative IDI/FGD)": QUESTIONNAIRE_SCREENER_MODE,
+            "Full questionnaire (Survey)": QUESTIONNAIRE_SURVEY_MODE,
+        },
     },
 }
 
@@ -6521,7 +6565,14 @@ elif page == "Research Design":
 
     def _run_q_draft():
         _lang_note = (" — write the questions in everyday colloquial Myanmar (respondent language); store both EN and MM text for every question." if _q_lang == "Myanmar" else " — write the questions in English; store the Myanmar text the same as the English text.")
-        _prompt = (PROMPT_LIBRARY["questionnaire"]["template"] + "\n\n"
+        # v3.30 (P1): the questionnaire draft is mode-aware. Qualitative
+        # IDI/FGD studies get a screener ONLY (eligibility; question count
+        # follows the screening criteria); a Survey method keeps the full
+        # questionnaire (screening + objective sections). No method selected
+        # defaults to the narrower screener mode.
+        _q_methods = _draft_design.get("methods", []) or []
+        _q_mode = QUESTIONNAIRE_SURVEY_MODE if "Survey" in _q_methods else QUESTIONNAIRE_SCREENER_MODE
+        _prompt = (PROMPT_LIBRARY["questionnaire"]["template"] + "\n\n" + _q_mode + "\n\n"
                    + _design_prompt_context(_brief, _draft_design)
                    + "\n\nQuestionnaire language: " + _q_lang + _lang_note)
         with st.spinner(T("Drafting the questionnaire…", "Questionnaire ရေးနေတယ်…")):
