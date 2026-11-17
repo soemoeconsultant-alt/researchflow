@@ -29,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.30"
+APP_VERSION = "3.31"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4110,6 +4110,234 @@ def proposal_to_docx(blocks):
 DG_SECTION_FILL = "FFC000"  # amber section-heading fill (house format)
 
 
+# --- Stage 2 self-checks (v3.31, P6–P8) ---
+# Deterministic programmatic checks on AI drafts and saved instruments.
+# No Gemini is used here. Every result is a dict with id / severity /
+# status / description / evidence / recommendation. Results are warnings
+# and recommendations only — they NEVER block saving or exporting. The
+# researcher is the final judge. Results are computed fresh on every
+# render from the current text; nothing is stored, so a verdict can never
+# go stale.
+_DG_SECTION_TIMING_RE = re.compile(r"^##\s*Section\s+(\d+)\s*:.*?\((\d+)\s*mins?\)\s*$", re.IGNORECASE)
+_DG_SECTION_HEAD_RE = re.compile(r"^##\s*Section\s+(\d+)\s*:", re.IGNORECASE)
+_DG_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_DG_CURRENCY_RE = re.compile(r"(?i)(?:\$\s*\d|\b\d[\d,]*\s*(?:mmk|kyats?|usd|dollars?)\b)")
+_DG_RECORDING_RE = re.compile(r"(?i)\b(recorded|recording|audio|video)\b")
+_Q_DURATION_RE = re.compile(r"\b(\d+)\s*[- ]?\s*(months?|years?|weeks?|days?)\b", re.IGNORECASE)
+_Q_GROUP_RE = re.compile(r"(?i)(?:\bgroup\s*\d+\b|→\s*group|->\s*group)")
+
+_STOPWORDS = {
+    "what", "which", "when", "where", "who", "whom", "whose", "why", "how",
+    "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "have", "has", "had", "you", "your", "yours", "we", "our", "ours",
+    "they", "their", "theirs", "he", "she", "his", "her", "hers", "it", "its",
+    "the", "and", "for", "with", "from", "about", "this", "that", "these",
+    "those", "there", "here", "will", "would", "can", "could", "should",
+    "please", "per", "each", "every", "any", "some", "all", "more", "most",
+    "other", "another", "often", "usually", "currently", "still", "ever",
+    "never", "before", "after", "during", "over", "under", "into", "onto",
+    "upon", "between", "among", "within", "without", "through", "across",
+    "along", "toward", "towards", "against", "whether", "either", "neither",
+    "both", "just", "only", "also", "very", "really", "much", "many", "few",
+    "less", "least", "first", "last", "next", "own", "same", "different",
+    "not", "no", "yes", "one", "two", "three", "four", "five", "six",
+    "seven", "eight", "nine", "ten", "a", "an", "by", "of", "to", "in",
+    "on", "at", "as", "or", "if", "but", "so", "than", "then", "once",
+    "twice", "via", "understand", "explore", "identify", "assess", "examine",
+    "determine", "learn", "research", "study", "project", "employee",
+    "employees", "respondent", "respondents", "client",
+}
+_GENERIC_FIRST_WORDS = {"use", "like", "want", "need", "think", "feel",
+                        "work", "buy", "get", "take", "make", "give"}
+
+
+def _self_check_result(check_id, severity, status, description, evidence, recommendation):
+    """One self-check result. severity/status are 'fail' or 'warning' for
+    issues; only issues are returned (an empty list means all checks
+    passed)."""
+    return {"id": check_id, "severity": severity, "status": status,
+            "description": description, "evidence": evidence,
+            "recommendation": recommendation}
+
+
+def _collect_reference_text(brief, design):
+    """All brief + design free text, lowercased — the only place an AI draft
+    may take facts from. A value found here is approved; anything else the
+    draft states is possibly invented."""
+    parts = []
+    for src in (brief or {}, design or {}):
+        if not isinstance(src, dict):
+            continue
+        for key in ("client_name", "project_code", "background", "objectives",
+                    "target_audience", "scope", "discussion_guide",
+                    "timeline_start", "timeline_end", "goal", "target",
+                    "approach", "rationale", "screening_criteria",
+                    "recruitment_criteria", "deliverables"):
+            v = src.get(key)
+            if isinstance(v, str) and v.strip():
+                parts.append(v)
+            elif isinstance(v, (list, tuple)):
+                parts.extend(str(x) for x in v if str(x).strip())
+        for coll in ("personas", "quotas"):
+            for item in src.get(coll) or []:
+                if isinstance(item, dict):
+                    parts.extend(str(x) for x in item.values() if str(x).strip())
+    return " ".join(parts).lower()
+
+
+def _content_words(text, min_len=3):
+    """Lowercase content words (English) — function words removed. Used for
+    the weak keyword-overlap checks only; a match is a signal, never proof
+    of semantic correctness."""
+    words = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    return [w for w in words if len(w) >= min_len and w not in _STOPWORDS]
+
+
+def _objective_items(objectives):
+    """Brief objectives as a list of strings (string with newlines or a
+    list both work); leading numbering stripped."""
+    if isinstance(objectives, str):
+        items = [x.strip() for x in re.split(r"[\n;]+", objectives) if x.strip()]
+    elif isinstance(objectives, (list, tuple)):
+        items = [str(x).strip() for x in objectives if str(x).strip()]
+    else:
+        items = []
+    out = []
+    for it in items:
+        it = re.sub(r"^\s*(?:\d+[.)]|[-•])\s*", "", it)
+        if it:
+            out.append(it)
+    return out
+
+
+def _parse_ymd(value):
+    """YYYY-MM-DD text → datetime.date, or None when empty/unparseable."""
+    try:
+        return datetime.date.fromisoformat(str(value or "").strip()[:10])
+    except Exception:
+        return None
+
+
+def _show_self_check_results(results, label_en, label_mm):
+    """Render self-check results under an editor (warnings only — never
+    blocks saving). Mirrors the pre-export checks pattern: issues as
+    warnings/errors, a success line when everything passed."""
+    if not results:
+        st.success(T(f"{label_en}: all checks passed.", f"{label_mm}: စစ်ဆေးမှု အားလုံး အောင်တယ်။"))
+        return
+    _fails = [r for r in results if r.get("severity") == "fail"]
+    _warns = [r for r in results if r.get("severity") == "warning"]
+    st.caption(T(f"{label_en}: {len(_fails)} failed · {len(_warns)} warning(s) — checks are recommendations only; saving is never blocked.",
+                 f"{label_mm}: {len(_fails)} ခု မအောင်ဘူး · {len(_warns)} ခု သတိပေးချက် — စစ်ဆေးမှုက အကြံပြုချက်ပဲ၊ သိမ်းတာကို ဘယ်တော့မှ မတားဘူး။"))
+    for r in results:
+        _msg = f"{r.get('id', '')}: {r.get('description', '')} Evidence: {r.get('evidence', '')} Fix: {r.get('recommendation', '')}"
+        if r.get("severity") == "fail":
+            st.error(_msg)
+        else:
+            st.warning(_msg)
+
+
+def _dg_self_check(dg_text, brief, design, session_minutes):
+    """Deterministic checks on a Discussion Guide draft / saved guide.
+    Returns a list of issue dicts (fail/warning); an empty list means all
+    checks passed. Never uses Gemini."""
+    results = []
+    text = str(dg_text or "")
+    low = text.lower()
+    ref = _collect_reference_text(brief, design)
+    # (a) section timings sum to the session length; (b) sequential numbers
+    timed = []
+    untimed = []
+    for line in text.splitlines():
+        line = line.strip()
+        m = _DG_SECTION_TIMING_RE.match(line)
+        if m:
+            timed.append((int(m.group(1)), int(m.group(2))))
+            continue
+        m2 = _DG_SECTION_HEAD_RE.match(line)
+        if m2:
+            untimed.append(int(m2.group(1)))
+    if not timed and not untimed:
+        results.append(_self_check_result("DG-SECTIONS", "warning", "warning",
+            "No numbered sections found — the guide has no '## Section N: ... (X Mins)' headings, so timings cannot be verified.",
+            "No '## Section' headings in the guide.",
+            "Write the guide in numbered sections with a timing in each heading, e.g. '## Section 1: Welcome (10 Mins)'."))
+    else:
+        all_nums = sorted([n for n, _ in timed] + untimed)
+        if all_nums != list(range(1, len(all_nums) + 1)):
+            results.append(_self_check_result("DG-SECTIONS", "fail", "fail",
+                "Section numbers are not sequential.",
+                f"Section numbers found: {all_nums}.",
+                "Renumber the sections 1, 2, 3 … with no gaps or repeats."))
+        if untimed:
+            results.append(_self_check_result("DG-TIMING", "warning", "warning",
+                "Some sections have no timing in the heading.",
+                f"Sections without a timing: {sorted(untimed)}.",
+                "Add a timing to every section heading, e.g. '(15 Mins)'."))
+        if timed:
+            total = sum(m for _, m in timed)
+            if session_minutes and total != session_minutes:
+                results.append(_self_check_result("DG-TIMING", "fail", "fail",
+                    f"Section timings sum to {total} minutes, not the session length of {session_minutes} minutes.",
+                    f"Timed sections: {timed}; sum = {total}.",
+                    "Adjust the section timings so they sum exactly to the session length."))
+    # (c) objective coverage — weak keyword overlap, warning only. A match
+    # is a signal, not proof the objective is really covered.
+    for obj in _objective_items((brief or {}).get("objectives")):
+        keys = _content_words(obj, min_len=5)
+        if not keys:
+            continue
+        if not any(k in low for k in keys):
+            results.append(_self_check_result("DG-OBJECTIVES", "warning", "warning",
+                "A brief objective is not reflected in the guide (keyword check — verify by reading).",
+                f"Objective: {obj[:120]}",
+                "Add a section or probes that cover this objective, or check that the wording differs."))
+    # (d) invented dates / currency — a value the brief/design never states
+    for d in sorted(set(_DG_DATE_RE.findall(text))):
+        if d.lower() not in ref:
+            results.append(_self_check_result("DG-INVENTED-DATE", "fail", "fail",
+                "A date appears in the guide that the brief/design does not state.",
+                f"Date found: {d}.",
+                "Remove the date or replace it with a [Date] placeholder."))
+    for cur in sorted(set(m.group(0) for m in _DG_CURRENCY_RE.finditer(text))):
+        if cur.lower() not in ref:
+            results.append(_self_check_result("DG-INVENTED-CURRENCY", "fail", "fail",
+                "An amount appears in the guide that the brief/design does not state.",
+                f"Amount found: {cur}.",
+                "Remove the amount or replace it with a placeholder."))
+    if _DG_RECORDING_RE.search(text):
+        if not _DG_RECORDING_RE.search(ref) and "[Recording — confirm]" not in text:
+            results.append(_self_check_result("DG-RECORDING", "warning", "warning",
+                "The guide mentions recording, but the brief/design does not state recording and there is no [Recording — confirm] placeholder.",
+                f"First match: {_DG_RECORDING_RE.search(text).group(0)}.",
+                "Confirm whether the session is recorded; if unknown, use the [Recording — confirm] placeholder."))
+    # (e) same-line EN+MM mixing. House placeholders [..] are English by
+    # design, so they are stripped before counting; headings are structural.
+    for i, line in enumerate(text.splitlines(), start=1):
+        stripped = re.sub(r"\[[^\]]*\]", "", line)
+        if stripped.strip().startswith("#"):
+            continue
+        mm = len(re.findall(r"[\u1000-\u109F]", stripped))
+        lat = len(re.findall(r"[A-Za-z]", stripped))
+        if mm >= 5 and lat >= 5:
+            results.append(_self_check_result("DG-LANGUAGE", "warning", "warning",
+                "One line mixes English and Myanmar — keep one language per line.",
+                f"Line {i}: {line.strip()[:120]}",
+                "Split the line or rewrite it in one language."))
+    # (f) venue / date placeholders (v3.30 live re-test: the guide had none)
+    if "[Venue]" not in text and "venue" not in ref:
+        results.append(_self_check_result("DG-PLACEHOLDER-VENUE", "warning", "warning",
+            "Venue not stated — the guide has no [Venue] placeholder.",
+            "No [Venue] in the guide and no venue in the brief/design.",
+            "Add a [Venue] placeholder to the guide."))
+    if "[Date]" not in text and not ((brief or {}).get("timeline_start") or (brief or {}).get("timeline_end")):
+        results.append(_self_check_result("DG-PLACEHOLDER-DATE", "warning", "warning",
+            "Date not stated — the guide has no [Date] placeholder.",
+            "No [Date] in the guide and no timeline dates in the brief.",
+            "Add a [Date] placeholder to the guide."))
+    return results
+
+
 def _dg_parse(dg_text):
     """Parse DG markup into a list of blocks. Unknown lines become plain
     paragraphs — the parser never drops text."""
@@ -4270,6 +4498,213 @@ def _dg_to_markdown(dg_text):
 def _xlsform_slug(text):
     """Slug for XLSForm names: lowercase, non-alphanumeric → underscore."""
     return re.sub(r"[^a-z0-9]+", "_", str(text or "").strip().lower()).strip("_")
+
+
+def _q_normalize_text(s):
+    """Lowercased question text with punctuation/whitespace stripped — for
+    duplicate detection."""
+    s = str(s or "").lower()
+    s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE)
+    return " ".join(s.split())
+
+
+def _q_content_stem(text):
+    """First 3 content words of a question — the 'stem' used for the
+    duplicate-topic check. A stem match is a heuristic signal, not proof
+    two questions are the same."""
+    return _content_words(text, min_len=3)[:3]
+
+
+def _q_self_check(qdata, brief, design):
+    """Deterministic checks on a questionnaire / screener draft or saved
+    questionnaire. Returns a list of issue dicts (fail/warning); an empty
+    list means all checks passed. Never uses Gemini."""
+    results = []
+    if isinstance(qdata, list):
+        questions = [q for q in qdata if isinstance(q, dict)]
+    elif isinstance(qdata, dict):
+        questions = [q for q in (qdata.get("questions") or []) if isinstance(q, dict)]
+    else:
+        questions = []
+    methods = (design or {}).get("methods") or []
+    screener_mode = "Survey" not in methods
+    has_groups = bool((design or {}).get("quotas"))
+    ref = _collect_reference_text(brief, design)
+    q_lang = str((design or {}).get("questionnaire_language", "Myanmar") or "Myanmar")
+    for idx, q in enumerate(questions):
+        code = str(q.get("code") or f"Q{idx + 1}").strip() or f"Q{idx + 1}"
+        section = str(q.get("section") or "").strip()
+        q_en = str(q.get("question_en") or "").strip()
+        q_mm = str(q.get("question_mm") or "").strip()
+        outcome = str(q.get("outcome") or "").strip()
+        qtype = str(q.get("type") or "").strip()
+        # (a) discussion question in a screener (Qual/FGD without Survey)
+        if screener_mode:
+            if not section:
+                results.append(_self_check_result("Q-SECTION-MISSING", "warning", "warning",
+                    "A question has no section — in a screener every question belongs to the Screening section.",
+                    f"{code}: {q_en[:100]}",
+                    "Set the section to Screening, or move the question to the Discussion Guide."))
+            elif section.lower() != "screening":
+                results.append(_self_check_result("Q-SCREENER-SECTION", "fail", "fail",
+                    "A discussion question is in the screener — it belongs in the Discussion Guide, not the screener.",
+                    f"{code} (section: {section}): {q_en[:100]}",
+                    "Move this question to the Discussion Guide."))
+        # (b) missing outcome rule
+        if not outcome:
+            results.append(_self_check_result("Q-OUTCOME-MISSING", "fail", "fail",
+                "A question has no outcome rule — every question must say Continue or Terminate.",
+                f"{code}: {q_en[:100]}",
+                "Add an outcome rule (Continue / Terminate) to this question."))
+        # (c) group assignment without approved quotas/groups
+        if outcome and _Q_GROUP_RE.search(outcome) and not has_groups:
+            results.append(_self_check_result("Q-GROUP-ASSIGNMENT", "fail", "fail",
+                "A group assignment appears in an outcome, but the design lists no quotas or groups.",
+                f"{code}: outcome '{outcome[:120]}'",
+                "Remove the group assignment (outcome Continue / Terminate only) or add the approved groups to the design."))
+        # (d) possibly invented duration criterion — a number + time unit
+        # (e.g. '6 months') that the brief/design never states
+        _dur_text = " ".join([q_en, str(q.get("options_en") or ""), outcome,
+                              str(q.get("hint_en") or "")])
+        for m in _Q_DURATION_RE.finditer(_dur_text):
+            _dur = f"{m.group(1)} {m.group(2).lower()}"
+            _dur_sing = f"{m.group(1)} {m.group(2).lower().rstrip('s')}"
+            _dur_hyp = f"{m.group(1)}-{m.group(2).lower()}"
+            if _dur not in ref and _dur_sing not in ref and _dur_hyp not in ref:
+                results.append(_self_check_result("Q-INVENTED-CRITERION", "warning", "warning",
+                    "A time window in this question is not stated in the brief/design — it may be invented.",
+                    f"{code}: '{m.group(0)}' in '{_dur_text[:120]}'",
+                    "Remove the time window, or confirm it with the brief and add it to the design's screening criteria."))
+                break
+        # (e) sensitive demographic question terminating respondents
+        _sensitive = (qtype == "observed") or ("gender" in q_en.lower()) or ("gender" in q_mm.lower())
+        if _sensitive and "terminate" in outcome.lower():
+            results.append(_self_check_result("Q-SENSITIVE-TERMINATE", "fail", "fail",
+                "A sensitive demographic question disqualifies respondents.",
+                f"{code} (type: {qtype or '—'}): outcome '{outcome[:100]}'",
+                "Record sensitive demographics (gender, observed) — never Terminate on them unless the brief says so."))
+        # (f) Myanmar text (Myanmar language only — in English mode the
+        # Myanmar text is expected to be the same as the English text)
+        if q_lang == "Myanmar" and (q_en or q_mm):
+            if not q_mm:
+                results.append(_self_check_result("Q-LANGUAGE-MM", "warning", "warning",
+                    "A question has no Myanmar text.",
+                    f"{code}: {q_en[:100]}",
+                    "Add the Myanmar translation of this question."))
+            elif q_mm == q_en:
+                results.append(_self_check_result("Q-LANGUAGE-MM", "warning", "warning",
+                    "The Myanmar text is identical to the English text.",
+                    f"{code}: {q_en[:100]}",
+                    "Translate this question into Myanmar."))
+            elif not _NON_EN_RE.search(q_mm):
+                results.append(_self_check_result("Q-LANGUAGE-MM", "warning", "warning",
+                    "The Myanmar text contains no Myanmar script.",
+                    f"{code}: {q_mm[:100]}",
+                    "Translate this question into Myanmar."))
+    # (g) duplicate questions — identical normalized text, or the same
+    # first content word with highly overlapping stems (e.g. numeric age +
+    # age bracket). Warning only: stems are a heuristic.
+    _norms = []
+    for idx, q in enumerate(questions):
+        code = str(q.get("code") or f"Q{idx + 1}").strip() or f"Q{idx + 1}"
+        _t = _q_normalize_text(q.get("question_en") or q.get("question_mm"))
+        _norms.append((code, _t, _q_content_stem(q.get("question_en") or q.get("question_mm"))))
+    for i in range(len(_norms)):
+        for j in range(i + 1, len(_norms)):
+            _ci, _ti, _si = _norms[i]
+            _cj, _tj, _sj = _norms[j]
+            if _ti and _ti == _tj:
+                results.append(_self_check_result("Q-DUPLICATE", "warning", "warning",
+                    "Two questions have identical text.",
+                    f"{_ci} and {_cj}: '{_ti[:100]}'",
+                    "Keep one question and remove the duplicate."))
+            elif (_si and _sj and _si[0] == _sj[0]
+                    and _si[0] not in _GENERIC_FIRST_WORDS
+                    and len(set(_si) | set(_sj)) <= 4):
+                results.append(_self_check_result("Q-DUPLICATE", "warning", "warning",
+                    "Two questions may ask the same thing (same topic stem).",
+                    f"{_ci} and {_cj} both ask about '{_si[0]}'.",
+                    "Check whether both are needed; merge them if they ask the same thing."))
+    return results
+
+
+def _questionnaire_empty_save_guard(new_questions, pending_draft, saved_questionnaire):
+    """Mirror the DG empty-save guard (v3.29): never destroy a draft or a
+    saved questionnaire with an empty save. Returns (allow_save, en_text,
+    mm_text): allow_save False means warn and keep everything."""
+    if new_questions:
+        return True, None, None
+    _pending_qs = []
+    if isinstance(pending_draft, dict):
+        _pending_qs = pending_draft.get("questions") or []
+    if _pending_qs:
+        return False, ("The grid is empty but a new AI draft exists — it was NOT saved. "
+                       "Click “✨ AI Draft Questionnaire” again, or put the questions back in the grid, then Save."), (
+                       "Grid ဗလာဖြစ်နေတယ်၊ ဒါပေမယ့် AI draft အသစ် ရှိတယ် — မသိမ်းလိုက်ဘူး။ "
+                       "“✨ AI Draft Questionnaire” ကို ပြန်နှိပ်ပါ၊ ဒါမှမဟုတ် မေးခွန်းတွေ grid ထဲ ပြန်ထည့်ပြီး Save နှိပ်ပါ။")
+    _saved_qs = []
+    if isinstance(saved_questionnaire, dict):
+        _saved_qs = saved_questionnaire.get("questions") or []
+    elif isinstance(saved_questionnaire, list):
+        _saved_qs = saved_questionnaire
+    if _saved_qs:
+        return False, "The grid is empty — the saved questionnaire was kept, not erased.", \
+            "Grid ဗလာဖြစ်နေတယ် — သိမ်းပြီးသား questionnaire ကို ဖျက်မပစ်ဘူး၊ ထားထားတယ်။"
+    return False, "Nothing to save — the questionnaire is empty.", \
+        "သိမ်းစရာ မရှိဘူး — questionnaire ဗလာဖြစ်နေတယ်။"
+
+
+def _fieldwork_self_check(design, brief):
+    """Deterministic checks on a saved Fieldwork Plan against Sampling and
+    the Brief timeline. Returns a list of issue dicts (fail/warning); an
+    empty list means all checks passed. Never uses Gemini."""
+    results = []
+    plan = [r for r in ((design or {}).get("fieldwork_plan") or []) if isinstance(r, dict)]
+    sessions = 0
+    try:
+        sessions = int((design or {}).get("sessions_count") or 0)
+    except Exception:
+        sessions = 0
+    methods = (design or {}).get("methods") or []
+    # (a) planned rows vs approved session count
+    if sessions > 0 and len(plan) != sessions:
+        results.append(_self_check_result("FW-SESSION-COUNT", "warning", "warning",
+            "The plan has a different number of sessions than Sampling approved.",
+            f"Plan rows: {len(plan)}; sessions in Sampling: {sessions}.",
+            "Add or remove plan rows so the count matches Sampling."))
+    _start = _parse_ymd((brief or {}).get("timeline_start"))
+    _end = _parse_ymd((brief or {}).get("timeline_end"))
+    for row in plan:
+        _sess = row.get("session")
+        _label = f"Session {_sess}" if _sess not in (None, "") else "A plan row"
+        # (b) method matches the approved methods
+        _m = str(row.get("method") or "").strip()
+        if _m and methods and _m not in methods:
+            results.append(_self_check_result("FW-METHOD", "warning", "warning",
+                "A plan row uses a method the design does not list.",
+                f"{_label}: method '{_m}'; approved methods: {methods}.",
+                "Change the row method to an approved one, or update the design methods."))
+        # (c) date inside the brief timeline
+        _d = _parse_ymd(row.get("date"))
+        if _d:
+            if _start and _d < _start:
+                results.append(_self_check_result("FW-DATE-RANGE", "warning", "warning",
+                    "A plan date is before the project timeline starts.",
+                    f"{_label}: date {row.get('date')}; timeline starts {(brief or {}).get('timeline_start')}.",
+                    "Move the session inside the timeline, or fix the timeline in the Brief."))
+            elif _end and _d > _end:
+                results.append(_self_check_result("FW-DATE-RANGE", "warning", "warning",
+                    "A plan date is after the project timeline ends.",
+                    f"{_label}: date {row.get('date')}; timeline ends {(brief or {}).get('timeline_end')}.",
+                    "Move the session inside the timeline, or fix the timeline in the Brief."))
+        # (d) moderator set without a seat (the save handler defaults new
+        # rows to Seat 1; this catches stored rows from before that rule)
+        if str(row.get("moderator") or "").strip() and not str(row.get("moderator_seat") or "").strip():
+            results.append(_self_check_result("FW-MODERATOR-SEAT", "warning", "warning",
+                "A moderator is set but no seat is given.",
+                f"{_label}: moderator '{str(row.get('moderator')).strip()}'.",
+                "Set the moderator seat to Seat 1."))
+    return results
 
 
 def _parse_questionnaire_json(text):
@@ -6511,6 +6946,16 @@ elif page == "Research Design":
     if "dg_editor" not in st.session_state:
         st.session_state["dg_editor"] = _design.get("dg_text", "")
     st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), height=400, key="dg_editor")
+    # v3.31 (P6): self-check — warnings only, never blocks saving. Runs on
+    # the current editor text on every render, so a fresh AI draft is
+    # checked as soon as it lands (the draft flow reruns into this render)
+    # and a saved guide is checked whenever it is shown. Results are never
+    # stored — they are recomputed from the current text.
+    _dg_text_now = st.session_state.get("dg_editor", "")
+    if str(_dg_text_now or "").strip():
+        _dg_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
+        _show_self_check_results(_dg_self_check(_dg_text_now, _brief, _draft_design, _dg_minutes),
+                                 "Discussion Guide checks", "Discussion Guide စစ်ဆေးမှု")
     _dc1, _dc2 = st.columns(2)
     if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
         _dg_final = st.session_state.get("dg_editor", "")
@@ -6655,6 +7100,12 @@ elif page == "Research Design":
         "Type": st.column_config.SelectboxColumn(T("Type", "Type"), options=QUESTION_TYPES),
         "Required": st.column_config.CheckboxColumn(T("Required", "Required")),
     })
+    # v3.31 (P7): self-check on the questions currently shown (a pending
+    # draft replaces the saved list — see _qs above). Warnings only, never
+    # blocks saving; recomputed on every render, never stored.
+    if _qs:
+        _show_self_check_results(_q_self_check({"questions": _qs}, _brief, _draft_design),
+                                 "Questionnaire checks", "Questionnaire စစ်ဆေးမှု")
     if st.button(T("Save questionnaire", "Questionnaire သိမ်းမယ်"), key="q_save", type="primary"):
         _new_qs = []
         for _i, _r in enumerate(_q_edited.to_dict("records")):
@@ -6682,18 +7133,27 @@ elif page == "Research Design":
                 "constraint": _ed_str(_hidden.get("constraint")),
                 "constraint_message": _ed_str(_hidden.get("constraint_message")),
             })
-        _header_fields = [h.strip() for h in _q_header.split(",") if h.strip()]
-        _design["questionnaire"] = {"intro_en": _q_intro_en.strip(), "intro_mm": _q_intro_mm.strip(),
-                                    "closing_en": _q_closing_en.strip(), "closing_mm": _q_closing_mm.strip(),
-                                    "header_fields": _header_fields, "questions": _new_qs}
-        _design["questionnaire_language"] = _q_lang
-        save_design(_design)
-        st.session_state.pop("q_pending_draft", None)
-        # v3.29: the JSON view is derived from the saved questionnaire —
-        # drop it so it re-seeds from the just-saved design.
-        st.session_state.pop("q_json_editor", None)
-        _flash(T("Questionnaire saved.", "Questionnaire သိမ်းပြီးပြီ။"))
-        st.rerun()
+        # v3.31 (P15): empty-save guard — parity with the DG guard (v3.29).
+        _allow_q, _warn_q_en, _warn_q_mm = _questionnaire_empty_save_guard(
+            _new_qs, st.session_state.get("q_pending_draft"), _design.get("questionnaire"))
+        if not _allow_q:
+            # Never destroy a draft or a saved questionnaire with an empty
+            # save — warn and keep everything. No rerun here, so the
+            # warning stays visible.
+            st.warning(T(_warn_q_en, _warn_q_mm))
+        else:
+            _header_fields = [h.strip() for h in _q_header.split(",") if h.strip()]
+            _design["questionnaire"] = {"intro_en": _q_intro_en.strip(), "intro_mm": _q_intro_mm.strip(),
+                                        "closing_en": _q_closing_en.strip(), "closing_mm": _q_closing_mm.strip(),
+                                        "header_fields": _header_fields, "questions": _new_qs}
+            _design["questionnaire_language"] = _q_lang
+            save_design(_design)
+            st.session_state.pop("q_pending_draft", None)
+            # v3.29: the JSON view is derived from the saved questionnaire —
+            # drop it so it re-seeds from the just-saved design.
+            st.session_state.pop("q_json_editor", None)
+            _flash(T("Questionnaire saved.", "Questionnaire သိမ်းပြီးပြီ။"))
+            st.rerun()
     if st.button(T("Export Kobo XLSForm (.xlsx)", "Kobo XLSForm (.xlsx) ထုတ်မယ်"), key="q_export_kobo"):
         _q_now = _design.get("questionnaire") or {}
         if not isinstance(_q_now, dict) or not (_q_now.get("questions") or []):
@@ -6745,6 +7205,11 @@ elif page == "Research Design":
         "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
     })
     st.caption(T("Dates are plain text (YYYY-MM-DD) — an unset date never invents today's date. Seats = respondents in the session; Recruited = over-recruited count for no-shows; the moderator sits at Seat 1.", "ရက်စွဲက စာသားပဲ (YYYY-MM-DD) — မသတ်မှတ်ရင် ဒီနေ့ရက် အလိုအလျောက် မထည့်ဘူး။ Seats = အဖွဲ့ထဲမှာ ထိုင်မယ့်သူ၊ Recruited = မလာသူ အတွက် ပိုခေါ်ထားတာ၊ moderator က Seat 1 မှာ ထိုင်တယ်။"))
+    # v3.31 (P8): self-check on the saved plan — warnings only, never
+    # blocks saving; recomputed on every render, never stored.
+    if _fw:
+        _show_self_check_results(_fieldwork_self_check(_draft_design, _brief),
+                                 "Fieldwork Plan checks", "Fieldwork Plan စစ်ဆေးမှု")
     if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
         _new_fw = []
         for _i, _r in enumerate(_fw_edited.to_dict("records")):
