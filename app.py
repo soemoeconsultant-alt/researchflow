@@ -29,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.31"
+APP_VERSION = "3.32"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4221,7 +4221,11 @@ def _parse_ymd(value):
 def _show_self_check_results(results, label_en, label_mm):
     """Render self-check results under an editor (warnings only — never
     blocks saving). Mirrors the pre-export checks pattern: issues as
-    warnings/errors, a success line when everything passed."""
+    warnings, a success line when everything passed. v3.32 (Fix 1):
+    fail-level items also render as warnings (amber), never as red
+    errors — a red box looks like saving is blocked, but these checks
+    are recommendations only and saving is never blocked. The severity
+    data and the counts in the header are unchanged; display only."""
     if not results:
         st.success(T(f"{label_en}: all checks passed.", f"{label_mm}: စစ်ဆေးမှု အားလုံး အောင်တယ်။"))
         return
@@ -4231,10 +4235,62 @@ def _show_self_check_results(results, label_en, label_mm):
                  f"{label_mm}: {len(_fails)} ခု မအောင်ဘူး · {len(_warns)} ခု သတိပေးချက် — စစ်ဆေးမှုက အကြံပြုချက်ပဲ၊ သိမ်းတာကို ဘယ်တော့မှ မတားဘူး။"))
     for r in results:
         _msg = f"{r.get('id', '')}: {r.get('description', '')} Evidence: {r.get('evidence', '')} Fix: {r.get('recommendation', '')}"
-        if r.get("severity") == "fail":
-            st.error(_msg)
-        else:
-            st.warning(_msg)
+        st.warning(_msg)
+
+
+def _design_check_verdict(results):
+    """Verdict for one instrument's self-check results: PASS = no issues,
+    IMPROVE = warnings only, FAIL = at least one fail-level issue.
+    Returns (verdict, n_fail, n_warn). Pure function — nothing stored."""
+    _fails = [r for r in (results or []) if r.get("severity") == "fail"]
+    _warns = [r for r in (results or []) if r.get("severity") == "warning"]
+    if _fails:
+        return "FAIL", len(_fails), len(_warns)
+    if _warns:
+        return "IMPROVE", 0, len(_warns)
+    return "PASS", 0, 0
+
+
+def _show_design_checks_summary(dg_text, qdata, design, brief, session_minutes):
+    """v3.32 (P13): one 'Design checks' summary on the Research Design
+    page, aggregating the three self-check engines. Verdicts are
+    recomputed fresh from the current text on every render — never
+    stored. Warnings only: the summary never blocks saving or exporting;
+    the researcher keeps the final say. An instrument that has not been
+    started yet shows 'not started yet' instead of a verdict."""
+    _dg_started = bool(str(dg_text or "").strip())
+    _q_list = []
+    if isinstance(qdata, dict):
+        _q_list = [q for q in (qdata.get("questions") or []) if isinstance(q, dict)]
+    elif isinstance(qdata, list):
+        _q_list = [q for q in qdata if isinstance(q, dict)]
+    _fw_started = bool((design or {}).get("fieldwork_plan"))
+    with st.expander(T("Design checks", "ဒီဇိုင်း စစ်ဆေးချက်")):
+        st.caption(T("Checks are recommendations only — the researcher keeps the final say; saving is never blocked.",
+                     "စစ်ဆေးမှုက အကြံပြုချက်ပဲ — ဆုံးဖြတ်ချက်က သုတေသီလက်ထဲမှာပဲ၊ သိမ်းတာကို ဘယ်တော့မှ မတားဘူး။"))
+        _sections = [
+            ("Discussion Guide", "Discussion Guide",
+             _dg_self_check(dg_text, brief, design, session_minutes) if _dg_started else None),
+            ("Questionnaire", "Questionnaire",
+             _q_self_check({"questions": _q_list}, brief, design) if _q_list else None),
+            ("Fieldwork Plan", "Fieldwork Plan",
+             _fieldwork_self_check(design, brief) if _fw_started else None),
+        ]
+        for _en, _mm, _res in _sections:
+            if _res is None:
+                st.write("○ " + T(f"{_en}: not started yet — nothing to check.",
+                                   f"{_mm}: မစရသေးဘူး — စစ်စရာ မရှိသေးဘူး။"))
+                continue
+            _verdict, _nf, _nw = _design_check_verdict(_res)
+            if _verdict == "PASS":
+                st.write("✅ " + T(f"{_en}: PASS — all checks passed.",
+                                    f"{_mm}: အောင်တယ် — စစ်ဆေးမှု အားလုံး အောင်တယ်။"))
+            elif _verdict == "IMPROVE":
+                st.write("⚠️ " + T(f"{_en}: IMPROVE — 0 failed · {_nw} warning(s).",
+                                    f"{_mm}: ပြင်ရန် — 0 ခု မအောင်ဘူး · {_nw} ခု သတိပေးချက်။"))
+            else:
+                st.write("❌ " + T(f"{_en}: FAIL — {_nf} failed · {_nw} warning(s).",
+                                    f"{_mm}: မအောင်ဘူး — {_nf} ခု မအောင်ဘူး · {_nw} ခု သတိပေးချက်။"))
 
 
 def _dg_self_check(dg_text, brief, design, session_minutes):
@@ -4515,6 +4571,38 @@ def _q_content_stem(text):
     return _content_words(text, min_len=3)[:3]
 
 
+# v3.32 (Fix 2): screener topics, so differently-worded questions about
+# the same concept still flag as possible duplicates. The stem check
+# matches shared words only ('old' vs 'age' share no stem, so the live
+# TEST screener's Q2 'How old are you?' + Q3 'Which age bracket…?' was
+# missed). Trigger words are matched as whole words in the normalized
+# question text; phrases are matched as substrings. Deliberately narrow:
+# 'years' alone is NOT an age trigger ('years at a company' is tenure, not
+# age) — only 'years old' / 'date of birth' phrases count.
+_Q_TOPIC_MAP = {
+    "age": {"age", "old", "bracket", "brackets", "born", "birth", "dob"},
+    "gender": {"gender", "male", "female"},
+}
+_Q_TOPIC_PHRASES = {
+    "age": {"years old", "date of birth"},
+}
+
+
+def _q_topics(text):
+    """Topics a question asks about (e.g. 'age', 'gender') from the
+    synonym map above. Returns a set of topic names (empty when none)."""
+    _norm = _q_normalize_text(text)
+    _words = set(_norm.split())
+    _topics = set()
+    for _topic, _triggers in _Q_TOPIC_MAP.items():
+        if _words & _triggers:
+            _topics.add(_topic)
+    for _topic, _phrases in _Q_TOPIC_PHRASES.items():
+        if any(_ph in _norm for _ph in _phrases):
+            _topics.add(_topic)
+    return _topics
+
+
 def _q_self_check(qdata, brief, design):
     """Deterministic checks on a questionnaire / screener draft or saved
     questionnaire. Returns a list of issue dicts (fail/warning); an empty
@@ -4601,18 +4689,22 @@ def _q_self_check(qdata, brief, design):
                     "The Myanmar text contains no Myanmar script.",
                     f"{code}: {q_mm[:100]}",
                     "Translate this question into Myanmar."))
-    # (g) duplicate questions — identical normalized text, or the same
+    # (g) duplicate questions — identical normalized text, the same
     # first content word with highly overlapping stems (e.g. numeric age +
-    # age bracket). Warning only: stems are a heuristic.
+    # age bracket), or the same screener topic via the synonym map
+    # (v3.32: 'How old are you?' vs 'Which age bracket…?' share the
+    # 'age' topic though they share no stem word). Warning only: stems
+    # and topics are heuristics.
     _norms = []
     for idx, q in enumerate(questions):
         code = str(q.get("code") or f"Q{idx + 1}").strip() or f"Q{idx + 1}"
         _t = _q_normalize_text(q.get("question_en") or q.get("question_mm"))
-        _norms.append((code, _t, _q_content_stem(q.get("question_en") or q.get("question_mm"))))
+        _norms.append((code, _t, _q_content_stem(q.get("question_en") or q.get("question_mm")),
+                       _q_topics(q.get("question_en") or q.get("question_mm"))))
     for i in range(len(_norms)):
         for j in range(i + 1, len(_norms)):
-            _ci, _ti, _si = _norms[i]
-            _cj, _tj, _sj = _norms[j]
+            _ci, _ti, _si, _topi = _norms[i]
+            _cj, _tj, _sj, _topj = _norms[j]
             if _ti and _ti == _tj:
                 results.append(_self_check_result("Q-DUPLICATE", "warning", "warning",
                     "Two questions have identical text.",
@@ -4624,6 +4716,12 @@ def _q_self_check(qdata, brief, design):
                 results.append(_self_check_result("Q-DUPLICATE", "warning", "warning",
                     "Two questions may ask the same thing (same topic stem).",
                     f"{_ci} and {_cj} both ask about '{_si[0]}'.",
+                    "Check whether both are needed; merge them if they ask the same thing."))
+            elif _topi and _topi & _topj:
+                _shared = sorted(_topi & _topj)[0]
+                results.append(_self_check_result("Q-DUPLICATE", "warning", "warning",
+                    "Two questions may ask the same thing (same topic).",
+                    f"{_ci} and {_cj} both ask about '{_shared}'.",
                     "Check whether both are needed; merge them if they ask the same thing."))
     return results
 
@@ -7230,6 +7328,12 @@ elif page == "Research Design":
         save_design(_design)
         _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
         st.rerun()
+
+    # v3.32 (P13): "Design checks" summary — one verdict per instrument,
+    # recomputed fresh from the current text on every render, never
+    # stored. Warnings only; saving is never blocked.
+    _sum_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
+    _show_design_checks_summary(_dg_text_now, {"questions": _qs}, _draft_design, _brief, _sum_minutes)
 
 elif page == "Data Cleansing":
     # Stage 4 (v3.27): Data Preparation status from real counts + real
