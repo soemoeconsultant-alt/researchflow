@@ -20,6 +20,10 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import (XL_CHART_TYPE, XL_LABEL_POSITION,
+                             XL_LEGEND_POSITION, XL_TICK_MARK)
+from pptx.oxml.ns import qn
 from docx import Document
 from docx.shared import RGBColor as DocxRGBColor
 
@@ -31,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.36"
+APP_VERSION = "3.37"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2687,7 +2691,7 @@ REPORT_FORMAT_TEMPLATE = (
     + OUTPUT_FORMAT +
     "- The export reads \"## \" headings as slide/section titles and \"- \" bullets as points.\n"
     "- Anything outside that format (tables, bold headings, other heading levels) is dropped by the export.\n"
-    "- Templates: Business Clean, Topline, Dark Navy.\n"
+    "- Templates: Business Clean, Professional, Topline, Dark Navy.\n"
 )
 
 EXEC_SUMMARY_TEMPLATE = (
@@ -2944,6 +2948,7 @@ def plan_based_prompt(plan_text, combined_text, count):
 # #1264C5, cyan #18C6D9, teal #16B89A, light bg #F4F8FF, ink #10264A).
 TEMPLATES = {
     "Business Clean": {"bg": "FFFFFF", "title": "071B3A", "body": "10264A"},
+    "Professional": {"bg": "FFFFFF", "title": "071B3A", "body": "10264A"},
     "Topline": {"bg": "F4F8FF", "title": "071B3A", "body": "10264A"},
     "Dark Navy": {"bg": "071B3A", "title": "FFFFFF", "body": "FFFFFF"},
 }
@@ -3128,8 +3133,8 @@ def _pptx_textbox(slide, left, top, width, height, paras,
     return tb
 
 
-def _pptx_kpi_cards(lines):
-    """Up to 3 KPI cards from Executive Summary lines.
+def _pptx_kpi_cards(lines, max_cards=3):
+    """Up to max_cards KPI cards from Executive Summary lines.
     Returns (cards, used_idx): cards are (value, label, is_finding).
     Numbers are parsed from the project's own report text only — never
     invented. Quant KPI lines stay in the body text (the cards highlight
@@ -3137,23 +3142,23 @@ def _pptx_kpi_cards(lines):
     the body does not repeat them."""
     cards, used = [], set()
     for i, line in enumerate(lines):
-        if len(cards) >= 3:
+        if len(cards) >= max_cards:
             break
         s = line.strip()
         m = _KPI_N_RE.search(s)
         if m:
             cards.append((f"N = {m.group(1)}", "Validation sample", False))
         mm = _KPI_MEAN_RE.search(s)
-        if mm and len(cards) < 3:
+        if mm and len(cards) < max_cards:
             q = s.split("(n=")[0].strip()
             label = f"Mean · {q[:28]}" if q else "Mean"
             cards.append((f"{mm.group(1)} / 5.0", label, False))
         mt = _KPI_TOPBOX_RE.search(s)
-        if mt and len(cards) < 3:
+        if mt and len(cards) < max_cards:
             cards.append((f"{mt.group(1)}%", "Top-Box (4–5)", False))
     if not cards:
         for i, line in enumerate(lines):
-            if len(cards) >= 3:
+            if len(cards) >= max_cards:
                 break
             s = line.strip()
             if not s or s.startswith("> ") or len(s) > 120:
@@ -3399,6 +3404,593 @@ def _pptx_fill_body(slide, lines, top, height, body_color):
     return tf
 
 
+# --- Professional template (v3.37) ---
+# A second, 16:9 report template measured from the two professional
+# report decks he shared (structure/layout ONLY — no sample content).
+# Business Clean is untouched: this renderer is a parallel code path
+# (all _pro_* helpers/constants) and analysis_to_pptx() branches to it
+# only when template == "Professional". Same content rules: cards,
+# tables and charts only re-present the project's OWN analysis text —
+# numbers are parsed from that text, never invented; anything that
+# does not parse falls back to plain body text, so no finding is lost.
+_PRO_AMBER = "FFC000"
+_PRO_FONT = "Arial"
+_PRO_CHART_SERIES = [_PPTX_BLUE, _PPTX_CYAN, _PPTX_TEAL, _PRO_AMBER,
+                     _PPTX_NAVY, _PPTX_MUTED]
+_PRO_SW = Inches(13.33)
+_PRO_SH = Inches(7.5)
+_PRO_MARGIN = Inches(0.50)
+_PRO_BODY_W = Inches(12.33)
+_PRO_KICKER_TOP = Inches(0.32)
+_PRO_TITLE_TOP = Inches(0.58)
+_PRO_RULE_TOP = Inches(1.38)
+_PRO_INSIGHT_TOP = Inches(1.50)
+_PRO_BODY_TOP = Inches(1.95)
+_PRO_BODY_BOTTOM = Inches(6.90)
+_PRO_FOOTER_TOP = Inches(7.04)
+_PRO_CHIP = Inches(0.45)
+_PRO_CHIP_LEFT = Inches(12.68)
+_PRO_CHIP_TOP = Inches(0.11)
+_PRO_CARD_H = Inches(1.30)
+_PRO_CARD_GAP = Inches(0.25)
+_PRO_TABLE_HEADER_H = Inches(0.48)
+_PRO_TABLE_ROW_H = Inches(0.38)
+_PRO_BODY_PT = 14
+_PRO_BODY_LINE_SPACING = 1.15
+_PRO_BODY_SPACE_AFTER_PT = 4
+_PRO_BODY_CHARS_PER_LINE = 112
+_PRO_QUOTE_PT = 12
+_PRO_QUOTE_CHARS_PER_LINE = 130
+_PRO_BODY_LINE_FACTOR = 1.22
+_PRO_CHART_H = Inches(4.60)
+_PRO_CHART_TOP = Inches(2.00)
+# Body-box height in points (4.95in), less a 12pt safety margin.
+_PRO_BODY_BUDGET_PT = 4.95 * 72 - 12
+
+
+def _pro_pitch_pt(size):
+    """Rendered height of one wrapped line at `size` pt. Arial is
+    slightly tighter than Calibri, so the Calibri 1.22 factor is a
+    conservative budget — the LibreOffice render check proves fit."""
+    return size * _PRO_BODY_LINE_FACTOR * _PRO_BODY_LINE_SPACING \
+        + _PRO_BODY_SPACE_AFTER_PT
+
+
+def _pro_visual_lines(line, chars_per_line=_PRO_BODY_CHARS_PER_LINE):
+    return max(1, -(-len(line) // chars_per_line))
+
+
+def _pro_textbox(slide, left, top, width, height, paras,
+                 anchor=MSO_ANCHOR.TOP):
+    """paras: [(text, size, bold, color, italic, align), ...] — one
+    paragraph per entry. Every run is set to Arial explicitly (the
+    default template's Calibri would otherwise leak in)."""
+    tb = slide.shapes.add_textbox(left, top, width, height)
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = anchor
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    for i, (text, size, bold, color, italic, align) in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = align
+        run = p.add_run()
+        run.text = text
+        run.font.name = _PRO_FONT
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.italic = italic
+        run.font.color.rgb = RGBColor.from_string(color)
+    return tb
+
+
+def _pro_item_cost(item):
+    """Height in points one body item costs on a text slide: a text
+    line costs its wrapped lines at 14pt; a quote group costs its
+    wrapped lines at 12pt plus the card padding (0.30in) and the
+    0.15in gap after the card."""
+    if item[0] == "text":
+        return _pro_visual_lines(item[1]) * _pro_pitch_pt(_PRO_BODY_PT)
+    n = sum(_pro_visual_lines(ln, _PRO_QUOTE_CHARS_PER_LINE)
+            for ln in item[1])
+    return 0.45 * 72 + n * _pro_pitch_pt(_PRO_QUOTE_PT)
+
+
+def _pro_chunk_items(items, budget_pt, char_cap=2000):
+    """Split body items into slide chunks fitting budget_pt. Quote
+    groups are atomic (a group longer than the budget is split into
+    smaller cards first); text lines split freely."""
+    flat = []
+    for _it in items:
+        if _it[0] == "quote" and _pro_item_cost(_it) > budget_pt:
+            for _k in range(0, len(_it[1]), 8):
+                flat.append(("quote", _it[1][_k:_k + 8]))
+        else:
+            flat.append(_it)
+    chunks, cur, cost, chars = [], [], 0.0, 0
+    if not flat:
+        return []
+    for _it in flat:
+        _c = _pro_item_cost(_it)
+        _n = len(_it[1]) if _it[0] == "text" \
+            else sum(len(x) for x in _it[1])
+        if cur and (cost + _c > budget_pt or chars + _n > char_cap):
+            chunks.append(cur)
+            cur, cost, chars = [], 0.0, 0
+        cur.append(_it)
+        cost += _c
+        chars += _n
+    if cur or not chunks:
+        chunks.append(cur)
+    return chunks
+
+
+def _pro_footer(slide, number, footer_text, dark=False):
+    """Footer brand text (left) + page-number chip (top-right navy
+    square, cyan on dark slides). No 'n / total' — the chip carries
+    the number alone."""
+    color = _PPTX_MUTED_DARK if dark else _PPTX_MUTED
+    left_text = _PPTX_BRAND
+    if footer_text:
+        left_text += f"  ·  {footer_text}"
+    _pro_textbox(slide, _PRO_MARGIN, _PRO_FOOTER_TOP, Inches(8.0),
+                 Inches(0.3),
+                 [(left_text, 9, False, color, False, PP_ALIGN.LEFT)])
+    chip_fill = _PPTX_CYAN if dark else _PPTX_NAVY
+    chip_color = _PPTX_NAVY if dark else _PPTX_WHITE
+    _pptx_rect(slide, _PRO_CHIP_LEFT, _PRO_CHIP_TOP, _PRO_CHIP, _PRO_CHIP,
+               fill_hex=chip_fill)
+    _pro_textbox(slide, _PRO_CHIP_LEFT, _PRO_CHIP_TOP, _PRO_CHIP, _PRO_CHIP,
+                 [(str(number), 14, True, chip_color, False, PP_ALIGN.CENTER)],
+                 anchor=MSO_ANCHOR.MIDDLE)
+
+
+def _pro_header(slide, kicker, title, insight, number, footer_text):
+    """Kicker + left-aligned title + accent rule + insight line +
+    footer/chip on a content slide."""
+    if kicker:
+        _pro_textbox(slide, _PRO_MARGIN, _PRO_KICKER_TOP, _PRO_BODY_W,
+                     Inches(0.28),
+                     [(kicker, 13, True, _PPTX_CYAN, False, PP_ALIGN.LEFT)])
+    _pro_textbox(slide, _PRO_MARGIN, _PRO_TITLE_TOP, _PRO_BODY_W,
+                 Inches(0.72),
+                 [(title, 28, True, _PPTX_NAVY, False, PP_ALIGN.LEFT)])
+    _pptx_rect(slide, _PRO_MARGIN, _PRO_RULE_TOP, Inches(1.2), Inches(0.05),
+               fill_hex=_PPTX_CYAN)
+    if insight:
+        _pro_textbox(slide, _PRO_MARGIN, _PRO_INSIGHT_TOP, _PRO_BODY_W,
+                     Inches(0.30),
+                     [(insight, 14, False, _PPTX_MUTED, False, PP_ALIGN.LEFT)])
+    _pro_footer(slide, number, footer_text)
+
+
+def _pro_source_line(footer):
+    return footer if footer else "Source: project analysis"
+
+
+_PRO_CARD_BAR = [_PPTX_CYAN, _PPTX_BLUE, _PPTX_TEAL, _PRO_AMBER]
+
+
+def _pro_add_cards(slide, cards, top):
+    """KPI/finding card row at `top`. KPI cards: 20pt bold value +
+    11pt caps label; finding cards: 12pt text. Left accent bar in
+    palette order (cyan/blue/teal/amber); finding cards use teal.
+    Returns the y below the cards."""
+    n = len(cards)
+    gap = _PRO_CARD_GAP
+    w = (_PRO_BODY_W - gap * (n - 1)) / n
+    for k, (value, label, is_finding) in enumerate(cards):
+        left = _PRO_MARGIN + k * (w + gap)
+        bar = _PPTX_TEAL if is_finding else _PRO_CARD_BAR[k % len(_PRO_CARD_BAR)]
+        _pptx_rect(slide, left, top, w, _PRO_CARD_H, fill_hex=_PPTX_BG,
+                   shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+        _pptx_rect(slide, left, top, Inches(0.07), _PRO_CARD_H, fill_hex=bar)
+        if is_finding:
+            _pro_textbox(slide, left + Inches(0.18), top + Inches(0.12),
+                         w - Inches(0.30), _PRO_CARD_H - Inches(0.24),
+                         [(value, 12, False, _PPTX_TEXT, False, PP_ALIGN.LEFT)])
+        else:
+            _pro_textbox(slide, left + Inches(0.18), top + Inches(0.12),
+                         w - Inches(0.30), Inches(0.55),
+                         [(value, 20, True, _PPTX_NAVY, False, PP_ALIGN.LEFT)])
+            if label:
+                _pro_textbox(slide, left + Inches(0.18), top + Inches(0.72),
+                             w - Inches(0.30), Inches(0.35),
+                             [(label.upper(), 11, True, _PPTX_CARD_LABEL,
+                               False, PP_ALIGN.LEFT)])
+    return top + _PRO_CARD_H + Inches(0.15)
+
+
+def _pro_set_cell_border(cell, color="E2E8F0", width_pt=0.75):
+    """Hairline bottom border on a table cell (python-pptx has no
+    border API — this edits the a:tcPr XML directly). The lnB element
+    is inserted first in tcPr so it precedes the fill element, per
+    the DrawingML schema order."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    for _el in tcPr.findall(qn("a:lnB")):
+        tcPr.remove(_el)
+    ln = tcPr.makeelement(qn("a:lnB"), {"w": str(int(width_pt * 12700)),
+                                        "cap": "flat", "cmpd": "sng",
+                                        "algn": "ctr"})
+    fill = ln.makeelement(qn("a:solidFill"), {})
+    clr = fill.makeelement(qn("a:srgbClr"), {"val": color})
+    fill.append(clr)
+    ln.append(fill)
+    tcPr.insert(0, ln)
+
+
+def _pro_add_table(slide, left, top, width, header, rows, first_col_frac=0.55):
+    """Full-width styled table: navy header (12pt bold white, 0.48in),
+    12pt body rows (0.38in min), alternating fills, hairline bottom
+    border on every cell. Returns the table height in inches."""
+    nrows, ncols = len(rows) + 1, len(header)
+    shape = slide.shapes.add_table(nrows, ncols, left, top, width,
+                                   _PRO_TABLE_ROW_H * nrows)
+    table = shape.table
+    table.first_row = False
+    table.horz_banding = False
+    first_w = width * first_col_frac
+    rest_w = (width - first_w) / max(ncols - 1, 1)
+    table.columns[0].width = int(first_w)
+    for j in range(1, ncols):
+        table.columns[j].width = int(rest_w)
+    table.rows[0].height = _PRO_TABLE_HEADER_H
+    for i in range(1, nrows):
+        table.rows[i].height = _PRO_TABLE_ROW_H
+    for j, h in enumerate(header):
+        cell = table.cell(0, j)
+        cell.text = str(h)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = RGBColor.from_string(_PPTX_NAVY)
+        cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+        cell.text_frame.word_wrap = True
+        for p in cell.text_frame.paragraphs:
+            p.alignment = PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER
+            for r in p.runs:
+                r.font.name = _PRO_FONT
+                r.font.size = Pt(12)
+                r.font.bold = True
+                r.font.color.rgb = RGBColor.from_string(_PPTX_WHITE)
+        _pro_set_cell_border(cell)
+    for i, row in enumerate(rows):
+        fill = _PPTX_WHITE if i % 2 == 0 else _PPTX_BG
+        for j, val in enumerate(row):
+            cell = table.cell(i + 1, j)
+            cell.text = str(val)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string(fill)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.text_frame.word_wrap = True
+            for p in cell.text_frame.paragraphs:
+                p.alignment = PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER
+                for r in p.runs:
+                    r.font.name = _PRO_FONT
+                    r.font.size = Pt(12)
+                    r.font.color.rgb = RGBColor.from_string(_PPTX_TEXT)
+            _pro_set_cell_border(cell)
+    return (_PRO_TABLE_HEADER_H + _PRO_TABLE_ROW_H * len(rows)) / 914400
+
+
+def _pro_chart_data(value_table):
+    """A value-table group -> (kind, cats, vals) for a native chart,
+    or None. Only the project's own parsed numbers: categories are
+    the answer labels, values are the parsed percentages. Pie when
+    the shares sum to ~100% (2-5 slices); otherwise a bar chart.
+    More than 8 categories is too crowded to chart — table only."""
+    _hdr, rows, _used = value_table
+    if len(rows) < 2 or len(rows) > 8:
+        return None
+    try:
+        vals = [float(r[2].rstrip("%")) for r in rows]
+    except (ValueError, IndexError):
+        return None
+    cats = [str(r[0]) for r in rows]
+    total = sum(vals)
+    if 2 <= len(rows) <= 5 and 99.0 <= total <= 101.0:
+        kind = "pie"
+        cats = [c[:31] + "…" if len(c) > 32 else c for c in cats]
+    else:
+        kind = "bar"
+        cats = [c[:27] + "…" if len(c) > 28 else c for c in cats]
+    return kind, cats, vals
+
+
+def _pro_add_chart(slide, kind, cats, vals):
+    """Native chart frame at (0.50, 2.00, 12.33, 4.60) per spec §5:
+    single-series bars in brand blue with data labels and a hidden
+    value axis, no legend, no in-chart title; pie with a right legend
+    and palette-ordered slices."""
+    data = CategoryChartData()
+    data.categories = cats
+    data.add_series("Share", vals)
+    chart_type = (XL_CHART_TYPE.PIE if kind == "pie"
+                  else XL_CHART_TYPE.COLUMN_CLUSTERED)
+    gframe = slide.shapes.add_chart(chart_type, _PRO_MARGIN, _PRO_CHART_TOP,
+                                    _PRO_BODY_W, _PRO_CHART_H, data)
+    chart = gframe.chart
+    chart.has_title = False
+    plot = chart.plots[0]
+    plot.has_data_labels = True
+    dl = plot.data_labels
+    dl.show_value = True
+    dl.number_format = '0"%"'
+    dl.number_format_is_linked = False
+    dl.font.name = _PRO_FONT
+    dl.font.bold = True
+    dl.font.color.rgb = RGBColor.from_string(_PPTX_TEXT)
+    if kind == "pie":
+        dl.font.size = Pt(10)
+        dl.position = XL_LABEL_POSITION.OUTSIDE_END
+        chart.has_legend = True
+        chart.legend.position = XL_LEGEND_POSITION.RIGHT
+        chart.legend.include_in_layout = False
+        chart.legend.font.name = _PRO_FONT
+        chart.legend.font.size = Pt(10)
+        for _pt, _hex in zip(plot.series[0].points, _PRO_CHART_SERIES):
+            _pt.format.fill.solid()
+            _pt.format.fill.fore_color.rgb = RGBColor.from_string(_hex)
+    else:
+        dl.font.size = Pt(11)
+        dl.position = XL_LABEL_POSITION.OUTSIDE_END
+        chart.has_legend = False
+        plot.gap_width = 100
+        ser = plot.series[0]
+        ser.format.fill.solid()
+        ser.format.fill.fore_color.rgb = RGBColor.from_string(_PPTX_BLUE)
+        va = chart.value_axis
+        va.visible = False
+        va.has_major_gridlines = False
+        va.major_tick_mark = XL_TICK_MARK.NONE
+        ca = chart.category_axis
+        ca.has_major_gridlines = False
+        ca.major_tick_mark = XL_TICK_MARK.OUTSIDE
+        ca.tick_labels.font.name = _PRO_FONT
+        ca.tick_labels.font.size = Pt(10)
+        ca.tick_labels.font.color.rgb = RGBColor.from_string(_PPTX_TEXT)
+    return gframe
+
+
+def _pro_pick_insight(lines, table_idx, card_used):
+    """The section's one-line takeaway for the insight line: the
+    first body line that is a real sentence (longer than 25 chars,
+    fits one 14pt line, not a heading, quote, or table line). The
+    line is then shown ONLY as the insight line, not repeated in the
+    body. Returns (insight_text, index) or ("", None)."""
+    n_body = sum(1 for i in range(len(lines))
+                 if i not in table_idx and i not in card_used)
+    if n_body < 2:
+        return "", None
+    for i, line in enumerate(lines):
+        if i in table_idx or i in card_used:
+            continue
+        s = line.strip()
+        if len(s) <= 25 or len(s) > _PRO_BODY_CHARS_PER_LINE:
+            continue
+        if s.endswith(":") or s.startswith("> "):
+            continue
+        return s, i
+    return "", None
+
+
+def _pro_render_items(slide, items, top):
+    """Lay out text/quote items top-down from `top` (an EMU Length).
+    Consecutive text lines share one textbox; each quote group is a
+    callout card (light fill, teal left bar, 12pt italic)."""
+    y = top
+    run = []
+
+    def _flush_run():
+        nonlocal y, run
+        if not run:
+            return
+        h_pt = sum(_pro_visual_lines(ln) * _pro_pitch_pt(_PRO_BODY_PT)
+                   for ln in run)
+        tb = _pro_textbox(slide, _PRO_MARGIN, y, _PRO_BODY_W,
+                          Inches(h_pt / 72),
+                          [(ln, _PRO_BODY_PT, False, _PPTX_TEXT, False,
+                            PP_ALIGN.LEFT) for ln in run])
+        for _p in tb.text_frame.paragraphs:
+            _p.space_before = Pt(0)
+            _p.space_after = Pt(_PRO_BODY_SPACE_AFTER_PT)
+            _p.line_spacing = _PRO_BODY_LINE_SPACING
+        y = y + int(h_pt * 12700)
+        run = []
+
+    for _it in items:
+        if _it[0] == "text":
+            run.append(_it[1])
+        else:
+            _flush_run()
+            _n = sum(_pro_visual_lines(ln, _PRO_QUOTE_CHARS_PER_LINE)
+                     for ln in _it[1])
+            _card_h = Inches(0.30 + 0.29 * _n)
+            _pptx_rect(slide, _PRO_MARGIN, y, _PRO_BODY_W, _card_h,
+                       fill_hex=_PPTX_BG, shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+            _pptx_rect(slide, _PRO_MARGIN, y, Inches(0.07), _card_h,
+                       fill_hex=_PPTX_TEAL)
+            _qtb = _pro_textbox(slide, _PRO_MARGIN + Inches(0.18),
+                                y + Inches(0.15),
+                                _PRO_BODY_W - Inches(0.36),
+                                Inches(0.29 * _n),
+                                [(ln, _PRO_QUOTE_PT, False, _PPTX_TEXT, True,
+                                  PP_ALIGN.LEFT) for ln in _it[1]])
+            for _p in _qtb.text_frame.paragraphs:
+                _p.space_before = Pt(0)
+                _p.space_after = Pt(_PRO_BODY_SPACE_AFTER_PT)
+                _p.line_spacing = _PRO_BODY_LINE_SPACING
+            y = y + _card_h + Inches(0.15)
+    _flush_run()
+    return y
+
+
+def _pro_analysis_to_pptx(analysis_text, title_text, out_path,
+                          subtitle=None, footer=None):
+    """Professional template (v3.37): 16:9, left-aligned titles,
+    kicker + insight line, KPI cards, native charts, full-width
+    tables, quote callout cards, agenda / divider / closing slides.
+    Content logic mirrors analysis_to_pptx (same sections, same
+    order); only the visual layer differs."""
+    prs = Presentation()
+    prs.slide_width = _PRO_SW
+    prs.slide_height = _PRO_SH
+    blank = prs.slide_layouts[6]
+    sections = parse_sections(analysis_text)
+    page = 0  # non-title slides, for the page chip
+
+    def _new_slide(dark=False):
+        nonlocal page
+        page += 1
+        slide = prs.slides.add_slide(blank)
+        _set_bg(slide, _PPTX_NAVY if dark else _PPTX_WHITE)
+        return slide, page
+
+    # --- title slide: navy, cyan bar, 44pt title, 16pt subtitle ---
+    slide = prs.slides.add_slide(blank)
+    _set_bg(slide, _PPTX_NAVY)
+    _pptx_rect(slide, _PRO_MARGIN, Inches(1.95), Inches(1.6), Inches(0.08),
+               fill_hex=_PPTX_CYAN)
+    _pro_textbox(slide, _PRO_MARGIN, Inches(2.15), _PRO_BODY_W, Inches(1.6),
+                 [(title_text, 44, True, _PPTX_WHITE, False, PP_ALIGN.LEFT)])
+    _pro_textbox(slide, _PRO_MARGIN, Inches(4.0), _PRO_BODY_W, Inches(0.9),
+                 [(subtitle or _PPTX_BRAND, 16, False, _PPTX_SUBTITLE_LIGHT,
+                   False, PP_ALIGN.LEFT)])
+    _pptx_rect(slide, Inches(0), Inches(7.38), _PRO_SW, Inches(0.12),
+               fill_hex=_PPTX_TEAL)
+
+    # --- agenda ---
+    slide, _n = _new_slide()
+    _pro_textbox(slide, _PRO_MARGIN, _PRO_TITLE_TOP, _PRO_BODY_W, Inches(0.72),
+                 [("Agenda", 32, True, _PPTX_NAVY, False, PP_ALIGN.LEFT)])
+    _pptx_rect(slide, _PRO_MARGIN, _PRO_RULE_TOP, Inches(1.2), Inches(0.05),
+               fill_hex=_PPTX_CYAN)
+    _row_h = min(0.42, 4.95 / max(len(sections), 1))
+    for _i, _sec in enumerate(sections, start=1):
+        _y = _PRO_BODY_TOP + Inches(_row_h * (_i - 1))
+        _pro_textbox(slide, _PRO_MARGIN, _y, Inches(0.5), Inches(_row_h),
+                     [(f"{_i}", 14, True, _PPTX_CYAN, False, PP_ALIGN.LEFT)])
+        _pro_textbox(slide, _PRO_MARGIN + Inches(0.6), _y, Inches(7.5),
+                     Inches(_row_h),
+                     [(_sec["title"], 14, False, _PPTX_TEXT, False,
+                       PP_ALIGN.LEFT)])
+    _pro_footer(slide, _n, footer)
+
+    # --- sections ---
+    for si, section in enumerate(sections, start=1):
+        lines = section["lines"]
+        is_exec = "executive summary" in section["title"].lower()
+        is_xtab = section["title"].lower().startswith("cross-tab")
+        table_kind, table_info, table_idx = None, None, set()
+        if is_xtab:
+            _ct = _pptx_crosstab_table(lines)
+            if _ct and len(_ct[1]) <= 10:
+                table_kind, table_info = "xtab", _ct
+                table_idx = set(range(len(lines)))
+        else:
+            _vt = _pptx_value_table(lines)
+            if _vt and len(_vt[1]) <= 10:
+                table_kind, table_info = "value", _vt
+                table_idx = set(_vt[2])
+        cards, card_used = (_pptx_kpi_cards(lines, max_cards=4)
+                            if is_exec else ([], set()))
+        insight, insight_idx = _pro_pick_insight(lines, table_idx, card_used)
+        indexed = []
+        for i, line in enumerate(lines):
+            if i == insight_idx or i in card_used or i in table_idx:
+                continue
+            if line.startswith("> "):
+                if indexed and indexed[-1][1][0] == "quote":
+                    indexed[-1][1][1].append(line[2:])
+                else:
+                    indexed.append((i, ("quote", [line[2:]])))
+            else:
+                indexed.append((i, ("text", line)))
+        if table_idx:
+            _ga, _gb = min(table_idx), max(table_idx)
+            before = [it for idx, it in indexed if idx < _ga]
+            after = [it for idx, it in indexed if idx > _gb]
+        else:
+            before, after = [it for _idx, it in indexed], []
+        part = 0  # per-section slide counter for "(continued N)"
+
+        def _content_slide():
+            nonlocal part
+            part += 1
+            slide, _n = _new_slide()
+            _title = section["title"] if part == 1 \
+                else f"{section['title']} (continued {part})"
+            _pro_header(slide, f"SECTION {si:02d}", _title, insight, _n,
+                        footer)
+            return slide, _n
+
+        # Divider before every section except the Executive Summary.
+        if not is_exec:
+            slide, _n = _new_slide(dark=True)
+            _pro_textbox(slide, _PRO_MARGIN, Inches(2.20), _PRO_BODY_W,
+                         Inches(1.0),
+                         [(f"{si:02d}", 48, True, _PPTX_CYAN, False,
+                           PP_ALIGN.LEFT)])
+            _pro_textbox(slide, _PRO_MARGIN, Inches(3.00), _PRO_BODY_W,
+                         Inches(0.8),
+                         [(section["title"], 32, True, _PPTX_WHITE, False,
+                           PP_ALIGN.LEFT)])
+            _pptx_rect(slide, _PRO_MARGIN, Inches(3.90), Inches(1.2),
+                       Inches(0.05), fill_hex=_PPTX_CYAN)
+            _pro_footer(slide, _n, footer, dark=True)
+        # Text slides for the lines before the table group.
+        budget = _PRO_BODY_BUDGET_PT
+        if is_exec and cards:
+            budget -= (_PRO_CARD_H + Inches(0.15)) / 12700
+        chunks = _pro_chunk_items(before, budget)
+        if not chunks and cards:
+            chunks = [[]]
+        for _ci, chunk in enumerate(chunks):
+            slide, _n = _content_slide()
+            _y = _PRO_BODY_TOP
+            if is_exec and _ci == 0 and cards:
+                _y = _pro_add_cards(slide, cards, _PRO_BODY_TOP)
+            _pro_render_items(slide, chunk, _y)
+        # Chart + table slides for the table group.
+        if table_info:
+            _hdr, _rows, _used = table_info
+            if table_kind == "value":
+                _chart = _pro_chart_data(table_info)
+                if _chart:
+                    slide, _n = _content_slide()
+                    _pro_add_chart(slide, _chart[0], _chart[1], _chart[2])
+                    _pro_textbox(slide, _PRO_MARGIN,
+                                 _PRO_CHART_TOP + _PRO_CHART_H + Inches(0.10),
+                                 _PRO_BODY_W, Inches(0.25),
+                                 [(_pro_source_line(footer), 9, False,
+                                   _PPTX_MUTED, False, PP_ALIGN.LEFT)])
+            slide, _n = _content_slide()
+            _frac = 0.55 if table_kind == "value" else 0.30
+            _th = _pro_add_table(slide, _PRO_MARGIN, _PRO_BODY_TOP,
+                                 _PRO_BODY_W, _hdr, _rows, _frac)
+            _pro_textbox(slide, _PRO_MARGIN,
+                         _PRO_BODY_TOP + Inches(_th + 0.10),
+                         _PRO_BODY_W, Inches(0.25),
+                         [(_pro_source_line(footer), 9, False, _PPTX_MUTED,
+                           False, PP_ALIGN.LEFT)])
+        # Text slides for the lines after the table group.
+        for chunk in _pro_chunk_items(after, _PRO_BODY_BUDGET_PT):
+            slide, _n = _content_slide()
+            _pro_render_items(slide, chunk, _PRO_BODY_TOP)
+
+    # --- closing slide ---
+    slide, _n = _new_slide(dark=True)
+    _pro_textbox(slide, Inches(0.67), Inches(2.66), Inches(12.16), Inches(0.8),
+                 [("Thank You", 33, True, _PPTX_WHITE, False, PP_ALIGN.LEFT)])
+    _pro_textbox(slide, Inches(0.67), Inches(3.21), Inches(12.16), Inches(0.5),
+                 [(subtitle or _PPTX_BRAND, 15, False, _PPTX_SUBTITLE_LIGHT,
+                   False, PP_ALIGN.LEFT)])
+    _pptx_rect(slide, Inches(0.64), Inches(3.91), Inches(12.00), Inches(0.05),
+               fill_hex=_PPTX_CYAN)
+    _pro_textbox(slide, Inches(0.67), Inches(4.10), Inches(12.16), Inches(0.5),
+                 [(_PPTX_BRAND, 14, True, _PPTX_WHITE, False, PP_ALIGN.LEFT)])
+    _pro_footer(slide, _n, footer, dark=True)
+    prs.save(out_path)
+    return out_path
+
+
 def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Clean",
                     subtitle=None, footer=None):
     """PPTX export — the main report deliverable (his rule: reports are
@@ -3414,7 +4006,13 @@ def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Cle
     footer. subtitle goes on
     the title slide (client + month); footer (e.g. 'Base: N=82' for
     Quant reports) is printed in the footer of every content slide, so
-    the N base is stated on every slide."""
+    the N base is stated on every slide. v3.37 adds the Professional
+    template (16:9, left titles, kicker + insight line, native charts,
+    agenda/divider/closing) as a parallel renderer — Business Clean's
+    code path below is untouched."""
+    if template == "Professional":
+        return _pro_analysis_to_pptx(analysis_text, title_text, out_path,
+                                     subtitle=subtitle, footer=footer)
     t = TEMPLATES.get(template, TEMPLATES["Business Clean"])
     dark = t["bg"].upper() == _PPTX_NAVY
     prs = Presentation()
