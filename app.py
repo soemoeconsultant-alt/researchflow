@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.38"
+APP_VERSION = "3.39"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4188,6 +4188,72 @@ def _exec_summary_sections(stem, analysis_text):
     return [], None
 
 
+def _summary_key_findings(analysis_text, stem):
+    """Key Findings lines for the v3.39 Summary report: the analysis's own
+    Key Findings section first; else the saved <stem>_topline.txt; else [].
+    Nothing is invented — when neither source exists the section is left
+    out of the summary."""
+    for sec in parse_sections(analysis_text):
+        if "key finding" in sec["title"].lower() and sec["lines"]:
+            return list(sec["lines"])
+    topline_path = ANALYSIS_DIR / f"{stem}_topline.txt"
+    if topline_path.exists():
+        try:
+            ttext = topline_path.read_text(encoding="utf-8", errors="replace")
+            if looks_like_html(ttext):
+                ttext = html_to_text(ttext)
+            tlines = []
+            for sec in parse_sections(ttext):
+                tlines.extend(sec["lines"])
+            return tlines
+        except Exception:
+            return []
+    return []
+
+
+def _summary_conclusion(analysis_text):
+    """Conclusion lines for the v3.39 Summary report, only when the
+    analysis has a Conclusion section; else [] (section omitted)."""
+    for sec in parse_sections(analysis_text):
+        if "conclusion" in sec["title"].lower() and sec["lines"]:
+            return list(sec["lines"])
+    return []
+
+
+def _build_summary_text(brief, analysis_text, stem, source_name):
+    """Compose the v3.39 Summary report text — deterministic, NO AI call.
+    Order: client name (from the brief, if present) + export date
+    (preamble), Research Objectives (from the brief), Key Findings (from
+    the analysis's Key Findings section, else the saved topline, else
+    omitted), Conclusion (only when the analysis has one), and a footer
+    line naming the source analysis file. A section with no source is
+    left out — never invented. The text is in parse_sections format, so
+    the existing analysis_to_docx() renders it."""
+    lines = []
+    if (brief or {}).get("client_name"):
+        lines.append(f"Client: {brief['client_name']}")
+    lines.append(f"Export date: {datetime.date.today().isoformat()}")
+    lines.append("")
+    if (brief or {}).get("objectives"):
+        lines.append("## Research Objectives")
+        for _ol in str(brief["objectives"]).splitlines():
+            if _ol.strip():
+                lines.append(_ol.strip())
+        lines.append("")
+    _kf = _summary_key_findings(analysis_text, stem)
+    if _kf:
+        lines.append("## Key Findings")
+        lines.extend(_kf)
+        lines.append("")
+    _con = _summary_conclusion(analysis_text)
+    if _con:
+        lines.append("## Conclusion")
+        lines.extend(_con)
+        lines.append("")
+    lines.append(f"Source analysis: {source_name}")
+    return "\n".join(lines)
+
+
 def _report_text_with_summary(analysis_text, stem, fallback_text=None):
     """Compose the export text: an Executive Summary section first, then the
     full analysis. Returns (text, source). When the analysis already has an
@@ -7848,6 +7914,15 @@ if st.session_state.get("_last_scrolled_page") != page:
         unsafe_allow_javascript=True,
     )
 
+# --- Report types (v3.39): built one at a time, in this order. ---
+# The Reports page offers each type; only the built ones export. NO
+# SAMPLE CONTENT: the type names are generic report kinds, not sample
+# content — every value in an export comes from the project's OWN brief
+# and saved analysis.
+REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
+                "Data only", "Tabulation", "Transcripts"]
+REPORT_TYPES_BUILT = {"Summary"}
+
 if page == "Dashboard":
 
     st.markdown(
@@ -9945,6 +10020,27 @@ elif page == "Reports":
         saved_names = [f.name for f in saved]
         selected = st.selectbox(T("Pick an analysis", "Analysis ရွေးပါ"), saved_names)
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
+        # v3.39: report types are built one at a time, in REPORT_TYPES
+        # order — Summary first. Unbuilt types get an info note only, no
+        # export button; the existing PPTX/DOCX exports below are untouched.
+        report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
+        if report_type == "Summary":
+            if st.button("Export Summary (DOCX)"):
+                _summary_text = _build_summary_text(_pbrief, _analysis_text, _stem, selected)
+                _summary_path = REPORTS_DIR / f"{_stem}_summary.docx"
+                with st.spinner(T("Exporting Summary...", "Summary ထုတ်နေပါတယ်...")):
+                    analysis_to_docx(_summary_text, f"{title_text} — Summary", _summary_path)
+                store_upload_existing("reports", _summary_path.name)
+                st.success(f"Done — {_summary_path.name}")
+                st.download_button(
+                    "Download Summary (DOCX)",
+                    data=_summary_path.read_bytes(),
+                    file_name=_summary_path.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+        else:
+            st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
+                      f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
         if looks_like_html(_analysis_text):
