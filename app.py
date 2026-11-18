@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.39"
+APP_VERSION = "3.40"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4254,6 +4254,65 @@ def _build_summary_text(brief, analysis_text, stem, source_name):
     return "\n".join(lines)
 
 
+def _topline_source(analysis_text, stem):
+    """Headline-findings source for the v3.40 Topline report. Returns
+    (lines, source) in this priority: (a) 'topline' — the saved
+    <stem>_topline.txt (Reports page 'Create executive summary'); (b)
+    'existing' — the analysis's own Executive Summary section; (c)
+    'key_findings' — the analysis's Key Findings section. ([], None)
+    when none of those exist — the caller then shows 'create the
+    topline first' instead of exporting. Nothing is invented."""
+    topline_path = ANALYSIS_DIR / f"{stem}_topline.txt"
+    if topline_path.exists():
+        try:
+            ttext = topline_path.read_text(encoding="utf-8", errors="replace")
+            if looks_like_html(ttext):
+                ttext = html_to_text(ttext)
+            tlines = []
+            for sec in parse_sections(ttext):
+                tlines.extend(sec["lines"])
+            if tlines:
+                return tlines, "topline"
+        except Exception:
+            pass
+    for sec in parse_sections(analysis_text):
+        if "executive summary" in sec["title"].lower() and sec["lines"]:
+            return list(sec["lines"]), "existing"
+    for sec in parse_sections(analysis_text):
+        if "key finding" in sec["title"].lower() and sec["lines"]:
+            return list(sec["lines"]), "key_findings"
+    return [], None
+
+
+def _build_topline_text(brief, analysis_text, stem, source_name):
+    """Compose the v3.40 Topline report text — deterministic, NO AI call.
+    Order: client name (from the brief, if present) + export date
+    (preamble), Executive Summary / headline findings (from
+    _topline_source: saved topline first, then the analysis's Executive
+    Summary section, then its Key Findings), Key numbers (a survey-base
+    line ONLY when the project has quant data — N from the saved quant
+    summaries, never invented), and a footer line naming the source
+    analysis file. The text is in parse_sections format, so the existing
+    analysis_to_docx() renders it."""
+    lines = []
+    if (brief or {}).get("client_name"):
+        lines.append(f"Client: {brief['client_name']}")
+    lines.append(f"Export date: {datetime.date.today().isoformat()}")
+    lines.append("")
+    _tl, _src = _topline_source(analysis_text, stem)
+    if _tl:
+        lines.append("## Executive Summary")
+        lines.extend(_tl)
+        lines.append("")
+    _qn = _quant_total_n(_load_quant_texts())
+    if _qn is not None:
+        lines.append("## Key numbers")
+        lines.append(f"Survey base: N={_qn}")
+        lines.append("")
+    lines.append(f"Source analysis: {source_name}")
+    return "\n".join(lines)
+
+
 def _report_text_with_summary(analysis_text, stem, fallback_text=None):
     """Compose the export text: an Executive Summary section first, then the
     full analysis. Returns (text, source). When the analysis already has an
@@ -7921,7 +7980,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report"}
 
 if page == "Dashboard":
 
@@ -10021,9 +10080,19 @@ elif page == "Reports":
         selected = st.selectbox(T("Pick an analysis", "Analysis ရွေးပါ"), saved_names)
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
         # v3.39: report types are built one at a time, in REPORT_TYPES
-        # order — Summary first. Unbuilt types get an info note only, no
-        # export button; the existing PPTX/DOCX exports below are untouched.
+        # order — Summary first, Topline report second (v3.40).
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
+        _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
+        _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
+        if looks_like_html(_analysis_text):
+            _analysis_text = html_to_text(_analysis_text)
+        title_text = selected.replace("_analysis.txt", "").replace("_", " ")
+        # v3.40: the report-type exports live HERE — after _stem /
+        # _analysis_text / title_text are assigned. v3.39 placed the
+        # Summary export above those assignments, so clicking it raised
+        # NameError; this move fixes that. Unbuilt types get an info
+        # note only, no export button; the existing PPTX/DOCX exports
+        # below are untouched.
         if report_type == "Summary":
             if st.button("Export Summary (DOCX)"):
                 _summary_text = _build_summary_text(_pbrief, _analysis_text, _stem, selected)
@@ -10038,14 +10107,27 @@ elif page == "Reports":
                     file_name=_summary_path.name,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+        elif report_type == "Topline report":
+            _topline_lines, _topline_src = _topline_source(_analysis_text, _stem)
+            if not _topline_lines:
+                st.info(T("No topline yet — create the executive summary (topline) below first, or add an Executive Summary or Key Findings section to the analysis.",
+                          "Topline မရှိသေးဘူး — အောက်မှာ executive summary (topline) အရင် လုပ်ပါ၊ ဒါမှမဟုတ် analysis မှာ Executive Summary ဒါမှမဟုတ် Key Findings အပိုင်း ထည့်ပါ။"))
+            elif st.button("Export Topline (DOCX)"):
+                _topline_text = _build_topline_text(_pbrief, _analysis_text, _stem, selected)
+                _topline_path = REPORTS_DIR / f"{_stem}_topline.docx"
+                with st.spinner(T("Exporting Topline...", "Topline ထုတ်နေပါတယ်...")):
+                    analysis_to_docx(_topline_text, f"{title_text} — Topline", _topline_path)
+                store_upload_existing("reports", _topline_path.name)
+                st.success(f"Done — {_topline_path.name}")
+                st.download_button(
+                    "Download Topline (DOCX)",
+                    data=_topline_path.read_bytes(),
+                    file_name=_topline_path.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
                       f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
-        _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
-        _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
-        if looks_like_html(_analysis_text):
-            _analysis_text = html_to_text(_analysis_text)
-        title_text = selected.replace("_analysis.txt", "").replace("_", " ")
         # v3.28: PPTX is the main deliverable — it uses the assembled report
         # structure template (Qual or Quant, picked from the design method);
         # DOCX stays topline/summary — the original analysis + Executive
