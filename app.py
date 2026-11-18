@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.41"
+APP_VERSION = "3.42"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -7980,7 +7980,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation"}
 
 if page == "Dashboard":
 
@@ -10081,7 +10081,7 @@ elif page == "Reports":
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
         # v3.39: report types are built one at a time, in REPORT_TYPES
         # order — Summary first, Topline report second (v3.40),
-        # Full report third (v3.41).
+        # Full report third (v3.41), Presentation fourth (v3.42).
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
@@ -10118,14 +10118,27 @@ elif page == "Reports":
         else:
             st.caption(T("No Executive Summary available — create a topline below, or add a Key Findings section.", "Executive Summary မရှိသေးဘူး — အောက်မှာ topline လုပ်ပါ၊ ဒါမှမဟုတ် Key Findings အပိုင်း ထည့်ပါ။"))
 
+        # PPTX title slide: client + export month, like the sample title slides.
+        # v3.42: _pptx_subtitle is computed HERE (it only needs _pbrief +
+        # today's date) so the Presentation branch below can use it — the
+        # v3.39 wiring rule: every variable a button uses must be assigned
+        # above it. The standalone "Export PPTX" button below still uses
+        # the same subtitle.
+        _pptx_subtitle = "Market Research AI — ResearchFlow"
+        if _pbrief.get("client_name"):
+            _pptx_subtitle += f" · {_pbrief['client_name']}"
+        _pptx_subtitle += f" · {datetime.date.today().strftime('%b %Y')}"
+
         # v3.41: the report-type exports live HERE — after _stem /
         # _analysis_text / title_text AND _assembled_text are
         # assigned. v3.40 moved them after _stem/_analysis_text
         # (fixing the v3.39 NameError); v3.41 moves them after
         # _assembled_text too, so the Full report can render the
-        # assembled Qual/Quant report text. Unbuilt types get an
-        # info note only, no export button; the existing PPTX/DOCX
-        # exports below are untouched.
+        # assembled Qual/Quant report text. v3.42 moves
+        # _pptx_subtitle up here too, so Presentation can call
+        # analysis_to_pptx with the same subtitle. Unbuilt types
+        # get an info note only, no export button; the existing
+        # PPTX/DOCX exports below are untouched.
         if report_type == "Summary":
             if st.button("Export Summary (DOCX)"):
                 _summary_text = _build_summary_text(_pbrief, _analysis_text, _stem, selected)
@@ -10171,6 +10184,20 @@ elif page == "Reports":
                     file_name=_full_path.name,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+        elif report_type == "Presentation":
+            if st.button("Export Presentation (PPTX)"):
+                _pres_path = REPORTS_DIR / selected.replace("_analysis.txt", ".pptx")
+                with st.spinner(T("Exporting Presentation...", "Presentation ထုတ်နေပါတယ်...")):
+                    analysis_to_pptx(_pptx_text, title_text, _pres_path, template,
+                                     subtitle=_pptx_subtitle, footer=_pptx_footer)
+                store_upload_existing("reports", _pres_path.name)
+                st.success(f"Done — {_pres_path.name} ({template})")
+                st.download_button(
+                    "Download Presentation (PPTX)",
+                    data=_pres_path.read_bytes(),
+                    file_name=_pres_path.name,
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
                       f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
@@ -10198,11 +10225,6 @@ elif page == "Reports":
                 else:
                     st.success(T(f"Evidence check: all {_pc['total']} finding(s) verified.", f"Evidence စစ်ဆေးမှု: finding {_pc['total']} ခု လုံး အတည်ပြုပြီးပြီ။"))
 
-        # PPTX title slide: client + export month, like the sample title slides.
-        _pptx_subtitle = "Market Research AI — ResearchFlow"
-        if _pbrief.get("client_name"):
-            _pptx_subtitle += f" · {_pbrief['client_name']}"
-        _pptx_subtitle += f" · {datetime.date.today().strftime('%b %Y')}"
         col_pptx, col_docx = st.columns(2)
         if col_pptx.button("Export PPTX"):
             out_path = REPORTS_DIR / selected.replace("_analysis.txt", ".pptx")
