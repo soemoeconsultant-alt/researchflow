@@ -17,7 +17,9 @@ from pathlib import Path
 from google import genai
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.util import Pt
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.util import Inches, Pt
 from docx import Document
 from docx.shared import RGBColor as DocxRGBColor
 
@@ -29,7 +31,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.34"
+APP_VERSION = "3.35"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2938,10 +2940,12 @@ def plan_based_prompt(plan_text, combined_text, count):
 
 
 # --- PPTX report (Phase 3) ---
+# v3.35: template colours follow the v3.10 palette (navy #071B3A, blue
+# #1264C5, cyan #18C6D9, teal #16B89A, light bg #F4F8FF, ink #10264A).
 TEMPLATES = {
-    "Business Clean": {"bg": "FFFFFF", "title": "0070C0", "body": "262626"},
-    "Topline": {"bg": "FFFFFF", "title": "10283B", "body": "262626"},
-    "Dark Navy": {"bg": "10283B", "title": "FFFFFF", "body": "FFFFFF"},
+    "Business Clean": {"bg": "FFFFFF", "title": "071B3A", "body": "10264A"},
+    "Topline": {"bg": "F4F8FF", "title": "071B3A", "body": "10264A"},
+    "Dark Navy": {"bg": "071B3A", "title": "FFFFFF", "body": "FFFFFF"},
 }
 
 
@@ -3020,52 +3024,444 @@ def _color_runs(paragraphs, hex_color):
             run.font.color.rgb = RGBColor.from_string(hex_color)
 
 
+# --- PPTX design system (v3.35) ---
+# The export was text-only: title + body placeholders, no shapes. These
+# helpers add the visual layer — navy title slide + cyan accent bar,
+# accent rule under content titles, KPI cards on the Executive Summary,
+# styled tables for value / cross-tab groups, a footer textbox with the
+# slide number on every content slide. CONTENT is never changed: cards
+# and tables only re-present lines from the project's own assembled
+# report text — numbers are parsed from that text (never invented, never
+# sample data). Anything that does not parse cleanly falls back to plain
+# body text, so no finding is ever lost.
+_PPTX_NAVY = "071B3A"
+_PPTX_BLUE = "1264C5"
+_PPTX_CYAN = "18C6D9"
+_PPTX_TEAL = "16B89A"
+_PPTX_BG = "F4F8FF"
+_PPTX_TEXT = "10264A"
+_PPTX_WHITE = "FFFFFF"
+_PPTX_MUTED = "5A6B7C"
+_PPTX_MUTED_DARK = "B9C6D6"
+_PPTX_CARD_LABEL = "44596B"
+_PPTX_SUBTITLE_LIGHT = "C7D6E8"
+_PPTX_BRAND = "Market Research AI — ResearchFlow"
+
+_PPTX_SW = Inches(10)
+_PPTX_SH = Inches(7.5)
+_PPTX_MARGIN = Inches(0.6)
+_PPTX_BODY_W = Inches(8.8)
+_PPTX_TITLE_TOP = Inches(0.35)
+_PPTX_RULE_TOP = Inches(1.28)
+_PPTX_BODY_TOP = Inches(1.5)
+_PPTX_BODY_BOTTOM = Inches(6.85)
+_PPTX_FOOTER_TOP = Inches(7.02)
+_PPTX_CARD_H = Inches(1.15)
+_PPTX_TABLE_ROW_H = Inches(0.32)
+
+_KPI_N_RE = re.compile(r"Validation sample:\s*N\s*=\s*(\d+)")
+_KPI_MEAN_RE = re.compile(r"mean\s*([\d.]+)/5\.0")
+_KPI_TOPBOX_RE = re.compile(r"Top-Box \(4[–-]5\):\s*([\d.]+)%")
+_VALUE_LINE_RE = re.compile(r"^(.+?):\s*(\d+)\s*\(([\d.]+)%\)\s*$")
+
+
+def _pptx_rect(slide, left, top, width, height, fill_hex=None, line_hex=None,
+               shape=MSO_SHAPE.RECTANGLE):
+    """A shape with a solid fill and/or outline, no shadow, no text."""
+    sp = slide.shapes.add_shape(shape, left, top, width, height)
+    sp.shadow.inherit = False
+    if shape == MSO_SHAPE.ROUNDED_RECTANGLE:
+        try:
+            sp.adjustments[0] = 0.08
+        except Exception:
+            pass
+    if fill_hex:
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = RGBColor.from_string(fill_hex)
+    else:
+        sp.fill.background()
+    if line_hex:
+        sp.line.color.rgb = RGBColor.from_string(line_hex)
+        sp.line.width = Pt(1)
+    else:
+        sp.line.fill.background()
+    return sp
+
+
+def _pptx_textbox(slide, left, top, width, height, paras,
+                  anchor=MSO_ANCHOR.TOP):
+    """paras: [(text, size, bold, color, italic, align), ...] — one
+    paragraph per entry."""
+    tb = slide.shapes.add_textbox(left, top, width, height)
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = anchor
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    for i, (text, size, bold, color, italic, align) in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = align
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.italic = italic
+        run.font.color.rgb = RGBColor.from_string(color)
+    return tb
+
+
+def _pptx_kpi_cards(lines):
+    """Up to 3 KPI cards from Executive Summary lines.
+    Returns (cards, used_idx): cards are (value, label, is_finding).
+    Numbers are parsed from the project's own report text only — never
+    invented. Quant KPI lines stay in the body text (the cards highlight
+    them); Qual finding lines used as cards are listed in used_idx so
+    the body does not repeat them."""
+    cards, used = [], set()
+    for i, line in enumerate(lines):
+        if len(cards) >= 3:
+            break
+        s = line.strip()
+        m = _KPI_N_RE.search(s)
+        if m:
+            cards.append((f"N = {m.group(1)}", "Validation sample", False))
+        mm = _KPI_MEAN_RE.search(s)
+        if mm and len(cards) < 3:
+            q = s.split("(n=")[0].strip()
+            label = f"Mean · {q[:28]}" if q else "Mean"
+            cards.append((f"{mm.group(1)} / 5.0", label, False))
+        mt = _KPI_TOPBOX_RE.search(s)
+        if mt and len(cards) < 3:
+            cards.append((f"{mt.group(1)}%", "Top-Box (4–5)", False))
+    if not cards:
+        for i, line in enumerate(lines):
+            if len(cards) >= 3:
+                break
+            s = line.strip()
+            if not s or s.startswith("> ") or len(s) > 120:
+                continue
+            cards.append((s, "", True))
+            used.add(i)
+    return cards, used
+
+
+def _pptx_value_table(lines):
+    """Consecutive 'value: count (pct%)' lines -> (header, rows, used_idx)
+    or None. The first group of >= 2 such lines wins; the pct text is
+    kept verbatim so the table shows exactly the project's numbers."""
+    groups, cur = [], []
+    for i, line in enumerate(lines):
+        m = _VALUE_LINE_RE.match(line.strip())
+        if m:
+            cur.append((i, m.group(1).strip(), m.group(2), m.group(3)))
+        else:
+            if len(cur) >= 2:
+                groups.append(cur)
+            cur = []
+    if len(cur) >= 2:
+        groups.append(cur)
+    if not groups:
+        return None
+    g = groups[0]
+    return (["Answer", "Count", "%"],
+            [[v, c, f"{p}%"] for _i, v, c, p in g],
+            {i for i, _v, _c, _p in g})
+
+
+def _pptx_crosstab_table(lines):
+    """A pandas to_string() cross-tab block -> (header, rows, used_idx)
+    or None. Columns are split on 2+ spaces (the format to_string()
+    produces); the single-token index-name line ("Brand") is skipped.
+    Anything that does not parse into one even grid returns None and the
+    caller falls back to plain body text."""
+    if len(lines) < 2:
+        return None
+
+    def _split(line):
+        return [t for t in re.split(r"\s{2,}|\t", line.strip()) if t]
+
+    header = _split(lines[0])
+    rows = []
+    for ln in lines[1:]:
+        parts = _split(ln)
+        if len(parts) <= 1:
+            continue  # index-name line or blank
+        rows.append(parts)
+    if not header or not rows:
+        return None
+    ncols = len(rows[0])
+    if not all(len(r) == ncols for r in rows):
+        return None
+    if len(header) == ncols:
+        pass
+    elif len(header) == ncols - 1:
+        header = [""] + header
+    else:
+        return None
+    return header, [[str(c) for c in r] for r in rows], set(range(len(lines)))
+
+
+def _pptx_chunk_lines(lines, keep_groups, limit=14):
+    """Split lines into slide chunks (<= limit lines, <= 1500 chars),
+    never breaking inside a keep-together (start, end) index range.
+    Returns [[(idx, line), ...], ...]. A group longer than the limit
+    becomes its own chunk rather than being split."""
+    chunks, cur, chars = [], [], 0
+    for i, line in enumerate(lines):
+        _g = next(((a, b) for a, b in keep_groups if a == i), None)
+        if _g and cur and (len(cur) + (_g[1] - _g[0] + 1) > limit
+                           or chars + sum(len(lines[j]) for j in range(_g[0], _g[1] + 1)) > 1500):
+            chunks.append(cur)
+            cur, chars = [], 0
+        _started = any(a < i <= b for a, b in keep_groups)
+        if cur and (len(cur) >= limit or chars + len(line) > 1500) and not _started:
+            chunks.append(cur)
+            cur, chars = [], 0
+        cur.append((i, line))
+        chars += len(line)
+    if cur or not chunks:
+        chunks.append(cur)
+    return chunks
+
+
+def _pptx_add_table(slide, left, top, width, header, rows):
+    """A styled table: navy header row (white bold text), alternating
+    row shading, no banding. Returns the shape."""
+    nrows, ncols = len(rows) + 1, len(header)
+    shape = slide.shapes.add_table(nrows, ncols, left, top, width,
+                                   _PPTX_TABLE_ROW_H * nrows)
+    table = shape.table
+    table.first_row = False
+    table.horz_banding = False
+    first_w = width * 0.55
+    rest_w = (width - first_w) / max(ncols - 1, 1)
+    table.columns[0].width = int(first_w)
+    for j in range(1, ncols):
+        table.columns[j].width = int(rest_w)
+    for i in range(nrows):
+        table.rows[i].height = _PPTX_TABLE_ROW_H
+    for j, h in enumerate(header):
+        cell = table.cell(0, j)
+        cell.text = str(h)
+        cell.fill.solid()
+        cell.fill.fore_color.rgb = RGBColor.from_string(_PPTX_NAVY)
+        cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+        for p in cell.text_frame.paragraphs:
+            p.alignment = PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER
+            for r in p.runs:
+                r.font.size = Pt(11)
+                r.font.bold = True
+                r.font.color.rgb = RGBColor.from_string(_PPTX_WHITE)
+    for i, row in enumerate(rows):
+        fill = _PPTX_WHITE if i % 2 == 0 else _PPTX_BG
+        for j, val in enumerate(row):
+            cell = table.cell(i + 1, j)
+            cell.text = str(val)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string(fill)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.text_frame.word_wrap = True
+            for p in cell.text_frame.paragraphs:
+                p.alignment = PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER
+                for r in p.runs:
+                    r.font.size = Pt(11)
+                    r.font.color.rgb = RGBColor.from_string(_PPTX_TEXT)
+    return shape
+
+
+def _pptx_add_cards(slide, cards, dark):
+    """A row of up to 3 cards at the body top. KPI cards show a big
+    value + label; finding cards show the finding text with a cyan
+    accent bar on the left. Returns the y below the cards."""
+    n = len(cards)
+    gap = Inches(0.25)
+    w = (_PPTX_BODY_W - gap * (n - 1)) / n
+    for k, (value, label, is_finding) in enumerate(cards):
+        left = _PPTX_MARGIN + k * (w + gap)
+        if is_finding:
+            _pptx_rect(slide, left, _PPTX_BODY_TOP, w, _PPTX_CARD_H,
+                       fill_hex=_PPTX_BG, line_hex=None,
+                       shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+            _pptx_rect(slide, left, _PPTX_BODY_TOP, Inches(0.07), _PPTX_CARD_H,
+                       fill_hex=_PPTX_CYAN)
+            _pptx_textbox(slide, left + Inches(0.18), _PPTX_BODY_TOP + Inches(0.1),
+                          w - Inches(0.3), _PPTX_CARD_H - Inches(0.2),
+                          [(value, 11, False, _PPTX_TEXT, False, PP_ALIGN.LEFT)])
+        else:
+            fill = _PPTX_BLUE if dark else _PPTX_WHITE
+            vcolor = _PPTX_WHITE if dark else _PPTX_NAVY
+            lcolor = _PPTX_WHITE if dark else _PPTX_CARD_LABEL
+            _pptx_rect(slide, left, _PPTX_BODY_TOP, w, _PPTX_CARD_H,
+                       fill_hex=fill, line_hex=_PPTX_CYAN,
+                       shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+            _pptx_textbox(slide, left + Inches(0.12), _PPTX_BODY_TOP + Inches(0.12),
+                          w - Inches(0.24), Inches(0.55),
+                          [(value, 20, True, vcolor, False, PP_ALIGN.LEFT)])
+            if label:
+                _pptx_textbox(slide, left + Inches(0.12), _PPTX_BODY_TOP + Inches(0.68),
+                              w - Inches(0.24), Inches(0.35),
+                              [(label, 10, False, lcolor, False, PP_ALIGN.LEFT)])
+    return _PPTX_BODY_TOP + _PPTX_CARD_H + Inches(0.15)
+
+
+def _pptx_add_footer(slide, number, total, footer_text, dark):
+    """Footer textbox on a content slide: brand (+ the N-base footer
+    when given) on the left, page number on the right."""
+    color = _PPTX_MUTED_DARK if dark else _PPTX_MUTED
+    left_text = _PPTX_BRAND
+    if footer_text:
+        left_text += f"  ·  {footer_text}"
+    _pptx_textbox(slide, _PPTX_MARGIN, _PPTX_FOOTER_TOP, Inches(6.5),
+                  Inches(0.3),
+                  [(left_text, 9, False, color, False, PP_ALIGN.LEFT)])
+    _pptx_textbox(slide, Inches(8.0), _PPTX_FOOTER_TOP, Inches(1.4),
+                  Inches(0.3),
+                  [(f"{number} / {total}", 9, False, color, False, PP_ALIGN.RIGHT)])
+
+
+def _pptx_fill_body(slide, lines, top, height, body_color):
+    """Body text into the content placeholder, repositioned so it never
+    runs into the accent rule, cards, table, or footer. Quote lines
+    ("> ...") render italic in teal."""
+    ph = slide.placeholders[1]
+    ph.left = _PPTX_MARGIN
+    ph.top = top
+    ph.width = _PPTX_BODY_W
+    ph.height = height
+    tf = ph.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    for i, line in enumerate(lines):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = line
+        p.level = 0
+        quote = line.startswith("> ")
+        for run in p.runs:
+            run.font.color.rgb = RGBColor.from_string(
+                _PPTX_TEAL if quote else body_color)
+            if quote:
+                run.font.italic = True
+    return tf
+
+
 def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Clean",
                     subtitle=None, footer=None):
     """PPTX export — the main report deliverable (his rule: reports are
-    mostly PowerPoint). subtitle goes on the title slide (client + month);
-    footer (e.g. 'Base: N=82' for Quant reports) is printed small at the
-    bottom of every content slide, so the N base is stated on every slide.
-    Existing templates are unchanged."""
+    mostly PowerPoint). v3.35 adds the visual layer: navy title slide
+    with a cyan accent bar, an accent rule under every content title,
+    KPI cards on the Executive Summary, styled tables for value /
+    cross-tab groups, and a footer with the slide number on every
+    content slide. CONTENT logic is unchanged: same sections, same
+    order, same split rules, same file names/paths. subtitle goes on
+    the title slide (client + month); footer (e.g. 'Base: N=82' for
+    Quant reports) is printed in the footer of every content slide, so
+    the N base is stated on every slide."""
     t = TEMPLATES.get(template, TEMPLATES["Business Clean"])
+    dark = t["bg"].upper() == _PPTX_NAVY
     prs = Presentation()
+    # --- title slide: navy background, white title, cyan accent bar ---
     slide = prs.slides.add_slide(prs.slide_layouts[0])
-    _set_bg(slide, t["bg"])
-    slide.shapes.title.text = title_text
-    _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
-    slide.placeholders[1].text = subtitle or "Market Research AI — ResearchFlow"
-    _color_runs(slide.placeholders[1].text_frame.paragraphs, t["body"])
+    _set_bg(slide, _PPTX_NAVY)
+    _pptx_rect(slide, _PPTX_MARGIN, Inches(1.95), Inches(1.6), Inches(0.08),
+               fill_hex=_PPTX_CYAN)
+    _title = slide.shapes.title
+    _title.left = _PPTX_MARGIN
+    _title.top = Inches(2.15)
+    _title.width = _PPTX_BODY_W
+    _title.height = Inches(1.6)
+    _title.text = title_text
+    for _p in _title.text_frame.paragraphs:
+        _p.alignment = PP_ALIGN.LEFT
+        for _r in _p.runs:
+            _r.font.size = Pt(40)
+            _r.font.bold = True
+            _r.font.color.rgb = RGBColor.from_string(_PPTX_WHITE)
+    _sub = slide.placeholders[1]
+    _sub.left = _PPTX_MARGIN
+    _sub.top = Inches(4.0)
+    _sub.width = _PPTX_BODY_W
+    _sub.height = Inches(0.9)
+    _sub.text = subtitle or _PPTX_BRAND
+    for _p in _sub.text_frame.paragraphs:
+        for _r in _p.runs:
+            _r.font.size = Pt(14)
+            _r.font.color.rgb = RGBColor.from_string(_PPTX_SUBTITLE_LIGHT)
+    _pptx_rect(slide, Inches(0), Inches(7.38), _PPTX_SW, Inches(0.12),
+               fill_hex=_PPTX_TEAL)
+    # --- content slides ---
+    content = []  # (slide, dark) for the footer pass
     for section in parse_sections(analysis_text):
-        # Keep slides readable: split long sections instead of overflowing one slide.
-        chunks, current, char_count = [], [], 0
-        for line in section["lines"]:
-            if current and (len(current) >= 14 or char_count + len(line) > 1500):
-                chunks.append(current)
-                current, char_count = [], 0
-            current.append(line)
-            char_count += len(line)
-        if current or not chunks:
-            chunks.append(current)
-        for part_index, lines in enumerate(chunks, start=1):
+        lines = section["lines"]
+        is_exec = "executive summary" in section["title"].lower()
+        is_xtab = section["title"].lower().startswith("cross-tab")
+        table_info, keep = None, []
+        if is_xtab:
+            _ct = _pptx_crosstab_table(lines)
+            if _ct and len(_ct[1]) <= 10:
+                table_info = _ct
+                keep = [(0, len(lines) - 1)]
+        else:
+            _vt = _pptx_value_table(lines)
+            if _vt and len(_vt[1]) <= 10:
+                table_info = _vt
+                _idx = sorted(_vt[2])
+                keep = [(_idx[0], _idx[-1])]
+        cards, card_used = _pptx_kpi_cards(lines) if is_exec else ([], set())
+        chunks = _pptx_chunk_lines(lines, keep, limit=10 if cards else 14)
+        for part_index, chunk in enumerate(chunks, start=1):
+            chunk_lines = [ln for _i, ln in chunk]
+            chunk_idx = {_i for _i, _ln in chunk}
             slide = prs.slides.add_slide(prs.slide_layouts[1])
             _set_bg(slide, t["bg"])
-            slide_title = section["title"] if part_index == 1 else f"{section['title']} (continued {part_index})"
-            slide.shapes.title.text = slide_title
-            _color_runs(slide.shapes.title.text_frame.paragraphs, t["title"])
-            tf = slide.placeholders[1].text_frame
-            tf.clear()
-            for i, line in enumerate(lines):
-                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                p.text = line
-                p.level = 0
-                for run in p.runs:
-                    run.font.color.rgb = RGBColor.from_string(t["body"])
-            if footer:
-                _fp = tf.add_paragraph()
-                _fp.text = footer
-                for run in _fp.runs:
-                    run.font.size = Pt(9)
-                    run.font.color.rgb = RGBColor.from_string(t["body"])
+            content.append((slide, dark))
+            _title = slide.shapes.title
+            _title.left = _PPTX_MARGIN
+            _title.top = _PPTX_TITLE_TOP
+            _title.width = _PPTX_BODY_W
+            _title.height = Inches(0.85)
+            _title.text = section["title"] if part_index == 1 else f"{section['title']} (continued {part_index})"
+            for _p in _title.text_frame.paragraphs:
+                for _r in _p.runs:
+                    _r.font.size = Pt(28)
+                    _r.font.bold = True
+                    _r.font.color.rgb = RGBColor.from_string(t["title"])
+            _pptx_rect(slide, _PPTX_MARGIN, _PPTX_RULE_TOP, Inches(1.2),
+                       Inches(0.05), fill_hex=_PPTX_CYAN)
+            body_top = _PPTX_BODY_TOP
+            body_lines = chunk_lines
+            # KPI / finding cards on the first Executive Summary slide.
+            _has_cards = bool(is_exec and part_index == 1 and cards)
+            if _has_cards:
+                body_top = _pptx_add_cards(slide, cards, dark)
+                if card_used:
+                    body_lines = [ln for _i, ln in chunk if _i not in card_used]
+            # Styled table for a complete value / cross-tab group in this chunk.
+            table = None
+            if table_info and not _has_cards:
+                _hdr, _rows, _used = table_info
+                if _used and _used.issubset(chunk_idx):
+                    _rest = [ln for _i, ln in chunk if _i not in _used]
+                    if len(_rows) <= 10 and len(_rest) <= 5:
+                        table = (_hdr, _rows)
+                        body_lines = _rest
+            if table is not None:
+                _hdr, _rows = table
+                _pptx_add_table(slide, _PPTX_MARGIN, body_top, _PPTX_BODY_W,
+                                _hdr, _rows)
+                body_top = body_top + _PPTX_TABLE_ROW_H * (len(_rows) + 1) + Inches(0.15)
+            if body_lines:
+                _pptx_fill_body(slide, body_lines, body_top,
+                                _PPTX_BODY_BOTTOM - body_top, t["body"])
+            else:
+                _ph = slide.placeholders[1]
+                _ph.left = _PPTX_MARGIN
+                _ph.top = body_top
+                _ph.width = _PPTX_BODY_W
+                _ph.height = _PPTX_BODY_BOTTOM - body_top
+                _ph.text_frame.clear()
+    # --- footers with page numbers (content slides only) ---
+    total = len(content)
+    for _n, (_s, _dark) in enumerate(content, start=1):
+        _pptx_add_footer(_s, _n, total, footer, _dark)
     prs.save(out_path)
     return out_path
 
