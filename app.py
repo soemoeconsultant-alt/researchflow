@@ -31,7 +31,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.35"
+APP_VERSION = "3.36"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -3059,6 +3059,25 @@ _PPTX_FOOTER_TOP = Inches(7.02)
 _PPTX_CARD_H = Inches(1.15)
 _PPTX_TABLE_ROW_H = Inches(0.32)
 
+# --- PPTX body fit (v3.36) ---
+# v3.35 overflowed long sections: the body placeholder inherits the
+# default template's 32pt font + 200% space-before, and the split rule
+# counted LOGICAL lines while long lines wrap to 2-3 visual lines.
+# The body now has an explicit size/spacing and the chunker budgets
+# WRAPPED (visual) lines against the real body-box height, so text
+# always ends above the footer. Numbers: 16pt body, 1.15 line spacing,
+# 4pt space-after; ~70 chars per visual line at 16pt in the 8.8in
+# body box (conservative — Calibri averages ~80). The per-line height
+# is calibrated from the LibreOffice render: Calibri's natural line
+# height is ~1.22x the font size, so one body line costs
+# 16 x 1.22 x 1.15 + 4 = 26.4pt (measured pitch 26.1pt) — NOT
+# 16 x 1.15, which under-counted by ~4pt/line and still overflowed.
+_PPTX_BODY_PT = 16
+_PPTX_BODY_LINE_SPACING = 1.15
+_PPTX_BODY_SPACE_AFTER_PT = 4
+_PPTX_BODY_CHARS_PER_LINE = 70
+_PPTX_BODY_LINE_FACTOR = 1.22
+
 _KPI_N_RE = re.compile(r"Validation sample:\s*N\s*=\s*(\d+)")
 _KPI_MEAN_RE = re.compile(r"mean\s*([\d.]+)/5\.0")
 _KPI_TOPBOX_RE = re.compile(r"Top-Box \(4[–-]5\):\s*([\d.]+)%")
@@ -3200,24 +3219,54 @@ def _pptx_crosstab_table(lines):
     return header, [[str(c) for c in r] for r in rows], set(range(len(lines)))
 
 
+def _pptx_visual_lines(line, chars_per_line=_PPTX_BODY_CHARS_PER_LINE):
+    """Wrapped visual lines a logical body line occupies in the body
+    box at the v3.36 body font size. A blank line still takes one."""
+    return max(1, -(-len(line) // chars_per_line))
+
+
+def _pptx_para_height_pt(line):
+    """Rendered height of one body paragraph in points (conservative:
+    every visual line is charged the full line height + space-after).
+    The line height is the font's NATURAL line height (1.22x size for
+    Calibri) times the spacing multiple — not size x spacing."""
+    return (_pptx_visual_lines(line) * _PPTX_BODY_PT * _PPTX_BODY_LINE_FACTOR
+            * _PPTX_BODY_LINE_SPACING + _PPTX_BODY_SPACE_AFTER_PT)
+
+
+def _pptx_max_visual_lines(height_inches):
+    """Visual lines that fit in a body box of this height, minus a
+    safety margin so text never touches the footer."""
+    per_line = (_PPTX_BODY_PT * _PPTX_BODY_LINE_FACTOR
+                * _PPTX_BODY_LINE_SPACING + _PPTX_BODY_SPACE_AFTER_PT)
+    return max(1, int((height_inches * 72 - 12) // per_line))
+
+
 def _pptx_chunk_lines(lines, keep_groups, limit=14):
-    """Split lines into slide chunks (<= limit lines, <= 1500 chars),
-    never breaking inside a keep-together (start, end) index range.
-    Returns [[(idx, line), ...], ...]. A group longer than the limit
-    becomes its own chunk rather than being split."""
-    chunks, cur, chars = [], [], 0
+    """Split lines into slide chunks (<= limit VISUAL lines, <= 1500
+    chars), never breaking inside a keep-together (start, end) index
+    range. `limit` counts wrapped visual lines at the body font size,
+    not logical lines — a 100-char line counts as 2. A group longer
+    than the limit becomes its own chunk rather than being split."""
+    chunks, cur, chars, vis = [], [], 0, 0
     for i, line in enumerate(lines):
         _g = next(((a, b) for a, b in keep_groups if a == i), None)
-        if _g and cur and (len(cur) + (_g[1] - _g[0] + 1) > limit
-                           or chars + sum(len(lines[j]) for j in range(_g[0], _g[1] + 1)) > 1500):
-            chunks.append(cur)
-            cur, chars = [], 0
+        if _g:
+            _gvis = sum(_pptx_visual_lines(lines[j])
+                        for j in range(_g[0], _g[1] + 1))
+            _gchars = sum(len(lines[j]) for j in range(_g[0], _g[1] + 1))
+            if cur and (vis + _gvis > limit or chars + _gchars > 1500):
+                chunks.append(cur)
+                cur, chars, vis = [], 0, 0
         _started = any(a < i <= b for a, b in keep_groups)
-        if cur and (len(cur) >= limit or chars + len(line) > 1500) and not _started:
+        _vl = _pptx_visual_lines(line)
+        if cur and (vis + _vl > limit or chars + len(line) > 1500) \
+                and not _started:
             chunks.append(cur)
-            cur, chars = [], 0
+            cur, chars, vis = [], 0, 0
         cur.append((i, line))
         chars += len(line)
+        vis += _vl
     if cur or not chunks:
         chunks.append(cur)
     return chunks
@@ -3334,8 +3383,15 @@ def _pptx_fill_body(slide, lines, top, height, body_color):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.text = line
         p.level = 0
+        # Explicit fit (v3.36): the placeholder's inherited 32pt +
+        # 200% space-before overflowed long sections. Body is 16pt,
+        # 1.15 line spacing, no space-before, 4pt space-after.
+        p.space_before = Pt(0)
+        p.space_after = Pt(_PPTX_BODY_SPACE_AFTER_PT)
+        p.line_spacing = _PPTX_BODY_LINE_SPACING
         quote = line.startswith("> ")
         for run in p.runs:
+            run.font.size = Pt(_PPTX_BODY_PT)
             run.font.color.rgb = RGBColor.from_string(
                 _PPTX_TEAL if quote else body_color)
             if quote:
@@ -3351,7 +3407,11 @@ def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Cle
     KPI cards on the Executive Summary, styled tables for value /
     cross-tab groups, and a footer with the slide number on every
     content slide. CONTENT logic is unchanged: same sections, same
-    order, same split rules, same file names/paths. subtitle goes on
+    order, same file names/paths. v3.36 fit fix: body text is 16pt with
+    1.15 line spacing (the placeholder's inherited 32pt overflowed
+    long sections) and the split now budgets wrapped visual lines
+    against the real body-box height, so text always ends above the
+    footer. subtitle goes on
     the title slide (client + month); footer (e.g. 'Base: N=82' for
     Quant reports) is printed in the footer of every content slide, so
     the N base is stated on every slide."""
@@ -3406,7 +3466,19 @@ def analysis_to_pptx(analysis_text, title_text, out_path, template="Business Cle
                 _idx = sorted(_vt[2])
                 keep = [(_idx[0], _idx[-1])]
         cards, card_used = _pptx_kpi_cards(lines) if is_exec else ([], set())
-        chunks = _pptx_chunk_lines(lines, keep, limit=10 if cards else 14)
+        # v3.36 fit budget: visual lines that fit in the body box that
+        # remains after the cards row and/or the styled table are
+        # reserved. Conservative — later chunks of the same section
+        # reuse the first chunk's budget, so they can only under-fill.
+        _avail_top = _PPTX_BODY_TOP
+        if is_exec and cards:
+            _avail_top += _PPTX_CARD_H + Inches(0.15)
+        if table_info and not (is_exec and cards):
+            _avail_top += (_PPTX_TABLE_ROW_H * (len(table_info[1]) + 1)
+                           + Inches(0.15))
+        _limit = _pptx_max_visual_lines(
+            (_PPTX_BODY_BOTTOM - _avail_top) / 914400)
+        chunks = _pptx_chunk_lines(lines, keep, limit=_limit)
         for part_index, chunk in enumerate(chunks, start=1):
             chunk_lines = [ln for _i, ln in chunk]
             chunk_idx = {_i for _i, _ln in chunk}
