@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.37"
+APP_VERSION = "3.38"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -5427,10 +5427,10 @@ def _show_design_checks_summary(dg_text, qdata, design, brief, session_minutes):
         st.caption(T("Checks are recommendations only — the researcher keeps the final say; saving is never blocked.",
                      "စစ်ဆေးမှုက အကြံပြုချက်ပဲ — ဆုံးဖြတ်ချက်က သုတေသီလက်ထဲမှာပဲ၊ သိမ်းတာကို ဘယ်တော့မှ မတားဘူး။"))
         _sections = [
-            ("Discussion Guide", "Discussion Guide",
-             _dg_self_check(dg_text, brief, design, session_minutes) if _dg_started else None),
             ("Questionnaire", "Questionnaire",
              _q_self_check({"questions": _q_list}, brief, design) if _q_list else None),
+            ("Discussion Guide", "Discussion Guide",
+             _dg_self_check(dg_text, brief, design, session_minutes) if _dg_started else None),
             ("Fieldwork Plan", "Fieldwork Plan",
              _fieldwork_self_check(design, brief) if _fw_started else None),
         ]
@@ -7657,7 +7657,7 @@ def stage_status():
         _stage_item("Sampling", "Sampling",
                     "done" if (design.get("sample_size") or 0) > 0 or (design.get("sessions_count") or 0) > 0
                     or design.get("personas") or design.get("quotas") else "todo"),
-        _stage_item("DG / questionnaire / screener", "DG / questionnaire / screener",
+        _stage_item("Screener / questionnaire / DG", "Screener / questionnaire / DG",
                     "done" if design.get("dg_text") or _d_qs else "todo"),
         _stage_item("Fieldwork plan", "ကွင်းဆင်းအစီအစဉ်",
                     "done" if design.get("fieldwork_plan") else "todo"),
@@ -8168,8 +8168,8 @@ elif page == "Client Brief":
             st.rerun()
 
 elif page == "Research Design":
-    # Stage 2 builder (v3.25): method, sampling, Discussion Guide +
-    # questionnaire (AI draft), fieldwork plan — all saved per project as
+    # Stage 2 builder (v3.25): method, sampling, questionnaire/screener +
+    # Discussion Guide (AI draft), fieldwork plan — all saved per project as
     # design.json in notes/ (Drive + local). The page starts EMPTY for a new
     # project; the only prefill is from the project's OWN saved Brief.
     st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
@@ -8185,8 +8185,8 @@ elif page == "Research Design":
     _sum_items = [
         ("Method", "Method", bool(_design.get("approach")) or bool(_design.get("methods"))),
         ("Sampling", "Sampling", bool(_design.get("sample_size") or _design.get("sessions_count") or _design.get("personas") or _design.get("quotas") or _design.get("screening_criteria"))),
-        ("Discussion Guide", "Discussion Guide", bool((_design.get("dg_text") or "").strip())),
         ("Questionnaire", "Questionnaire", bool((_design.get("questionnaire") or {}).get("questions") if isinstance(_design.get("questionnaire"), dict) else _design.get("questionnaire"))),
+        ("Discussion Guide", "Discussion Guide", bool((_design.get("dg_text") or "").strip())),
         ("Fieldwork Plan", "Fieldwork Plan", bool(_design.get("fieldwork_plan"))),
     ]
     st.caption(" · ".join(("✅ " if _done else "○ ") + T(_en, _mm) for _en, _mm, _done in _sum_items))
@@ -8262,155 +8262,8 @@ elif page == "Research Design":
                           "quotas": _new_quotas, "screening_criteria": _screening.strip(),
                           "recruitment_criteria": _recruitment.strip()})
 
-    # ---- 3. Discussion Guide ----
-    st.subheader(T("3. Discussion Guide", "၃။ Discussion Guide"))
-    _dg_lang = st.selectbox(T("Discussion Guide language", "Discussion Guide ဘာသာစကား"), DESIGN_DG_LANGUAGES, index=DESIGN_DG_LANGUAGES.index(_design.get("dg_language", "English")) if _design.get("dg_language") in DESIGN_DG_LANGUAGES else 0, key="dg_lang")
-    _survey_only = list(_methods) == ["Survey"]
-    if _survey_only:
-        st.info(T("A survey-only project has no Discussion Guide — the questionnaire below is the instrument.", "Survey သီးသန့် project မှာ Discussion Guide မရှိဘူး — အောက်က questionnaire ကပဲ instrument ဖြစ်တယ်။"))
-
-    def _run_dg_draft():
-        _sess = "120 minutes (FGD)" if "FGD" in _draft_design.get("methods", []) else "60 minutes (IDI)"
-        _lang_note = (" — write the whole guide in everyday colloquial Myanmar; never mix English and Myanmar in the same line." if _dg_lang == "Myanmar" else " — mostly English with an occasional Myanmar line where the moderator needs it.")
-        _prompt = (PROMPT_LIBRARY["discussion_guide"]["template"] + "\n\n"
-                   + _design_prompt_context(_brief, _draft_design)
-                   + "\n\nDiscussion Guide language: " + _dg_lang + _lang_note
-                   + "\nSession length: " + _sess)
-        with st.spinner(T("Drafting the Discussion Guide…", "Discussion Guide ရေးနေတယ်…")):
-            _draft, _model_used = ask_gemini(_prompt)
-        if _draft:
-            st.session_state["dg_pending_draft"] = _draft
-            # v3.29: set the editor value directly through the Session State
-            # API — the reliable way to set a widget value. The old code
-            # popped the widget key and passed the draft as value= to the
-            # text_area, but once the key exists value= is ignored on later
-            # reruns, so the editor stayed empty while the Preview showed
-            # the draft (trial FAIL) and Save stored nothing.
-            st.session_state["dg_editor"] = _draft
-            st.session_state.pop("dg_confirm_overwrite", None)
-            st.rerun()
-        else:
-            st.error(T(f"AI draft failed: {_model_used}", f"AI draft မရဘူး: {_model_used}"))
-
-    if st.button(T("✨ AI Draft Discussion Guide", "✨ AI နဲ့ Discussion Guide ရေးခိုင်းမယ်"), key="dg_draft", type="primary", disabled=(not _has_brief) or _survey_only):
-        _has_saved_dg = bool((_design.get("dg_text") or "").strip())
-        if _has_saved_dg and not st.session_state.get("dg_confirm_overwrite"):
-            st.session_state["dg_confirm_overwrite"] = True
-            st.rerun()
-        else:
-            _run_dg_draft()
-    if st.session_state.get("dg_confirm_overwrite"):
-        st.warning(T("A Discussion Guide is already saved. Drafting again will REPLACE the text in the editor — the saved guide stays in design.json until you press Save.", "Discussion Guide သိမ်းပြီးသား ရှိတယ်။ ထပ်ရေးခိုင်းရင် editor ထဲက စာသား အစားထိုးသွားမယ် — Save မနှိပ်မချင်း သိမ်းပြီးသား guide က design.json မှာ ရှိနေသေးတယ်။"))
-        _cy, _cn = st.columns(2)
-        if _cy.button(T("Yes, draft again", "ဟုတ်ကဲ့၊ ထပ်ရေးခိုင်းမယ်"), key="dg_confirm_yes", type="primary"):
-            _run_dg_draft()
-        if _cn.button(T("Keep my edits", "ကိုယ့်စာသား ထားမယ်"), key="dg_confirm_no"):
-            st.session_state.pop("dg_confirm_overwrite", None)
-            st.rerun()
-    if st.session_state.get("dg_pending_draft"):
-        st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
-    # v3.29: the editor value lives in session state — seeded once from the
-    # saved guide (or empty for a new project) and set directly when a
-    # draft arrives. Never pass value= here: it is ignored once the widget
-    # key exists, which is what desynced the editor. Project switches clear
-    # this key (see _clear_project_editor_state), so a new project re-seeds.
-    if "dg_editor" not in st.session_state:
-        st.session_state["dg_editor"] = _design.get("dg_text", "")
-    st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), height=400, key="dg_editor")
-    # v3.31 (P6): self-check — warnings only, never blocks saving. Runs on
-    # the current editor text on every render, so a fresh AI draft is
-    # checked as soon as it lands (the draft flow reruns into this render)
-    # and a saved guide is checked whenever it is shown. Results are never
-    # stored — they are recomputed from the current text.
-    _dg_text_now = st.session_state.get("dg_editor", "")
-    if str(_dg_text_now or "").strip():
-        _dg_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
-        _show_self_check_results(_dg_self_check(_dg_text_now, _brief, _draft_design, _dg_minutes),
-                                 "Discussion Guide checks", "Discussion Guide စစ်ဆေးမှု")
-    # v3.33 (P14): AI second-pass review — user-triggered only. Reviews
-    # the SAVED guide (save your edits first to review them); one Gemini
-    # request per click; recommendations only, nothing is changed.
-    _dg_saved = str(_design.get("dg_text") or "").strip()
-    _dg_has_saved = bool(_dg_saved)
-    st.caption(T("AI review: uses 1 AI request. Recommendations only — the saved guide is never changed.",
-                 "AI review: AI request 1 ခု သုံးတယ်။ အကြံပြုချက်ပဲ — သိမ်းပြီးသား guide ကို မပြင်ဘူး။"))
-    if st.button(T("🤖 AI review — Discussion Guide", "🤖 AI နဲ့ Discussion Guide ပြန်စစ်မယ်"), key="dg_ai_review_btn", disabled=not _dg_has_saved):
-        with st.spinner(T("AI is reviewing the Discussion Guide…", "AI က Discussion Guide ပြန်စစ်နေတယ်…")):
-            _q_other = _q_compact_text(_design.get("questionnaire") or {})
-            _dg_items, _dg_err = _run_ai_review("dg", _brief, _draft_design, _dg_saved, _q_other)
-        st.session_state["dg_ai_review"] = {"project": current_project(), "items": _dg_items, "error": _dg_err}
-        st.rerun()
-    if not _dg_has_saved:
-        st.caption(T("Save a Discussion Guide first — the review covers the saved version.",
-                     "အရင် Discussion Guide သိမ်းပါ — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
-    elif str(_dg_text_now or "").strip() != _dg_saved:
-        st.caption(T("Note: the editor has unsaved changes — the review covers the saved version.",
-                     "မှတ်ချက်: editor မှာ မသိမ်းရသေးတဲ့ ပြင်ဆင်ချက် ရှိတယ် — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
-    _dg_review = st.session_state.get("dg_ai_review")
-    if _dg_review is not None and _dg_review.get("project") != current_project():
-        # v3.34: a review belongs to the project it ran on — never show
-        # another project's review after a switch (a dict without a
-        # project, stored by v3.33, is treated as foreign and dropped).
-        _dg_review = None
-        st.session_state.pop("dg_ai_review", None)
-    if _dg_review:
-        if _dg_review.get("error"):
-            st.warning(T(_dg_review["error"], AI_REVIEW_UNAVAILABLE_MM))
-        elif not _dg_review.get("items"):
-            st.success(T("AI review: no issues found.", "AI review: ပြဿနာ မတွေ့ဘူး။"))
-        else:
-            for _rit in _dg_review["items"]:
-                _rmsg = f"**Issue:** {_rit.get('issue', '')}"
-                if _rit.get("why"):
-                    _rmsg += f"\n\nWhy: {_rit['why']}"
-                if _rit.get("fix"):
-                    _rmsg += f"\n\nFix: {_rit['fix']}"
-                st.warning(_rmsg)
-        if st.button(T("Clear AI review", "AI review ရှင်းမယ်"), key="dg_ai_review_clear"):
-            st.session_state.pop("dg_ai_review", None)
-            st.rerun()
-    _dc1, _dc2 = st.columns(2)
-    if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
-        _dg_final = st.session_state.get("dg_editor", "")
-        if not _dg_final.strip():
-            # v3.29: never destroy a draft (or a saved guide) with an empty
-            # save — warn and keep everything. No rerun on this path, so the
-            # warning stays visible.
-            if (st.session_state.get("dg_pending_draft") or "").strip():
-                st.warning(T("The editor is empty but a new AI draft exists — it was NOT saved. Click “✨ AI Draft Discussion Guide” again, or paste the draft into the editor, then Save.", "Editor ဗလာဖြစ်နေတယ်၊ ဒါပေမယ့် AI draft အသစ် ရှိတယ် — မသိမ်းလိုက်ဘူး။ “✨ AI Draft Discussion Guide” ကို ပြန်နှိပ်ပါ၊ ဒါမှမဟုတ် draft ကို editor ထဲ paste လုပ်ပြီး Save နှိပ်ပါ။"))
-            elif (_design.get("dg_text") or "").strip():
-                st.warning(T("The editor is empty — the saved Discussion Guide was kept, not erased.", "Editor ဗလာဖြစ်နေတယ် — သိမ်းပြီးသား Discussion Guide ကို ဖျက်မပစ်ဘူး၊ ထားထားတယ်။"))
-            else:
-                st.warning(T("Nothing to save — the Discussion Guide is empty.", "သိမ်းစရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
-        else:
-            _design["dg_text"] = _dg_final
-            _design["dg_language"] = _dg_lang
-            _design["dg_file"] = "discussion_guide.txt"
-            save_design(_design)
-            store_write_text("notes", "discussion_guide.txt", _dg_final)
-            st.session_state.pop("dg_pending_draft", None)
-            _flash(T("Discussion Guide saved.", "Discussion Guide သိမ်းပြီးပြီ။"))
-            st.rerun()
-    if _dc2.button(T("Export DOCX", "DOCX ထုတ်မယ်"), key="dg_export"):
-        _dg_final = st.session_state.get("dg_editor", "")
-        if not _dg_final.strip():
-            st.warning(T("Nothing to export — the Discussion Guide is empty.", "ထုတ်စရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
-        else:
-            _out = NOTES_DIR / "discussion_guide.docx"
-            dg_to_docx(_dg_final, f"Discussion Guide — {current_project()}", _out)
-            store_upload_existing("notes", "discussion_guide.docx")
-            st.success(T("DOCX exported.", "DOCX ထုတ်ပြီးပြီ။"))
-    if (NOTES_DIR / "discussion_guide.docx").exists():
-        st.download_button(T("Download discussion_guide.docx", "discussion_guide.docx ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / "discussion_guide.docx").read_bytes(), file_name="discussion_guide.docx", key="dg_download")
-    with st.expander(T("Preview", "အစမ်းကြည့်မယ်")):
-        _dg_prev = st.session_state.get("dg_editor", "")
-        if _dg_prev.strip():
-            st.markdown(_dg_to_markdown(_dg_prev))
-        else:
-            st.caption(T("Empty — no Discussion Guide yet.", "ဗလာဖြစ်နေတယ် — Discussion Guide မရှိသေးဘူး။"))
-
-    # ---- 4. Questionnaire / Screener ----
-    st.subheader(T("4. Questionnaire / Screener", "၄။ Questionnaire / Screener"))
+    # ---- 3. Questionnaire / Screener ----
+    st.subheader(T("3. Questionnaire / Screener", "၃။ Questionnaire / Screener"))
     _q_lang = st.selectbox(T("Questionnaire language", "Questionnaire ဘာသာစကား"), DESIGN_Q_LANGUAGES, index=DESIGN_Q_LANGUAGES.index(_design.get("questionnaire_language", "Myanmar")) if _design.get("questionnaire_language") in DESIGN_Q_LANGUAGES else 0, key="q_lang")
     _q_saved = _design.get("questionnaire") or {}
     if isinstance(_q_saved, list):
@@ -8638,6 +8491,153 @@ elif page == "Research Design":
                 st.session_state.pop("q_pending_draft", None)
                 _flash(T("Questionnaire JSON saved.", "Questionnaire JSON သိမ်းပြီးပြီ။"))
                 st.rerun()
+
+    # ---- 4. Discussion Guide ----
+    st.subheader(T("4. Discussion Guide", "၄။ Discussion Guide"))
+    _dg_lang = st.selectbox(T("Discussion Guide language", "Discussion Guide ဘာသာစကား"), DESIGN_DG_LANGUAGES, index=DESIGN_DG_LANGUAGES.index(_design.get("dg_language", "English")) if _design.get("dg_language") in DESIGN_DG_LANGUAGES else 0, key="dg_lang")
+    _survey_only = list(_methods) == ["Survey"]
+    if _survey_only:
+        st.info(T("A survey-only project has no Discussion Guide — the questionnaire above is the instrument.", "Survey သီးသန့် project မှာ Discussion Guide မရှိဘူး — အပေါ်က questionnaire ကပဲ instrument ဖြစ်တယ်။"))
+
+    def _run_dg_draft():
+        _sess = "120 minutes (FGD)" if "FGD" in _draft_design.get("methods", []) else "60 minutes (IDI)"
+        _lang_note = (" — write the whole guide in everyday colloquial Myanmar; never mix English and Myanmar in the same line." if _dg_lang == "Myanmar" else " — mostly English with an occasional Myanmar line where the moderator needs it.")
+        _prompt = (PROMPT_LIBRARY["discussion_guide"]["template"] + "\n\n"
+                   + _design_prompt_context(_brief, _draft_design)
+                   + "\n\nDiscussion Guide language: " + _dg_lang + _lang_note
+                   + "\nSession length: " + _sess)
+        with st.spinner(T("Drafting the Discussion Guide…", "Discussion Guide ရေးနေတယ်…")):
+            _draft, _model_used = ask_gemini(_prompt)
+        if _draft:
+            st.session_state["dg_pending_draft"] = _draft
+            # v3.29: set the editor value directly through the Session State
+            # API — the reliable way to set a widget value. The old code
+            # popped the widget key and passed the draft as value= to the
+            # text_area, but once the key exists value= is ignored on later
+            # reruns, so the editor stayed empty while the Preview showed
+            # the draft (trial FAIL) and Save stored nothing.
+            st.session_state["dg_editor"] = _draft
+            st.session_state.pop("dg_confirm_overwrite", None)
+            st.rerun()
+        else:
+            st.error(T(f"AI draft failed: {_model_used}", f"AI draft မရဘူး: {_model_used}"))
+
+    if st.button(T("✨ AI Draft Discussion Guide", "✨ AI နဲ့ Discussion Guide ရေးခိုင်းမယ်"), key="dg_draft", type="primary", disabled=(not _has_brief) or _survey_only):
+        _has_saved_dg = bool((_design.get("dg_text") or "").strip())
+        if _has_saved_dg and not st.session_state.get("dg_confirm_overwrite"):
+            st.session_state["dg_confirm_overwrite"] = True
+            st.rerun()
+        else:
+            _run_dg_draft()
+    if st.session_state.get("dg_confirm_overwrite"):
+        st.warning(T("A Discussion Guide is already saved. Drafting again will REPLACE the text in the editor — the saved guide stays in design.json until you press Save.", "Discussion Guide သိမ်းပြီးသား ရှိတယ်။ ထပ်ရေးခိုင်းရင် editor ထဲက စာသား အစားထိုးသွားမယ် — Save မနှိပ်မချင်း သိမ်းပြီးသား guide က design.json မှာ ရှိနေသေးတယ်။"))
+        _cy, _cn = st.columns(2)
+        if _cy.button(T("Yes, draft again", "ဟုတ်ကဲ့၊ ထပ်ရေးခိုင်းမယ်"), key="dg_confirm_yes", type="primary"):
+            _run_dg_draft()
+        if _cn.button(T("Keep my edits", "ကိုယ့်စာသား ထားမယ်"), key="dg_confirm_no"):
+            st.session_state.pop("dg_confirm_overwrite", None)
+            st.rerun()
+    if st.session_state.get("dg_pending_draft"):
+        st.info(T("New AI draft in the editor — check it and edit it, then Save.", "AI draft အသစ် editor ထဲမှာ ရှိတယ် — စစ်ပြီး ပြင်ပါ၊ ပြီးရင် Save နှိပ်ပါ။"))
+    # v3.29: the editor value lives in session state — seeded once from the
+    # saved guide (or empty for a new project) and set directly when a
+    # draft arrives. Never pass value= here: it is ignored once the widget
+    # key exists, which is what desynced the editor. Project switches clear
+    # this key (see _clear_project_editor_state), so a new project re-seeds.
+    if "dg_editor" not in st.session_state:
+        st.session_state["dg_editor"] = _design.get("dg_text", "")
+    st.text_area(T("Discussion Guide (editable)", "Discussion Guide (ပြင်လို့ရတယ်)"), height=400, key="dg_editor")
+    # v3.31 (P6): self-check — warnings only, never blocks saving. Runs on
+    # the current editor text on every render, so a fresh AI draft is
+    # checked as soon as it lands (the draft flow reruns into this render)
+    # and a saved guide is checked whenever it is shown. Results are never
+    # stored — they are recomputed from the current text.
+    _dg_text_now = st.session_state.get("dg_editor", "")
+    if str(_dg_text_now or "").strip():
+        _dg_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
+        _show_self_check_results(_dg_self_check(_dg_text_now, _brief, _draft_design, _dg_minutes),
+                                 "Discussion Guide checks", "Discussion Guide စစ်ဆေးမှု")
+    # v3.33 (P14): AI second-pass review — user-triggered only. Reviews
+    # the SAVED guide (save your edits first to review them); one Gemini
+    # request per click; recommendations only, nothing is changed.
+    _dg_saved = str(_design.get("dg_text") or "").strip()
+    _dg_has_saved = bool(_dg_saved)
+    st.caption(T("AI review: uses 1 AI request. Recommendations only — the saved guide is never changed.",
+                 "AI review: AI request 1 ခု သုံးတယ်။ အကြံပြုချက်ပဲ — သိမ်းပြီးသား guide ကို မပြင်ဘူး။"))
+    if st.button(T("🤖 AI review — Discussion Guide", "🤖 AI နဲ့ Discussion Guide ပြန်စစ်မယ်"), key="dg_ai_review_btn", disabled=not _dg_has_saved):
+        with st.spinner(T("AI is reviewing the Discussion Guide…", "AI က Discussion Guide ပြန်စစ်နေတယ်…")):
+            _q_other = _q_compact_text(_design.get("questionnaire") or {})
+            _dg_items, _dg_err = _run_ai_review("dg", _brief, _draft_design, _dg_saved, _q_other)
+        st.session_state["dg_ai_review"] = {"project": current_project(), "items": _dg_items, "error": _dg_err}
+        st.rerun()
+    if not _dg_has_saved:
+        st.caption(T("Save a Discussion Guide first — the review covers the saved version.",
+                     "အရင် Discussion Guide သိမ်းပါ — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
+    elif str(_dg_text_now or "").strip() != _dg_saved:
+        st.caption(T("Note: the editor has unsaved changes — the review covers the saved version.",
+                     "မှတ်ချက်: editor မှာ မသိမ်းရသေးတဲ့ ပြင်ဆင်ချက် ရှိတယ် — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
+    _dg_review = st.session_state.get("dg_ai_review")
+    if _dg_review is not None and _dg_review.get("project") != current_project():
+        # v3.34: a review belongs to the project it ran on — never show
+        # another project's review after a switch (a dict without a
+        # project, stored by v3.33, is treated as foreign and dropped).
+        _dg_review = None
+        st.session_state.pop("dg_ai_review", None)
+    if _dg_review:
+        if _dg_review.get("error"):
+            st.warning(T(_dg_review["error"], AI_REVIEW_UNAVAILABLE_MM))
+        elif not _dg_review.get("items"):
+            st.success(T("AI review: no issues found.", "AI review: ပြဿနာ မတွေ့ဘူး။"))
+        else:
+            for _rit in _dg_review["items"]:
+                _rmsg = f"**Issue:** {_rit.get('issue', '')}"
+                if _rit.get("why"):
+                    _rmsg += f"\n\nWhy: {_rit['why']}"
+                if _rit.get("fix"):
+                    _rmsg += f"\n\nFix: {_rit['fix']}"
+                st.warning(_rmsg)
+        if st.button(T("Clear AI review", "AI review ရှင်းမယ်"), key="dg_ai_review_clear"):
+            st.session_state.pop("dg_ai_review", None)
+            st.rerun()
+    _dc1, _dc2 = st.columns(2)
+    if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
+        _dg_final = st.session_state.get("dg_editor", "")
+        if not _dg_final.strip():
+            # v3.29: never destroy a draft (or a saved guide) with an empty
+            # save — warn and keep everything. No rerun on this path, so the
+            # warning stays visible.
+            if (st.session_state.get("dg_pending_draft") or "").strip():
+                st.warning(T("The editor is empty but a new AI draft exists — it was NOT saved. Click “✨ AI Draft Discussion Guide” again, or paste the draft into the editor, then Save.", "Editor ဗလာဖြစ်နေတယ်၊ ဒါပေမယ့် AI draft အသစ် ရှိတယ် — မသိမ်းလိုက်ဘူး။ “✨ AI Draft Discussion Guide” ကို ပြန်နှိပ်ပါ၊ ဒါမှမဟုတ် draft ကို editor ထဲ paste လုပ်ပြီး Save နှိပ်ပါ။"))
+            elif (_design.get("dg_text") or "").strip():
+                st.warning(T("The editor is empty — the saved Discussion Guide was kept, not erased.", "Editor ဗလာဖြစ်နေတယ် — သိမ်းပြီးသား Discussion Guide ကို ဖျက်မပစ်ဘူး၊ ထားထားတယ်။"))
+            else:
+                st.warning(T("Nothing to save — the Discussion Guide is empty.", "သိမ်းစရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
+        else:
+            _design["dg_text"] = _dg_final
+            _design["dg_language"] = _dg_lang
+            _design["dg_file"] = "discussion_guide.txt"
+            save_design(_design)
+            store_write_text("notes", "discussion_guide.txt", _dg_final)
+            st.session_state.pop("dg_pending_draft", None)
+            _flash(T("Discussion Guide saved.", "Discussion Guide သိမ်းပြီးပြီ။"))
+            st.rerun()
+    if _dc2.button(T("Export DOCX", "DOCX ထုတ်မယ်"), key="dg_export"):
+        _dg_final = st.session_state.get("dg_editor", "")
+        if not _dg_final.strip():
+            st.warning(T("Nothing to export — the Discussion Guide is empty.", "ထုတ်စရာ မရှိဘူး — Discussion Guide ဗလာဖြစ်နေတယ်။"))
+        else:
+            _out = NOTES_DIR / "discussion_guide.docx"
+            dg_to_docx(_dg_final, f"Discussion Guide — {current_project()}", _out)
+            store_upload_existing("notes", "discussion_guide.docx")
+            st.success(T("DOCX exported.", "DOCX ထုတ်ပြီးပြီ။"))
+    if (NOTES_DIR / "discussion_guide.docx").exists():
+        st.download_button(T("Download discussion_guide.docx", "discussion_guide.docx ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / "discussion_guide.docx").read_bytes(), file_name="discussion_guide.docx", key="dg_download")
+    with st.expander(T("Preview", "အစမ်းကြည့်မယ်")):
+        _dg_prev = st.session_state.get("dg_editor", "")
+        if _dg_prev.strip():
+            st.markdown(_dg_to_markdown(_dg_prev))
+        else:
+            st.caption(T("Empty — no Discussion Guide yet.", "ဗလာဖြစ်နေတယ် — Discussion Guide မရှိသေးဘူး။"))
 
     # ---- 5. Fieldwork Plan ----
     st.subheader(T("5. Fieldwork Plan", "၅။ Fieldwork Plan"))
