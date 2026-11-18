@@ -29,7 +29,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.32"
+APP_VERSION = "3.33"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2096,6 +2096,98 @@ def sync_from_drive():
                     os.replace(tmp, dest)
             except Exception:
                 continue
+
+
+# --- v3.33 (P12): orphan local-file reconciliation — LIST-ONLY ---
+# The live trial proved local server copies survive Drive deletion AND
+# redeploys (Default's fgd_test4 ghost files): sync_from_drive() never
+# deletes local files, so a file trashed in Drive stays listed in the
+# app. This layer only LISTS such files ("on this server only") and
+# deletes one file at a time, only after the owner confirms that file.
+# It never auto-deletes, never bulk-deletes, and never touches Drive.
+# The Drive copy is the source of truth, but a local file absent from
+# Drive may still be the only copy of something — deletion is his
+# explicit choice per file (owner's standing rule).
+_ORPHAN_SCAN_KEY = "orphan_scan"
+_ORPHAN_ARMED_KEY = "orphan_armed"
+
+
+def _orphan_scan_excluded(name):
+    """Local files the orphan scan must ignore: hidden/temp files, and
+    the conflict copies sync_from_drive() keeps aside (those are safety
+    copies of a Drive file, not ghosts)."""
+    if name.startswith("."):
+        return True
+    if "_conflict_" in name:
+        return True
+    if name.endswith((".dl", ".tmp")):
+        return True
+    return False
+
+
+def _find_orphan_files(drive_list_fn=None, local_dirs=None):
+    """Local files with no counterpart in Google Drive. Returns a list of
+    dicts (project, dir_key, name, path, size, modified, type) — or None
+    when Drive is not available (without Drive there is nothing to
+    compare against, so every local file would falsely look orphaned).
+    drive_list_fn / local_dirs are test hooks; the app calls it with
+    defaults (real drive_list_files and LOCAL_DIR)."""
+    if not drive_available():
+        return None
+    _list = drive_list_fn or drive_list_files
+    _dirs = local_dirs or LOCAL_DIR
+    _project = current_project()
+    orphans = []
+    for dir_key, drive_folder in DIR_TO_DRIVE.items():
+        try:
+            _drive_names = {f["name"] for f in _list(drive_folder)
+                            if f.get("mimeType") != "application/vnd.google-apps.folder"}
+        except Exception:
+            continue
+        _local = _dirs.get(dir_key)
+        if _local is None:
+            continue
+        _local = Path(_local)
+        if not _local.is_dir():
+            continue
+        for _p in sorted(_local.iterdir()):
+            if not _p.is_file():
+                continue
+            _name = _p.name
+            if _orphan_scan_excluded(_name):
+                continue
+            if not _drive_name_belongs(dir_key, _name):
+                continue
+            if _name in _drive_names:
+                continue
+            try:
+                _st = _p.stat()
+            except Exception:
+                continue
+            orphans.append({
+                "project": _project, "dir_key": dir_key, "name": _name,
+                "path": str(_p), "size": _st.st_size,
+                "modified": datetime.datetime.fromtimestamp(_st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                "type": _p.suffix.lstrip(".").lower() or "file",
+            })
+    return orphans
+
+
+def _delete_orphan_file(dir_key, name):
+    """Delete ONE local orphan copy (local only — Drive is never touched).
+    Resolves through _safe_storage_path so the path can never escape the
+    project folder. Returns True when a file was removed."""
+    try:
+        _path = _safe_storage_path(dir_key, name)
+    except Exception:
+        return False
+    try:
+        if _path.exists():
+            _path.unlink()
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def _safe_storage_path(dir_key, name):
@@ -4991,6 +5083,118 @@ def _design_prompt_context(brief, design):
     return "\n\n".join(out)
 
 
+# --- v3.33 (P14): AI second-pass review — OPTIONAL, user-triggered ONLY ---
+# The deterministic checks (P6–P8) catch exact, checkable problems. This
+# review covers the semantic judgements they cannot make: whether the
+# questions really cover each objective in depth, whether probes follow
+# logically, whether the wording fits the target audience, and whether
+# the DG and the screener agree with each other. One Gemini request per
+# click, only when the researcher clicks the button — never on render,
+# never on save, never automatically. Results are recommendations only:
+# nothing is auto-applied, the saved draft is never overwritten, and
+# saving is never blocked. A provider failure (e.g. 503) shows one plain
+# line and never crashes the page.
+AI_REVIEW_UNAVAILABLE_EN = "AI review unavailable right now — try again later."
+AI_REVIEW_UNAVAILABLE_MM = "AI review အခု မရသေးဘူး — ခဏနေမှ ပြန်စစ်ပါ။"
+
+
+def _q_compact_text(qdata):
+    """One line per question: code + section + English text + outcome.
+    Compact on purpose — the review needs the shape of the screener,
+    not a full re-print. Accepts the saved dict or a plain list."""
+    if isinstance(qdata, list):
+        _qs = qdata
+    elif isinstance(qdata, dict):
+        _qs = qdata.get("questions") or []
+    else:
+        _qs = []
+    _lines = []
+    for _q in _qs:
+        if not isinstance(_q, dict):
+            continue
+        _code = str(_q.get("code") or "").strip()
+        _sec = str(_q.get("section") or "").strip()
+        _txt = str(_q.get("question_en") or _q.get("question_mm") or "").strip()
+        _out = str(_q.get("outcome") or "").strip()
+        if not _txt and not _code:
+            continue
+        _lines.append(f"{_code} [{_sec}] {_txt}" + (f" (Outcome: {_out})" if _out else ""))
+    return "\n".join(_lines)
+
+
+def _dg_section_titles(dg_text):
+    """Section header lines of a Discussion Guide ("## Section N: ...")."""
+    _titles = []
+    for _line in str(dg_text or "").splitlines():
+        _m = re.match(r"\s*##\s+(Section\s+\d+.*)", _line)
+        if _m:
+            _titles.append(_m.group(1).strip())
+    return "\n".join(_titles)
+
+
+def _ai_review_prompt(kind, brief, design, draft_text, other_text=""):
+    """Review prompt: the project's own brief + design + the saved draft
+    (+ a compact summary of the other instrument for consistency). The
+    model is told to judge only what is in front of it and to reply in
+    a fixed Issue/Why/Fix format."""
+    _label = "Discussion Guide" if kind == "dg" else "Questionnaire / Screener"
+    _other_label = ("Questionnaire / Screener (compact summary, for consistency only)"
+                    if kind == "dg" else "Discussion Guide section titles (for consistency only)")
+    _parts = [
+        "You are a senior market-research consultant reviewing a draft instrument before fieldwork.",
+        "Judge ONLY what is in the brief, the design and the draft below. Do not invent facts, people, dates, venues or fees.",
+        "Check these semantic points (the programmatic checks already cover timings, counts and routing — do NOT repeat them):",
+        "1. Does every brief objective get covered IN DEPTH, not just mentioned once?",
+        "2. Do the probes/questions follow logically from the objective they serve?",
+        "3. Is the wording right for the stated target audience (plain, everyday language)?",
+        "4. Does this draft agree with the other instrument (no contradictions, no question that belongs in the other one)?",
+        _design_prompt_context(brief, design),
+        f"Draft to review ({_label}):\n" + (str(draft_text or "").strip()[:12000] or "(empty)"),
+    ]
+    if str(other_text or "").strip():
+        _parts.append(f"Other instrument — {_other_label}:\n" + str(other_text).strip()[:4000])
+    _parts.append("Reply as a numbered list. Each item exactly in this format, one item per block:\nIssue: <what is wrong>\nWhy: <why it matters>\nFix: <what to change>\nIf nothing is wrong, reply exactly: No issues found.\nNo other text.")
+    return "\n\n".join(_parts)
+
+
+def _parse_ai_review(text):
+    """Parse the Issue/Why/Fix list into [{issue, why, fix}]. An empty
+    list means the model found no issues. Unparseable text is returned
+    as one item so nothing the model said is silently dropped."""
+    _text = str(text or "").strip()
+    if not _text:
+        return []
+    if _text.lower().startswith("no issues found"):
+        return []
+    _items = []
+    for _m in re.finditer(r"Issue:\s*(.*?)\n\s*Why:\s*(.*?)\n\s*Fix:\s*(.*?)(?=\n\s*\d+[.)]\s*Issue:|\n\s*Issue:|\Z)",
+                          _text, re.DOTALL):
+        _items.append({"issue": _m.group(1).strip(), "why": _m.group(2).strip(), "fix": _m.group(3).strip()})
+    if not _items:
+        # Fallback: numbered items without the exact labels, or plain text.
+        _chunks = [c.strip() for c in re.split(r"\n\s*\d+[.)]\s+", _text) if c.strip()]
+        if len(_chunks) > 1:
+            for _c in _chunks:
+                _items.append({"issue": _c[:1000], "why": "", "fix": ""})
+        else:
+            _items.append({"issue": _text[:2000], "why": "", "fix": ""})
+    return _items
+
+
+def _run_ai_review(kind, brief, design, draft_text, other_text=""):
+    """One Gemini call for a semantic review. Returns (items, error):
+    items is the parsed recommendation list, error is a plain one-line
+    message when the provider is unavailable (never raises)."""
+    try:
+        _prompt = _ai_review_prompt(kind, brief, design, draft_text, other_text)
+        _text, _model_used = ask_gemini(_prompt)
+    except Exception:
+        return [], AI_REVIEW_UNAVAILABLE_EN
+    if not _text:
+        return [], AI_REVIEW_UNAVAILABLE_EN
+    return _parse_ai_review(_text), ""
+
+
 def questionnaire_to_xlsform(qdata, title_text, out_path):
     """Export the saved questionnaire as a Kobo XLSForm workbook.
     Returns (out_path, stats) or (None, error) when openpyxl is missing.
@@ -7054,6 +7258,42 @@ elif page == "Research Design":
         _dg_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
         _show_self_check_results(_dg_self_check(_dg_text_now, _brief, _draft_design, _dg_minutes),
                                  "Discussion Guide checks", "Discussion Guide စစ်ဆေးမှု")
+    # v3.33 (P14): AI second-pass review — user-triggered only. Reviews
+    # the SAVED guide (save your edits first to review them); one Gemini
+    # request per click; recommendations only, nothing is changed.
+    _dg_saved = str(_design.get("dg_text") or "").strip()
+    _dg_has_saved = bool(_dg_saved)
+    st.caption(T("AI review: uses 1 AI request. Recommendations only — the saved guide is never changed.",
+                 "AI review: AI request 1 ခု သုံးတယ်။ အကြံပြုချက်ပဲ — သိမ်းပြီးသား guide ကို မပြင်ဘူး။"))
+    if st.button(T("🤖 AI review — Discussion Guide", "🤖 AI နဲ့ Discussion Guide ပြန်စစ်မယ်"), key="dg_ai_review_btn", disabled=not _dg_has_saved):
+        with st.spinner(T("AI is reviewing the Discussion Guide…", "AI က Discussion Guide ပြန်စစ်နေတယ်…")):
+            _q_other = _q_compact_text(_design.get("questionnaire") or {})
+            _dg_items, _dg_err = _run_ai_review("dg", _brief, _draft_design, _dg_saved, _q_other)
+        st.session_state["dg_ai_review"] = {"items": _dg_items, "error": _dg_err}
+        st.rerun()
+    if not _dg_has_saved:
+        st.caption(T("Save a Discussion Guide first — the review covers the saved version.",
+                     "အရင် Discussion Guide သိမ်းပါ — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
+    elif str(_dg_text_now or "").strip() != _dg_saved:
+        st.caption(T("Note: the editor has unsaved changes — the review covers the saved version.",
+                     "မှတ်ချက်: editor မှာ မသိမ်းရသေးတဲ့ ပြင်ဆင်ချက် ရှိတယ် — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
+    _dg_review = st.session_state.get("dg_ai_review")
+    if _dg_review:
+        if _dg_review.get("error"):
+            st.warning(T(_dg_review["error"], AI_REVIEW_UNAVAILABLE_MM))
+        elif not _dg_review.get("items"):
+            st.success(T("AI review: no issues found.", "AI review: ပြဿနာ မတွေ့ဘူး။"))
+        else:
+            for _rit in _dg_review["items"]:
+                _rmsg = f"**Issue:** {_rit.get('issue', '')}"
+                if _rit.get("why"):
+                    _rmsg += f"\n\nWhy: {_rit['why']}"
+                if _rit.get("fix"):
+                    _rmsg += f"\n\nFix: {_rit['fix']}"
+                st.warning(_rmsg)
+        if st.button(T("Clear AI review", "AI review ရှင်းမယ်"), key="dg_ai_review_clear"):
+            st.session_state.pop("dg_ai_review", None)
+            st.rerun()
     _dc1, _dc2 = st.columns(2)
     if _dc1.button(T("Save Discussion Guide", "Discussion Guide သိမ်းမယ်"), key="dg_save", type="primary"):
         _dg_final = st.session_state.get("dg_editor", "")
@@ -7204,6 +7444,40 @@ elif page == "Research Design":
     if _qs:
         _show_self_check_results(_q_self_check({"questions": _qs}, _brief, _draft_design),
                                  "Questionnaire checks", "Questionnaire စစ်ဆေးမှု")
+    # v3.33 (P14): AI second-pass review — user-triggered only, same
+    # rules as the DG review. Reviews the SAVED questionnaire.
+    _q_saved_q = _design.get("questionnaire") or {}
+    if isinstance(_q_saved_q, list):
+        _q_saved_q = {"questions": _q_saved_q}
+    _q_has_saved = bool((_q_saved_q.get("questions") or [])) if isinstance(_q_saved_q, dict) else False
+    st.caption(T("AI review: uses 1 AI request. Recommendations only — the saved questionnaire is never changed.",
+                 "AI review: AI request 1 ခု သုံးတယ်။ အကြံပြုချက်ပဲ — သိမ်းပြီးသား questionnaire ကို မပြင်ဘူး။"))
+    if st.button(T("🤖 AI review — Questionnaire", "🤖 AI နဲ့ Questionnaire ပြန်စစ်မယ်"), key="q_ai_review_btn", disabled=not _q_has_saved):
+        with st.spinner(T("AI is reviewing the questionnaire…", "AI က questionnaire ပြန်စစ်နေတယ်…")):
+            _dg_other = _dg_section_titles(_design.get("dg_text") or "")
+            _q_items, _q_err = _run_ai_review("questionnaire", _brief, _draft_design, _q_compact_text(_q_saved_q), _dg_other)
+        st.session_state["q_ai_review"] = {"items": _q_items, "error": _q_err}
+        st.rerun()
+    if not _q_has_saved:
+        st.caption(T("Save a questionnaire first — the review covers the saved version.",
+                     "အရင် questionnaire သိမ်းပါ — review က သိမ်းပြီးသား version ကို စစ်တယ်။"))
+    _q_review = st.session_state.get("q_ai_review")
+    if _q_review:
+        if _q_review.get("error"):
+            st.warning(T(_q_review["error"], AI_REVIEW_UNAVAILABLE_MM))
+        elif not _q_review.get("items"):
+            st.success(T("AI review: no issues found.", "AI review: ပြဿနာ မတွေ့ဘူး။"))
+        else:
+            for _rit in _q_review["items"]:
+                _rmsg = f"**Issue:** {_rit.get('issue', '')}"
+                if _rit.get("why"):
+                    _rmsg += f"\n\nWhy: {_rit['why']}"
+                if _rit.get("fix"):
+                    _rmsg += f"\n\nFix: {_rit['fix']}"
+                st.warning(_rmsg)
+        if st.button(T("Clear AI review", "AI review ရှင်းမယ်"), key="q_ai_review_clear"):
+            st.session_state.pop("q_ai_review", None)
+            st.rerun()
     if st.button(T("Save questionnaire", "Questionnaire သိမ်းမယ်"), key="q_save", type="primary"):
         _new_qs = []
         for _i, _r in enumerate(_q_edited.to_dict("records")):
@@ -7420,6 +7694,66 @@ elif page == "Data Cleansing":
                         st.caption(f"After: {_a.get('after', '')}")
                     if _a.get("note"):
                         st.caption(f"Note: {_a.get('note', '')}")
+
+    # v3.33 (P12): orphan reconciliation — LIST-ONLY. Local files whose
+    # Drive counterpart no longer exists (trashed/deleted in Drive) are
+    # listed as "on this server only". Nothing is deleted automatically:
+    # each file needs its own two-step confirm, and only the local copy
+    # is removed — Drive is never touched.
+    st.divider()
+    st.subheader(T("Storage check — files only on this server", "သိုလှောင်မှု စစ်ဆေးခြင်း — ဒီ server မှာပဲ ရှိတဲ့ file များ"))
+    st.caption(T("Lists local files that no longer exist in Google Drive (for example files deleted or trashed there). This is only a check — nothing is deleted unless you confirm that file, and only the local copy is removed.",
+                "Google Drive မှာ မရှိတော့တဲ့ local file တွေ (Drive မှာ ဖျက်လိုက်လို့) ကို စာရင်းပြတယ်။ စစ်ဆေးရုံပဲ — file တစ်ခုချင်းစီ အတည်ပြုမှ ဖျက်တယ်၊ local copy ပဲ ဖျက်တယ်။"))
+    if st.button(T("Check for files only on this server", "ဒီ server မှာပဲ ရှိတဲ့ file တွေ စစ်မယ်"), key="orphan_scan_btn"):
+        if not drive_available():
+            st.info(T("Drive is not connected — the check needs Google Drive.", "Drive မချိတ်ထားဘူး — ဒီစစ်ဆေးမှုက Google Drive လိုတယ်။"))
+            st.session_state.pop(_ORPHAN_SCAN_KEY, None)
+        else:
+            with st.spinner(T("Comparing local files with Google Drive…", "Local file တွေကို Google Drive နဲ့ နှိုင်းယှဉ်နေပါတယ်…")):
+                _orphans = _find_orphan_files()
+            st.session_state[_ORPHAN_SCAN_KEY] = {"project": current_project(), "items": _orphans or []}
+            st.session_state.pop(_ORPHAN_ARMED_KEY, None)
+            st.rerun()
+    _scan = st.session_state.get(_ORPHAN_SCAN_KEY)
+    if _scan is not None and _scan.get("project") != current_project():
+        # A scan belongs to the project it ran on; never show another
+        # project's list after a switch.
+        _scan = None
+        st.session_state.pop(_ORPHAN_SCAN_KEY, None)
+    if _scan is not None:
+        _items = _scan.get("items") or []
+        if not _items:
+            st.success(T("No files only on this server — every local file has a Drive copy.",
+                         "ဒီ server မှာပဲ ရှိတဲ့ file မရှိဘူး — local file တိုင်းမှာ Drive copy ရှိတယ်။"))
+        else:
+            st.warning(T(f"{len(_items)} file(s) only on this server — they no longer exist in Google Drive.",
+                         f"ဒီ server မှာပဲ ရှိတဲ့ file {len(_items)} ခု — Google Drive မှာ မရှိတော့ဘူး။"))
+            _armed = st.session_state.get(_ORPHAN_ARMED_KEY) or set()
+            for _oi, _o in enumerate(_items):
+                _okey = (_o["dir_key"], _o["name"])
+                _size_kb = _o["size"] / 1024
+                st.write(f"**{_o['name']}** — {_o['project']} · {_o['dir_key']} · {_o['type']} · {_size_kb:.1f} KB · {_o['modified']}")
+                if _okey in _armed:
+                    _oc1, _oc2 = st.columns(2)
+                    if _oc1.button(T("Confirm delete (local copy only)", "ဖျက်မယ် (local copy ပဲ)"), key=f"orphan_confirm_{_oi}", type="primary"):
+                        if _delete_orphan_file(_o["dir_key"], _o["name"]):
+                            st.session_state[_ORPHAN_SCAN_KEY] = {"project": current_project(),
+                                                                  "items": [x for x in _items if (x["dir_key"], x["name"]) != _okey]}
+                            _armed.discard(_okey)
+                            st.session_state[_ORPHAN_ARMED_KEY] = _armed
+                            _flash(T(f"Deleted local copy: {_o['name']}", f"Local copy ဖျက်ပြီးပြီ: {_o['name']}"))
+                        else:
+                            st.warning(T(f"Could not delete: {_o['name']}", f"ဖျက်မရဘူး: {_o['name']}"))
+                        st.rerun()
+                    if _oc2.button(T("Cancel", "မဖျက်ဘူး"), key=f"orphan_cancel_{_oi}"):
+                        _armed.discard(_okey)
+                        st.session_state[_ORPHAN_ARMED_KEY] = _armed
+                        st.rerun()
+                else:
+                    if st.button(T("Delete", "ဖျက်မယ်"), key=f"orphan_del_{_oi}"):
+                        _armed.add(_okey)
+                        st.session_state[_ORPHAN_ARMED_KEY] = _armed
+                        st.rerun()
 
 elif page == "Insights":
     # Stage 5 (v3.27): build insight cards from SAVED outputs — Qual
