@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.40"
+APP_VERSION = "3.41"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -7980,7 +7980,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary", "Topline report"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report"}
 
 if page == "Dashboard":
 
@@ -10080,19 +10080,52 @@ elif page == "Reports":
         selected = st.selectbox(T("Pick an analysis", "Analysis ရွေးပါ"), saved_names)
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
         # v3.39: report types are built one at a time, in REPORT_TYPES
-        # order — Summary first, Topline report second (v3.40).
+        # order — Summary first, Topline report second (v3.40),
+        # Full report third (v3.41).
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
         if looks_like_html(_analysis_text):
             _analysis_text = html_to_text(_analysis_text)
         title_text = selected.replace("_analysis.txt", "").replace("_", " ")
-        # v3.40: the report-type exports live HERE — after _stem /
-        # _analysis_text / title_text are assigned. v3.39 placed the
-        # Summary export above those assignments, so clicking it raised
-        # NameError; this move fixes that. Unbuilt types get an info
-        # note only, no export button; the existing PPTX/DOCX exports
-        # below are untouched.
+
+        # v3.28: PPTX is the main deliverable — it uses the assembled report
+        # structure template (Qual or Quant, picked from the design method);
+        # DOCX stays topline/summary — the original analysis + Executive
+        # Summary. The summary comes from the saved topline when it exists,
+        # else from the analysis's Key Findings.
+        _insights = load_insights()
+        _struct = _pick_report_template(_pdesign)
+        if _struct == "quant":
+            _assembled_text, _rep_included, _rep_missing = _assemble_quant_report(_analysis_text, _pbrief, _pdesign, _insights, _stem)
+            _qn = _quant_total_n(_load_quant_texts())
+            _pptx_footer = f"Base: N={_qn}" if _qn else None
+            st.caption(T("Structure template: Quantitative report — picked from the design method.", "ပုံစံ: Quantitative report — design method ကနေ ရွေးထားတာ။"))
+        else:
+            _assembled_text, _rep_included, _rep_missing = _assemble_report(_analysis_text, _pbrief, _pdesign, _insights)
+            _pptx_footer = None
+            st.caption(T("Structure template: Qualitative report — picked from the design method.", "ပုံစံ: Qualitative report — design method ကနေ ရွေးထားတာ။"))
+        _pptx_text, _summary_src = _report_text_with_summary(_assembled_text, _stem, _analysis_text)
+        _docx_text, _ = _report_text_with_summary(_analysis_text, _stem)
+        if _struct == "quant" and _summary_src == "existing":
+            st.caption(T("Executive Summary is in the template order, with KPI cards from the survey data.", "Executive Summary က ပုံစံအစီအစဉ်အတိုင်း ပါတယ်, survey data က KPI cards နဲ့အတူ။"))
+        elif _summary_src == "topline":
+            st.caption(T("Executive Summary at the top is from the saved topline.", "အပေါ်က Executive Summary က သိမ်းထားတဲ့ topline ကနေ ယူထားတာ။"))
+        elif _summary_src == "key_findings":
+            st.caption(T("Executive Summary at the top is from the analysis Key Findings.", "အပေါ်က Executive Summary က analysis ရဲ့ Key Findings ကနေ ယူထားတာ။"))
+        elif _summary_src == "existing":
+            st.caption(T("This analysis already has an Executive Summary section.", "ဒီ analysis မှာ Executive Summary အပိုင်း ရှိနေပြီးသားမို့ ထပ်မထည့်ဘူး။"))
+        else:
+            st.caption(T("No Executive Summary available — create a topline below, or add a Key Findings section.", "Executive Summary မရှိသေးဘူး — အောက်မှာ topline လုပ်ပါ၊ ဒါမှမဟုတ် Key Findings အပိုင်း ထည့်ပါ။"))
+
+        # v3.41: the report-type exports live HERE — after _stem /
+        # _analysis_text / title_text AND _assembled_text are
+        # assigned. v3.40 moved them after _stem/_analysis_text
+        # (fixing the v3.39 NameError); v3.41 moves them after
+        # _assembled_text too, so the Full report can render the
+        # assembled Qual/Quant report text. Unbuilt types get an
+        # info note only, no export button; the existing PPTX/DOCX
+        # exports below are untouched.
         if report_type == "Summary":
             if st.button("Export Summary (DOCX)"):
                 _summary_text = _build_summary_text(_pbrief, _analysis_text, _stem, selected)
@@ -10125,37 +10158,22 @@ elif page == "Reports":
                     file_name=_topline_path.name,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
+        elif report_type == "Full report":
+            if st.button("Export Full report (DOCX)"):
+                _full_path = REPORTS_DIR / f"{_stem}_full_report.docx"
+                with st.spinner(T("Exporting Full report...", "Full report ထုတ်နေပါတယ်...")):
+                    analysis_to_docx(_assembled_text, f"{title_text} — Full report", _full_path)
+                store_upload_existing("reports", _full_path.name)
+                st.success(f"Done — {_full_path.name}")
+                st.download_button(
+                    "Download Full report (DOCX)",
+                    data=_full_path.read_bytes(),
+                    file_name=_full_path.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
                       f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
-        # v3.28: PPTX is the main deliverable — it uses the assembled report
-        # structure template (Qual or Quant, picked from the design method);
-        # DOCX stays topline/summary — the original analysis + Executive
-        # Summary. The summary comes from the saved topline when it exists,
-        # else from the analysis's Key Findings.
-        _insights = load_insights()
-        _struct = _pick_report_template(_pdesign)
-        if _struct == "quant":
-            _assembled_text, _rep_included, _rep_missing = _assemble_quant_report(_analysis_text, _pbrief, _pdesign, _insights, _stem)
-            _qn = _quant_total_n(_load_quant_texts())
-            _pptx_footer = f"Base: N={_qn}" if _qn else None
-            st.caption(T("Structure template: Quantitative report — picked from the design method.", "ပုံစံ: Quantitative report — design method ကနေ ရွေးထားတာ။"))
-        else:
-            _assembled_text, _rep_included, _rep_missing = _assemble_report(_analysis_text, _pbrief, _pdesign, _insights)
-            _pptx_footer = None
-            st.caption(T("Structure template: Qualitative report — picked from the design method.", "ပုံစံ: Qualitative report — design method ကနေ ရွေးထားတာ။"))
-        _pptx_text, _summary_src = _report_text_with_summary(_assembled_text, _stem, _analysis_text)
-        _docx_text, _ = _report_text_with_summary(_analysis_text, _stem)
-        if _struct == "quant" and _summary_src == "existing":
-            st.caption(T("Executive Summary is in the template order, with KPI cards from the survey data.", "Executive Summary က ပုံစံအစီအစဉ်အတိုင်း ပါတယ်, survey data က KPI cards နဲ့အတူ။"))
-        elif _summary_src == "topline":
-            st.caption(T("Executive Summary at the top is from the saved topline.", "အပေါ်က Executive Summary က သိမ်းထားတဲ့ topline ကနေ ယူထားတာ။"))
-        elif _summary_src == "key_findings":
-            st.caption(T("Executive Summary at the top is from the analysis Key Findings.", "အပေါ်က Executive Summary က analysis ရဲ့ Key Findings ကနေ ယူထားတာ။"))
-        elif _summary_src == "existing":
-            st.caption(T("This analysis already has an Executive Summary section.", "ဒီ analysis မှာ Executive Summary အပိုင်း ရှိနေပြီးသားမို့ ထပ်မထည့်ဘူး။"))
-        else:
-            st.caption(T("No Executive Summary available — create a topline below, or add a Key Findings section.", "Executive Summary မရှိသေးဘူး — အောက်မှာ topline လုပ်ပါ၊ ဒါမှမဟုတ် Key Findings အပိုင်း ထည့်ပါ။"))
 
         # v3.28: pre-export checks — warnings only, exports are never blocked.
         st.subheader(T("Pre-export checks", "ထုတ်ခင် စစ်ဆေးခြင်း"))
