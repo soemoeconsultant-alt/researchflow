@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.58"
+APP_VERSION = "3.59"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -329,13 +329,67 @@ def ensure_project(name):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return clean
 
-# --- Client Brief (v3.21, Stage 1): one brief.json per project, in notes/
-# (Drive notes folder + local). Fields follow the 5-stage table exactly:
-# Client info, project info, objectives, target audience, scope, timeline,
-# deliverables, approval (Draft → Approved). Discussion Guide lives here too
-# (moved from the Market Analysis planner — no duplicate input there).
+# --- Client Brief (v3.21, Stage 1; v3.59 Prompt 2 fields): one brief.json
+# per project, in notes/ (Drive notes folder + local). Fields: client info
+# (incl. industry), project info, objectives + research questions, target
+# audience + geographic coverage, scope, methodology + sample size, client
+# need + expected outcome, timeline, deliverables, requirements, notes,
+# approval (Draft → Approved). Discussion Guide lives here too (moved from
+# the Market Analysis planner — no duplicate input there). Required vs
+# optional: BRIEF_REQUIRED_FIELDS / BRIEF_OPTIONAL_FIELDS below; missing
+# required fields are shown as questions to resolve, never invented.
 BRIEF_APPROVALS = ["Draft", "Pending", "Approved", "Revision"]
 BRIEF_DELIVERABLES = ["PPTX Report", "DOCX Report", "Presentation"]
+
+# v3.59 (Prompt 2): required vs optional Brief fields, and the question to
+# resolve for each missing required field. The required set is the brief
+# content the next steps (Proposal, Research Design) already read as inputs
+# — client/contact, industry, background, objectives, research questions,
+# target audience, geographic coverage, methodology, sample size, client
+# need, scope, timeline, deliverables. Optional: project code, requirements,
+# notes, and the reference DG notes. Nothing is invented: a missing field
+# stays missing and is listed as a question to resolve.
+BRIEF_REQUIRED_FIELDS = [
+    "client_name", "client_contact", "client_email", "industry",
+    "background", "objectives", "research_questions",
+    "target_audience", "geographic_coverage",
+    "methodology", "sample_size", "client_need",
+    "scope", "timeline_start", "timeline_end", "deliverables",
+]
+BRIEF_OPTIONAL_FIELDS = ["project_code", "requirements", "notes", "discussion_guide"]
+# Question to resolve, per required field (English, Myanmar).
+BRIEF_FIELD_QUESTIONS = {
+    "client_name": ("What is the client's name?", "Client နာမည်က ဘာလဲ။"),
+    "client_contact": ("Who is the contact person?", "ဆက်သွယ်ရမည့်သူက ဘယ်သူလဲ။"),
+    "client_email": ("What is the contact email?", "ဆက်သွယ်ရန် email က ဘာလဲ။"),
+    "industry": ("What industry is the client in?", "Client က ဘယ် industry ကလဲ။"),
+    "background": ("What is the research background and problem?", "သုတေသန နောက်ခံနဲ့ ပြဿနာက ဘာလဲ။"),
+    "objectives": ("What should this research answer?", "ဒီသုတေသနက ဘာကို ဖြေပေးရမလဲ။"),
+    "research_questions": ("What are the research questions?", "Research question တွေက ဘာတွေလဲ။"),
+    "target_audience": ("Who are the respondents?", "ဘယ်သူတွေကို မေးမလဲ။"),
+    "geographic_coverage": ("Which areas does the research cover?", "ဘယ် ဒေသတွေကို လေ့လာမလဲ။"),
+    "methodology": ("What methodology is proposed?", "ဘယ် methodology သုံးမလဲ။"),
+    "sample_size": ("What is the expected sample size?", "Sample size ဘယ်လောက်လဲ။"),
+    "client_need": ("What does the client need, and what outcome is expected?", "Client က ဘာလိုအပ်လဲ၊ ဘာရလဒ် မျှော်လင့်လဲ။"),
+    "scope": ("What is in scope — and out of scope?", "ဘာတွေ ပါမလဲ — ဘာတွေ မပါဘူး။"),
+    "timeline_start": ("When does the project start?", "ဘယ်နေ့ စမလဲ။"),
+    "timeline_end": ("When does the project end?", "ဘယ်နေ့ ပြီးမလဲ။"),
+    "deliverables": ("What deliverables are agreed?", "ဘာတွေ ထုတ်ပေးရမလဲ။"),
+}
+
+
+def _brief_value_filled(value):
+    """True when a Brief field counts as filled (non-empty text, or a non-empty list)."""
+    if isinstance(value, (list, tuple, set)):
+        return len(value) > 0
+    return bool(str(value or "").strip())
+
+
+def brief_completeness(brief):
+    """(filled_count, total, missing_keys) for the required Brief fields."""
+    brief = brief or {}
+    missing = [k for k in BRIEF_REQUIRED_FIELDS if not _brief_value_filled(brief.get(k))]
+    return len(BRIEF_REQUIRED_FIELDS) - len(missing), len(BRIEF_REQUIRED_FIELDS), missing
 
 
 def load_brief():
@@ -8406,41 +8460,111 @@ elif page == "Client Brief":
     _brief = load_brief()
     _appr = _brief.get("approval", "Draft")
     st.caption(T("Capture the client's request and research brief.", "Client လိုအပ်ချက်နဲ့ သုတေသန brief ကို မှတ်တမ်းတင်ပါ။"))
+    # v3.59 (Prompt 2): completeness indicator + summary view + questions
+    # to resolve. Nothing is invented — missing fields stay missing.
+    _bf_done, _bf_total, _bf_missing = brief_completeness(_brief)
+    _bf_pct = int(round(100 * _bf_done / _bf_total)) if _bf_total else 0
+    st.subheader(T("Brief summary", "Brief အကျဉ်းချုပ်"))
+    if not _brief:
+        st.info(T("No brief saved yet. Fill in the form below and save a draft.",
+                  "Brief မသိမ်းရသေးပါ။ အောက်က form ဖြည့်ပြီး draft သိမ်းပါ။"))
+    st.caption(T(f"Completeness: {_bf_done} of {_bf_total} required fields filled ({_bf_pct}%).",
+                f"ပြည့်စုံမှု: မဖြစ်မနေ ဖြည့်ရမယ့် {_bf_total} ခုမှာ {_bf_done} ခု ဖြည့်ပြီး ({_bf_pct}%)။"))
+    st.progress(_bf_pct)
+    if _bf_missing:
+        st.markdown(T("**Questions to resolve:**", "**ဖြေရှင်းရန် မေးခွန်းများ:**"))
+        for _mk in _bf_missing:
+            _q_en, _q_mm = BRIEF_FIELD_QUESTIONS[_mk]
+            st.markdown("- " + T(_q_en, _q_mm))
+    if _brief:
+        _bf_rows = []
+        for _fk, _fl_en, _fl_mm in [
+            ("client_name", "Client name", "Client နာမည်"),
+            ("client_contact", "Contact person", "ဆက်သွယ်ရမည့်သူ"),
+            ("client_email", "Contact email", "ဆက်သွယ်ရန် email"),
+            ("project_code", "Project code", "Project code"),
+            ("industry", "Industry", "Industry"),
+            ("background", "Background", "နောက်ခံ"),
+            ("objectives", "Objectives", "ရည်ရွယ်ချက်များ"),
+            ("research_questions", "Research questions", "Research question များ"),
+            ("target_audience", "Target audience", "ပစ်မှတ်အုပ်စု"),
+            ("geographic_coverage", "Geographic coverage", "ဒေသ"),
+            ("methodology", "Methodology", "Methodology"),
+            ("sample_size", "Sample size", "Sample size"),
+            ("client_need", "Client need and expected outcome", "Client လိုအပ်ချက်နဲ့ မျှော်လင့်ရလဒ်"),
+            ("scope", "Scope", "Scope"),
+            ("timeline_start", "Start date", "စမည့်ရက်"),
+            ("timeline_end", "End date", "ပြီးမည့်ရက်"),
+            ("deliverables", "Deliverables", "ထုတ်ပေးမည့်အရာများ"),
+            ("requirements", "Client requirements", "Client လိုအပ်ချက်များ"),
+            ("notes", "Notes", "မှတ်စု"),
+            ("discussion_guide", "Reference notes", "ကိုးကားမှတ်စု"),
+        ]:
+            _fv = _brief.get(_fk, "")
+            if isinstance(_fv, (list, tuple)):
+                _fv = ", ".join(str(x) for x in _fv)
+            _fv = str(_fv or "").strip()
+            if len(_fv) > 200:
+                _fv = _fv[:200].rstrip() + " …"
+            _bf_rows.append({
+                "Field": T(_fl_en, _fl_mm),
+                "Value": _fv if _fv else T("— not filled yet —", "— မဖြည့်ရသေးပါ —"),
+            })
+        st.dataframe(pd.DataFrame(_bf_rows), use_container_width=True, hide_index=True)
+    st.divider()
     with st.form("brief_form"):
         st.subheader(T("Client info", "Client info"))
         _bc1, _bc2 = st.columns(2)
-        _client_name = _bc1.text_input(T("Client name", "Client နာမည်"), value=_brief.get("client_name", ""), key="brief_client_name")
-        _client_contact = _bc2.text_input(T("Contact person", "ဆက်သွယ်ရမည့်သူ"), value=_brief.get("client_contact", ""), key="brief_client_contact")
-        _client_email = st.text_input(T("Contact email", "ဆက်သွယ်ရန် email"), value=_brief.get("client_email", ""), key="brief_client_email")
+        _client_name = _bc1.text_input(T("Client name (required)", "Client နာမည် (မဖြစ်မနေ)"), value=_brief.get("client_name", ""), key="brief_client_name")
+        _client_contact = _bc2.text_input(T("Contact person (required)", "ဆက်သွယ်ရမည့်သူ (မဖြစ်မနေ)"), value=_brief.get("client_contact", ""), key="brief_client_contact")
+        _client_email = st.text_input(T("Contact email (required)", "ဆက်သွယ်ရန် email (မဖြစ်မနေ)"), value=_brief.get("client_email", ""), key="brief_client_email")
+        _industry = st.text_input(T("Industry (required)", "Industry (မဖြစ်မနေ)"), value=_brief.get("industry", ""), key="brief_industry")
         st.subheader(T("Project info", "Project info"))
         _bp1, _bp2 = st.columns(2)
-        _project_code = _bp1.text_input(T("Project code", "Project code"), value=_brief.get("project_code", ""), key="brief_project_code")
-        _background = st.text_area(T("Background", "နောက်ခံ"), value=_brief.get("background", ""), height=100, key="brief_background")
+        _project_code = _bp1.text_input(T("Project code (optional)", "Project code (မဖြစ်မနေ မဟုတ်)"), value=_brief.get("project_code", ""), key="brief_project_code")
+        _background = st.text_area(T("Background (required)", "နောက်ခံ (မဖြစ်မနေ)"), value=_brief.get("background", ""), height=100, key="brief_background")
         st.subheader(T("Objectives", "ရည်ရွယ်ချက်များ"))
-        _objectives = st.text_area(T("What should this research answer?", "ဒီသုတေသနက ဘာကို ဖြေပေးရမလဲ။"), value=_brief.get("objectives", ""), height=100, key="brief_objectives")
+        _objectives = st.text_area(T("What should this research answer? (required)", "ဒီသုတေသနက ဘာကို ဖြေပေးရမလဲ။ (မဖြစ်မနေ)"), value=_brief.get("objectives", ""), height=100, key="brief_objectives")
+        _research_questions = st.text_area(T("Research questions (required)", "Research question များ (မဖြစ်မနေ)"), value=_brief.get("research_questions", ""), height=100, key="brief_research_questions")
         st.subheader(T("Target audience", "ပစ်မှတ်အုပ်စု"))
-        _audience = st.text_area(T("Who are the respondents?", "ဘယ်သူတွေကို မေးမလဲ။"), value=_brief.get("target_audience", ""), height=80, key="brief_target_audience")
+        _audience = st.text_area(T("Who are the respondents? (required)", "ဘယ်သူတွေကို မေးမလဲ။ (မဖြစ်မနေ)"), value=_brief.get("target_audience", ""), height=80, key="brief_target_audience")
+        _geo = st.text_input(T("Geographic coverage (required)", "ဒေသ (မဖြစ်မနေ)"), value=_brief.get("geographic_coverage", ""), key="brief_geographic_coverage")
         st.subheader(T("Scope", "Scope"))
-        _scope = st.text_area(T("What is in scope — and out of scope?", "ဘာတွေ ပါမလဲ — ဘာတွေ မပါဘူး။"), value=_brief.get("scope", ""), height=80, key="brief_scope")
+        _scope = st.text_area(T("What is in scope — and out of scope? (required)", "ဘာတွေ ပါမလဲ — ဘာတွေ မပါဘူး။ (မဖြစ်မနေ)"), value=_brief.get("scope", ""), height=80, key="brief_scope")
+        st.subheader(T("Methodology and sample size", "Methodology နဲ့ Sample size"))
+        _methodology = st.text_area(T("Proposed methodology (required)", "အဆိုပြုတဲ့ methodology (မဖြစ်မနေ)"), value=_brief.get("methodology", ""), height=80, key="brief_methodology")
+        _sample_size = st.text_input(T("Expected sample size (required)", "မျှော်လင့်တဲ့ sample size (မဖြစ်မနေ)"), value=_brief.get("sample_size", ""), key="brief_sample_size")
+        st.subheader(T("Client need and expected outcome", "Client လိုအပ်ချက်နဲ့ မျှော်လင့်ရလဒ်"))
+        _client_need = st.text_area(T("Client need and expected outcome (required)", "Client လိုအပ်ချက်နဲ့ မျှော်လင့်ရလဒ် (မဖြစ်မနေ)"), value=_brief.get("client_need", ""), height=100, key="brief_client_need")
         st.subheader(T("Timeline", "အချိန်ဇယား"))
         # v3.29: these are TEXT fields, not a calendar picker and not a
         # dropdown — say so, so nobody waits for a picker that never comes.
         st.caption(T("Type the date as text (YYYY-MM-DD). No calendar picker — an empty date stays empty, never today's date.", "ရက်စွဲကို စာရိုက်ထည့်ပါ (YYYY-MM-DD)။ Calendar မရှိဘူး — မထည့်ရင် ဗလာအတိုင်း ကျန်မယ်, ဒီနေ့ရက် အလိုအလျောက် မထည့်ဘူး။"))
         _bt1, _bt2 = st.columns(2)
-        _start = _bt1.text_input(T("Start date (YYYY-MM-DD, type as text)", "စမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ)"), value=_brief.get("timeline_start", ""), key="brief_start")
-        _end = _bt2.text_input(T("End date (YYYY-MM-DD, type as text)", "ပြီးမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ)"), value=_brief.get("timeline_end", ""), key="brief_end")
+        _start = _bt1.text_input(T("Start date (YYYY-MM-DD, type as text) (required)", "စမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ) (မဖြစ်မနေ)"), value=_brief.get("timeline_start", ""), key="brief_start")
+        _end = _bt2.text_input(T("End date (YYYY-MM-DD, type as text) (required)", "ပြီးမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ) (မဖြစ်မနေ)"), value=_brief.get("timeline_end", ""), key="brief_end")
         st.subheader(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"))
-        _delivs = st.multiselect(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"), BRIEF_DELIVERABLES, default=[d for d in _brief.get("deliverables", []) if d in BRIEF_DELIVERABLES], key="brief_deliverables")
+        _delivs = st.multiselect(T("Deliverables (required)", "ထုတ်ပေးမည့်အရာများ (မဖြစ်မနေ)"), BRIEF_DELIVERABLES, default=[d for d in _brief.get("deliverables", []) if d in BRIEF_DELIVERABLES], key="brief_deliverables")
+        st.subheader(T("Requirements and notes", "လိုအပ်ချက်များနဲ့ မှတ်စု"))
+        _requirements = st.text_area(T("Client requirements (optional)", "Client လိုအပ်ချက်များ (မဖြစ်မနေ မဟုတ်)"), value=_brief.get("requirements", ""), height=80, key="brief_requirements")
+        _notes = st.text_area(T("Notes (optional)", "မှတ်စု (မဖြစ်မနေ မဟုတ်)"), value=_brief.get("notes", ""), height=80, key="brief_notes")
         st.subheader(T("Client-provided guide or reference notes", "Client ပေးထားတဲ့ Guide သို့မဟုတ် ကိုးကားမှတ်စု"))
         _dg = st.text_area(T("Reference material only — the moderator DG is drafted in Research Design", "ကိုးကားရန်သာ — Moderator DG ကို Research Design အဆင့်မှာ ရေးမယ်"), value=_brief.get("discussion_guide", ""), height=120, key="brief_dg")
         if st.form_submit_button(T("💾 Save brief", "💾 Brief သိမ်းမယ်"), type="primary"):
             _data = {
                 "client_name": _client_name.strip(), "client_contact": _client_contact.strip(),
                 "client_email": _client_email.strip(), "project_code": _project_code.strip(),
+                "industry": _industry.strip(),
                 "background": _background.strip(), "objectives": _objectives.strip(),
-                "target_audience": _audience.strip(), "scope": _scope.strip(),
+                "research_questions": _research_questions.strip(),
+                "target_audience": _audience.strip(),
+                "geographic_coverage": _geo.strip(), "scope": _scope.strip(),
+                "methodology": _methodology.strip(), "sample_size": _sample_size.strip(),
+                "client_need": _client_need.strip(),
                 "timeline_start": _start.strip(), "timeline_end": _end.strip(),
-                "deliverables": list(_delivs), "discussion_guide": _dg.strip(),
+                "deliverables": list(_delivs),
+                "requirements": _requirements.strip(), "notes": _notes.strip(),
+                "discussion_guide": _dg.strip(),
                 "approval": _appr,
             }
             save_brief(_data)
