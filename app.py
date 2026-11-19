@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.43"
+APP_VERSION = "3.44"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4346,6 +4346,56 @@ def _write_data_zip(out_path):
     return [n for n, _p in _files]
 
 
+def _tabulation_crosstab_lines():
+    """Cross-tab lines saved in the quant summaries (the Quant page
+    writes a '## Cross-tab' section with the question pair + the
+    crosstab table as text). Returns (lines, source_name); ([], None)
+    when no saved cross-tab exists. Lines are used verbatim — never
+    recomputed or invented."""
+    for _name, _text in _load_quant_texts():
+        for _sec in parse_sections(_text):
+            if _sec["title"].strip().lower() == "cross-tab" and _sec["lines"]:
+                return list(_sec["lines"]), _name
+    return [], None
+
+
+def _build_tabulation_xlsx(out_path):
+    """Build the v3.44 Tabulation workbook from the saved quant
+    summaries — one table per question (Value / Count / % rows, then
+    Mean, Top-Box and Base (N) when the saved data has them), plus a
+    Cross-tab sheet when the saved data has one. Returns
+    (out_path, n_questions, has_crosstab); (None, error, False) when
+    openpyxl is missing. Deterministic, NO AI call; every number comes
+    from the saved quant summaries."""
+    try:
+        import openpyxl
+    except ImportError:
+        return None, "openpyxl is not installed — run this in PowerShell: .\\.venv\\Scripts\\python.exe -m pip install openpyxl", False
+    _stats = _quant_question_stats(_load_quant_texts())
+    _wb = openpyxl.Workbook()
+    _ws = _wb.active
+    _ws.title = "Tabulation"
+    for _st in _stats:
+        _ws.append([_st["question"]])
+        _ws.append(["Value", "Count", "%"])
+        for _val, _cnt in _st["counts"].items():
+            _ws.append([_val, _cnt, _st["percents"].get(_val)])
+        if _st["mean"] is not None:
+            _ws.append(["Mean", _st["mean"], ""])
+        if _st["top_box"] is not None:
+            _ws.append(["Top-Box (4-5) %", _st["top_box"], ""])
+        _ws.append(["Base (N)", _st["n"], ""])
+        _ws.append([])
+    _xt_lines, _xt_src = _tabulation_crosstab_lines()
+    if _xt_lines:
+        _xc = _wb.create_sheet("Cross-tab")
+        _xc.append([f"Cross-tab — {_xt_src}"])
+        for _line in _xt_lines:
+            _xc.append([_line])
+    _wb.save(out_path)
+    return out_path, len(_stats), bool(_xt_lines)
+
+
 def _report_text_with_summary(analysis_text, stem, fallback_text=None):
     """Compose the export text: an Executive Summary section first, then the
     full analysis. Returns (text, source). When the analysis already has an
@@ -8013,7 +8063,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only", "Tabulation"}
 
 if page == "Dashboard":
 
@@ -10115,7 +10165,7 @@ elif page == "Reports":
         # v3.39: report types are built one at a time, in REPORT_TYPES
         # order — Summary first, Topline report second (v3.40),
         # Full report third (v3.41), Presentation fourth (v3.42),
-        # Data only fifth (v3.43).
+        # Data only fifth (v3.43), Tabulation sixth (v3.44).
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
@@ -10172,6 +10222,8 @@ elif page == "Reports":
         # _pptx_subtitle up here too, so Presentation can call
         # analysis_to_pptx with the same subtitle. v3.43 adds Data
         # only (fifth) — it uses _stem + the raw-data helpers only.
+        # v3.44 adds Tabulation (sixth) — it uses _stem + the saved
+        # quant summaries only.
         # Unbuilt types get an info note only, no export button;
         # the existing PPTX/DOCX exports below are untouched.
         if report_type == "Summary":
@@ -10250,6 +10302,26 @@ elif page == "Reports":
                     file_name=_data_path.name,
                     mime="application/zip",
                 )
+        elif report_type == "Tabulation":
+            _tab_stats = _quant_question_stats(_load_quant_texts())
+            if not _tab_stats:
+                st.info(T("No quant data yet — upload survey results and save a quant summary first, then export the tabulation.",
+                          "Quant data မရှိသေးဘူး — survey result တင်ပြီး quant summary အရင် သိမ်းပါ၊ ပြီးမှ tabulation ထုတ်ပါ။"))
+            elif st.button("Export Tabulation (XLSX)"):
+                _tab_path = REPORTS_DIR / f"{_stem}_tabulation.xlsx"
+                with st.spinner(T("Exporting Tabulation...", "Tabulation ထုတ်နေပါတယ်...")):
+                    _tab_out, _tab_n, _tab_xtab = _build_tabulation_xlsx(_tab_path)
+                if _tab_out is None:
+                    st.error(_tab_n)
+                else:
+                    store_upload_existing("reports", _tab_path.name)
+                    st.success(f"Done — {_tab_path.name} ({_tab_n} questions)")
+                    st.download_button(
+                        "Download Tabulation (XLSX)",
+                        data=_tab_path.read_bytes(),
+                        file_name=_tab_path.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
                       f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
