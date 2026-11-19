@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.44"
+APP_VERSION = "3.45"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4396,6 +4396,34 @@ def _build_tabulation_xlsx(out_path):
     return out_path, len(_stats), bool(_xt_lines)
 
 
+def _build_transcripts_text():
+    """Compose the v3.45 Transcripts report text — deterministic, NO AI
+    call. Each cleaned transcript (the merged full files + single-chunk
+    files, via get_full_transcripts()) becomes one section headed by
+    its source filename. Unmerged multi-chunk groups are NOT included
+    (they have no single cleaned text yet). Returns (text, [names]);
+    ("", []) when the project has no transcripts. The text is in
+    parse_sections format, so the existing analysis_to_docx() renders
+    it."""
+    _fulls, _pending = get_full_transcripts()
+    if not _fulls:
+        return "", []
+    _lines = []
+    _names = []
+    for _f in _fulls:
+        try:
+            _text = _f.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        _names.append(_f.name)
+        _lines.append(f"## {_f.name}")
+        _lines.extend(_text.splitlines())
+        _lines.append("")
+    if not _names:
+        return "", []
+    return "\n".join(_lines), _names
+
+
 def _report_text_with_summary(analysis_text, stem, fallback_text=None):
     """Compose the export text: an Executive Summary section first, then the
     full analysis. Returns (text, source). When the analysis already has an
@@ -8063,7 +8091,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only", "Tabulation"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only", "Tabulation", "Transcripts"}
 
 if page == "Dashboard":
 
@@ -10165,7 +10193,8 @@ elif page == "Reports":
         # v3.39: report types are built one at a time, in REPORT_TYPES
         # order — Summary first, Topline report second (v3.40),
         # Full report third (v3.41), Presentation fourth (v3.42),
-        # Data only fifth (v3.43), Tabulation sixth (v3.44).
+        # Data only fifth (v3.43), Tabulation sixth (v3.44),
+        # Transcripts seventh (v3.45) — all 7 types built.
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
@@ -10223,7 +10252,10 @@ elif page == "Reports":
         # analysis_to_pptx with the same subtitle. v3.43 adds Data
         # only (fifth) — it uses _stem + the raw-data helpers only.
         # v3.44 adds Tabulation (sixth) — it uses _stem + the saved
-        # quant summaries only.
+        # quant summaries only. v3.45 adds Transcripts (seventh) — it
+        # uses _stem + the cleaned transcripts only. All 7 types are
+        # built; the else note below stays only as a guard for a
+        # future unbuilt type.
         # Unbuilt types get an info note only, no export button;
         # the existing PPTX/DOCX exports below are untouched.
         if report_type == "Summary":
@@ -10322,6 +10354,23 @@ elif page == "Reports":
                         file_name=_tab_path.name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
+        elif report_type == "Transcripts":
+            _tr_text, _tr_names = _build_transcripts_text()
+            if not _tr_names:
+                st.info(T("No transcripts yet — transcribe recordings first, then export the transcripts.",
+                          "Transcript မရှိသေးဘူး — recording transcribe အရင် လုပ်ပါ၊ ပြီးမှ transcript ထုတ်ပါ။"))
+            elif st.button("Export Transcripts (DOCX)"):
+                _tr_path = REPORTS_DIR / f"{_stem}_transcripts.docx"
+                with st.spinner(T("Exporting Transcripts...", "Transcripts ထုတ်နေပါတယ်...")):
+                    analysis_to_docx(_tr_text, f"{title_text} — Transcripts", _tr_path)
+                store_upload_existing("reports", _tr_path.name)
+                st.success(f"Done — {_tr_path.name} ({len(_tr_names)} transcripts)")
+                st.download_button(
+                    "Download Transcripts (DOCX)",
+                    data=_tr_path.read_bytes(),
+                    file_name=_tr_path.name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
                       f"{report_type} ကို မဆောက်ရသေးဘူး — report အမျိုးအစားတွေကို အစဉ်အတိုင်း တစ်ခုချင်း ဆောက်နေတာ၊ Summary က အရင်ဆုံး။"))
