@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.50"
+APP_VERSION = "3.51"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -1182,11 +1182,12 @@ def save_qc(data):
 
 
 def qc_run_all():
-    """Run the checks over every transcript file; keep existing statuses,
-    add 'Unchecked' for new files; return the qc dict."""
+    """Run checks over each full transcript (merged files or single files);
+    keep existing statuses, add 'Unchecked' for new files; return the qc dict."""
     qc = load_qc()
     files = qc.setdefault("files", {})
-    for f in get_transcript_files():
+    full_files, _pending = get_full_transcripts()
+    for f in full_files:
         entry = files.setdefault(f.name, {"status": "Unchecked", "checked_at": "", "issues": []})
         entry["issues"] = qc_check_text(f.name, f.read_text(encoding="utf-8", errors="replace"))
         entry["checked_at"] = datetime.datetime.now(ZoneInfo("Asia/Rangoon")).strftime("%Y-%m-%d %H:%M")
@@ -9703,6 +9704,102 @@ elif page == "Transcripts":
                 st.text(file.read_text(encoding="utf-8"))
     else:
         st.warning(T("No transcript file found yet.", "Transcript ဖိုင် မတွေ့ရှိသေးပါ။"))
+
+elif page == "Data Cleansing":
+    st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
+    st.caption(T("Prepare full transcripts for analysis: run quality checks, review flagged lines, save corrections as separate copies, and keep an audit trail.",
+                 "Analysis မလုပ်ခင် full transcript တွေကို ပြင်ဆင်ပါ — quality check လုပ်၊ ပြဿနာပြထားတဲ့ စာကြောင်းတွေ စစ်၊ ပြင်ထားတာကို မူရင်းခွဲပြီး သိမ်း၊ audit trail ထားပါ။"))
+    _qc_full_files, _qc_pending_groups = get_full_transcripts()
+    _qc_state = load_qc()
+    _qc_file_state = _qc_state.setdefault("files", {})
+    _qc_checked_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") in ("Checked", "Needs correction", "Corrected"))
+    _qc_needs_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") == "Needs correction")
+    _qc_corrected_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") == "Corrected")
+    _qc_check_tab, _qc_review_tab, _qc_audit_tab = st.tabs([
+        T("1 · Quality checks", "၁ · အရည်အသွေးစစ်ဆေးရန်"),
+        T("2 · Review & correct", "၂ · ပြန်စစ်ပြီး ပြင်ရန်"),
+        T("3 · Audit trail", "၃ · ပြင်ဆင်မှုမှတ်တမ်း"),
+    ])
+
+    with _qc_check_tab:
+        _qc_metrics = st.columns(4)
+        _qc_metrics[0].metric(T("Full transcripts", "Full transcript"), len(_qc_full_files))
+        _qc_metrics[1].metric(T("Checked", "စစ်ပြီး"), _qc_checked_n)
+        _qc_metrics[2].metric(T("Needs correction", "ပြင်ရန်လို"), _qc_needs_n)
+        _qc_metrics[3].metric(T("Corrected", "ပြင်ပြီး"), _qc_corrected_n)
+        st.caption(T("Checks only flag possible issues such as [unclear] markers, missing speaker labels, and unusually short lines. They never change transcript text.",
+                     "[unclear] အမှတ်အသား၊ speaker label မရှိခြင်း၊ အလွန်တိုတဲ့စာကြောင်း စတဲ့ ဖြစ်နိုင်တဲ့ပြဿနာတွေကိုပဲ စစ်ပါတယ်။ Transcript စာသားကို အလိုအလျောက် မပြင်ပါ။"))
+        if st.button(T("Run checks on full transcripts", "Full transcript တွေကို စစ်မယ်"), key="qc_run_all", type="primary", disabled=not _qc_full_files):
+            qc_run_all()
+            _flash(T("Transcript checks completed.", "Transcript စစ်ဆေးပြီးပါပြီ။"))
+            st.rerun()
+        if _qc_pending_groups:
+            st.info(T(f"{len(_qc_pending_groups)} interview group(s) still have unmerged chunks. Merge them on the Transcripts page before final quality review.",
+                      f"Interview group {len(_qc_pending_groups)} ခုမှာ မပေါင်းရသေးတဲ့ chunk ရှိနေပါတယ်။ နောက်ဆုံး quality review မလုပ်ခင် Transcripts page မှာ merge လုပ်ပါ။"))
+        if _qc_full_files:
+            _qc_rows = []
+            for _f in _qc_full_files:
+                _entry = _qc_file_state.get(_f.name, {})
+                _issues = _entry.get("issues") or []
+                _qc_rows.append({"Transcript": _f.name, "Status": _entry.get("status", "Unchecked"),
+                                 "Issues": sum(int(_issue.get("count", 0) or 0) for _issue in _issues),
+                                 "Last checked": _entry.get("checked_at", "")})
+            st.dataframe(pd.DataFrame(_qc_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info(T("No full transcript is ready yet. Merge audio chunks or finish a transcript first.",
+                      "Full transcript မရှိသေးပါ။ Audio chunk တွေကို merge လုပ်ပါ၊ ဒါမှမဟုတ် transcript အရင်ပြီးအောင်လုပ်ပါ။"))
+
+    with _qc_review_tab:
+        if not _qc_full_files:
+            st.info(T("A full transcript is needed before it can be reviewed or corrected.",
+                      "ပြန်စစ်၊ ပြင်ဆင်ဖို့ full transcript အရင်လိုပါတယ်။"))
+        else:
+            _qc_selected = st.selectbox(T("Choose a transcript", "Transcript ရွေးပါ"),
+                                        [f.name for f in _qc_full_files], key="qc_selected_file")
+            _qc_path = next(f for f in _qc_full_files if f.name == _qc_selected)
+            _qc_entry = _qc_file_state.get(_qc_selected, {"status": "Unchecked", "issues": []})
+            _qc_issues = _qc_entry.get("issues") or []
+            if _qc_issues:
+                for _issue in _qc_issues:
+                    st.warning(f"{_issue.get('detail', _issue.get('type', 'Issue'))}")
+            else:
+                st.success(T("No flagged issues in the last check.", "နောက်ဆုံးစစ်ဆေးမှုမှာ မှတ်သားရမယ့်ပြဿနာ မတွေ့ပါ။"))
+            _qc_status_col, _qc_save_col = st.columns([3, 1])
+            _qc_new_status = _qc_status_col.selectbox(T("Review status", "စစ်ဆေးမှုအခြေအနေ"), QC_STATUSES,
+                                                     index=QC_STATUSES.index(_qc_entry.get("status", "Unchecked")) if _qc_entry.get("status", "Unchecked") in QC_STATUSES else 0,
+                                                     key="qc_status_" + re.sub(r"[^\w]+", "_", _qc_selected))
+            if _qc_save_col.button(T("Save status", "အခြေအနေသိမ်းမယ်"), key="qc_status_save"):
+                _qc_state = load_qc()
+                _qc_state.setdefault("files", {}).setdefault(_qc_selected, {"issues": [], "checked_at": ""})["status"] = _qc_new_status
+                save_qc(_qc_state)
+                _flash(T("Review status saved.", "စစ်ဆေးမှုအခြေအနေ သိမ်းပြီးပါပြီ။"))
+                st.rerun()
+            _qc_editor_key = "qc_editor_" + re.sub(r"[^\w]+", "_", _qc_selected)
+            if _qc_editor_key not in st.session_state:
+                st.session_state[_qc_editor_key] = _qc_path.read_text(encoding="utf-8", errors="replace")
+            _qc_corrected_text = st.text_area(T("Transcript text (edit only verified corrections)", "Transcript စာသား (သေချာအတည်ပြုထားတာကိုသာ ပြင်ပါ)"),
+                                               height=420, key=_qc_editor_key)
+            _qc_note = st.text_input(T("Correction note (optional)", "ပြင်ဆင်ချက်မှတ်စု (မဖြစ်မနေ မဟုတ်)"), key="qc_note_" + re.sub(r"[^\w]+", "_", _qc_selected))
+            if st.button(T("Save corrected copy", "ပြင်ဆင်ထားတဲ့ မိတ္တူသိမ်းမယ်"), key="qc_save_correction", type="primary"):
+                _qc_corrected_path, _qc_message = qc_save_correction(_qc_selected, _qc_corrected_text, _qc_note.strip())
+                if _qc_corrected_path is None:
+                    st.error(_qc_message)
+                else:
+                    _flash(T(_qc_message, _qc_message))
+                    st.rerun()
+            st.caption(T("The original transcript stays untouched. Each corrected copy is saved separately and listed in the audit trail.",
+                         "မူရင်း transcript ကို မပြင်ပါ။ ပြင်ဆင်ထားတဲ့ မိတ္တူကို သီးခြားသိမ်းပြီး audit trail မှာ မှတ်တမ်းတင်ပါတယ်။"))
+
+    with _qc_audit_tab:
+        _qc_audit = list(reversed(qc_load_audit()))
+        if _qc_audit:
+            st.dataframe(pd.DataFrame([{"Date": e.get("timestamp", ""), "Transcript": e.get("file", ""),
+                                        "Corrected copy": e.get("corrected_file", ""), "Action": e.get("action", ""),
+                                        "Before": e.get("before", ""), "After": e.get("after", ""),
+                                        "Note": e.get("note", "")} for e in _qc_audit]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info(T("No transcript corrections have been recorded yet.", "Transcript ပြင်ဆင်မှု မှတ်တမ်း မရှိသေးပါ။"))
 
 elif page == "Market Analysis":
     st.title(T("📊 Market Analysis", "📊 ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု"))
