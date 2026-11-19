@@ -8440,157 +8440,177 @@ elif page == "Proposal & Quotation":
         st.warning(T("Save the Client Brief first. Proposal details use that brief as their source.",
                      "Proposal အချက်အလက်တွေ Brief ကို အခြေခံတာကြောင့် Client Brief ကို အရင်သိမ်းပါ။"))
 
-    st.subheader(T("Agreed research approach", "သဘောတူမယ့် သုတေသနနည်းလမ်း"))
-    _approach_idx = DESIGN_APPROACHES.index(_design.get("approach")) if _design.get("approach") in DESIGN_APPROACHES else None
-    _approach = st.radio(T("Research approach", "သုတေသန approach"), DESIGN_APPROACHES, index=_approach_idx, key="design_approach")
-    _methods = st.multiselect(T("Method", "Method"), DESIGN_METHODS, default=[m for m in _design.get("methods", []) if m in DESIGN_METHODS], key="design_methods")
-    if _approach == "Qualitative" and "Survey" in _methods:
-        st.warning(T("Qualitative with a survey is unusual — a survey is usually Quantitative or Mixed.", "Qualitative နဲ့ Survey တွဲတာ မများဘူး — Survey က Quantitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
-    if _approach == "Quantitative" and ("IDI" in _methods or "FGD" in _methods):
-        st.warning(T("Quantitative with IDI / FGD is unusual — interviews and groups are usually Qualitative or Mixed.", "Quantitative နဲ့ IDI / FGD တွဲတာ မများဘူး — IDI / FGD က Qualitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
-    if _approach and _approach != "Mixed" and len(_methods) > 1:
-        st.info(T("More than one method — consider Mixed.", "Method တစ်ခုထက်ပိုရင် Mixed စဉ်းစားကြည့်ပါ။"))
-    _rationale = st.text_area(T("Why this method?", "ဘာလို့ ဒီ method ရွေးတာလဲ။"), value=_design.get("rationale", ""), height=80, key="design_rationale")
-    _goal_default = _design.get("goal", "") or _brief.get("objectives", "")
-    _goal = st.text_area(T("Research goal", "သုတေသန ရည်ရွယ်ချက်"), value=_goal_default, height=80, key="design_goal")
-    _target_default = _design.get("target", "") or _brief.get("target_audience", "")
-    _target = st.text_area(T("Target", "Target"), value=_target_default, height=80, key="design_target")
-    if st.button(T("Save proposal basis", "Proposal အခြေခံအချက်အလက် သိမ်းမယ်"), key="design_save_method", type="primary"):
-        _design.update({"approach": _approach or "", "methods": list(_methods),
-                        "rationale": _rationale.strip(), "goal": _goal.strip(),
-                        "target": _target.strip(), "target_audience": _brief.get("target_audience", "")})
-        save_design(_design)
-        _flash(T("Proposal basis saved.", "Proposal အခြေခံအချက်အလက် သိမ်းပြီးပြီ။"))
-        st.rerun()
-
-    st.divider()
-    st.subheader(T("Agreed sample and fieldwork plan", "သဘောတူမယ့် Sample နဲ့ Fieldwork Plan"))
-    if _has_brief:
-        st.text_input(T("Target audience (from the brief)", "Target audience (Brief ကနေ)"), value=_brief.get("target_audience", ""), disabled=True, key="design_audience_ro")
-    _sc1, _sc2, _sc3 = st.columns(3)
-    _sample_size = _sc1.number_input(T("Sample size (total respondents)", "ဖြေဆိုသူ စုစုပေါင်း"), value=_ed_int(_design.get("sample_size"), 0), min_value=0, step=1, key="design_sample_size")
-    _sessions = _sc2.number_input(T("Sessions (groups / interviews)", "Session အရေအတွက်"), value=_ed_int(_design.get("sessions_count"), 0), min_value=0, step=1, key="design_sessions")
-    _pps = _sc3.number_input(T("Participants per session", "တစ် session မှာ ပါဝင်သူ"), value=_ed_int(_design.get("participants_per_session"), 0), min_value=0, step=1, key="design_pps")
-    st.caption(T("0 means unset — empty is empty, never guessed.", "0 ဆိုတာ မသတ်မှတ်ရသေးဘူး — မရှိရင် မရှိဘူး၊ ခန့်မှန်းမထည့်ဘူး။"))
-    _personas = _design.get("personas") or []
-    _p_df = pd.DataFrame([{"Name": _ed_str(p.get("name")), "Description": _ed_str(p.get("description")), "Value framing": _ed_str(p.get("value_framing"))} for p in _personas if isinstance(p, dict)], columns=["Name", "Description", "Value framing"])
-    _p_edited = st.data_editor(_p_df, num_rows="dynamic", use_container_width=True, key="design_personas")
-    _quotas = _design.get("quotas") or []
-    _qt_df = pd.DataFrame([{"Segment": _ed_str(q.get("segment")), "Share": _ed_str(q.get("share")), "Notes": _ed_str(q.get("notes"))} for q in _quotas if isinstance(q, dict)], columns=["Segment", "Share", "Notes"])
-    _qt_edited = st.data_editor(_qt_df, num_rows="dynamic", use_container_width=True, key="design_quotas")
-    _screening = st.text_area(T("Respondent eligibility / screening criteria", "ဖြေဆိုသူ ရွေးချယ်ရေး စံနှုန်း"), value=_design.get("screening_criteria", ""), height=80, key="design_screening")
-    _recruitment = st.text_area(T("Recruitment criteria / notes", "Recruitment စံနှုန်း / မှတ်စု"), value=_design.get("recruitment_criteria", ""), height=80, key="design_recruitment")
-    _new_personas = []
-    for _r in _p_edited.to_dict("records"):
-        _nm = _ed_str(_r.get("Name"))
-        if _nm or _ed_str(_r.get("Description")) or _ed_str(_r.get("Value framing")):
-            _new_personas.append({"name": _nm, "description": _ed_str(_r.get("Description")), "value_framing": _ed_str(_r.get("Value framing"))})
-    _new_quotas = []
-    for _r in _qt_edited.to_dict("records"):
-        _sg = _ed_str(_r.get("Segment"))
-        if _sg or _ed_str(_r.get("Share")) or _ed_str(_r.get("Notes")):
-            _new_quotas.append({"segment": _sg, "share": _ed_str(_r.get("Share")), "notes": _ed_str(_r.get("Notes"))})
-    if st.button(T("Save sample", "Sample သိမ်းမယ်"), key="design_save_sampling", type="primary"):
-        _design.update({"sample_size": int(_sample_size), "sessions_count": int(_sessions),
-                        "participants_per_session": int(_pps), "personas": _new_personas,
-                        "quotas": _new_quotas, "screening_criteria": _screening.strip(),
-                        "recruitment_criteria": _recruitment.strip(),
-                        "target_audience": _brief.get("target_audience", "")})
-        save_design(_design)
-        _flash(T("Sample saved.", "Sample သိမ်းပြီးပြီ။"))
-        st.rerun()
-
-    _fw = _design.get("fieldwork_plan") or []
-    _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
-    _fw_rows = []
-    for _i, _r in enumerate(_fw):
-        if isinstance(_r, dict):
-            _fw_rows.append({"Session": _ed_int(_r.get("session"), _i + 1), "Group": _ed_str(_r.get("group")),
-                             "Method": _ed_str(_r.get("method")), "Date": _ed_str(_r.get("date")),
-                             "Time": _ed_str(_r.get("time")), "Seats": _ed_int(_r.get("seats"), 0),
-                             "Recruited": _ed_int(_r.get("recruited"), 0), "Confirmed": _ed_int(_r.get("confirmed"), 0),
-                             "Moderator": _ed_str(_r.get("moderator")), "Moderator seat": _ed_str(_r.get("moderator_seat")),
-                             "Venue": _ed_str(_r.get("venue"))})
-    _fw_edited = st.data_editor(pd.DataFrame(_fw_rows, columns=_fw_cols), num_rows="dynamic", use_container_width=True, key="fw_editor", column_config={
-        "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
-    })
-    st.caption(T("Dates are plain text (YYYY-MM-DD). Seats = respondents per session; Recruited covers no-shows.", "ရက်စွဲကို စာသားဖြင့်ထည့်ပါ (YYYY-MM-DD)။ Seats က session တစ်ခုစီအတွက် respondent အရေအတွက်၊ Recruited က မလာသူအစား ခေါ်ထားသူများပါ။"))
-    if _fw:
-        _plan_check_design = dict(_design)
-        _plan_check_design.update({"approach": _approach or "", "methods": list(_methods)})
-        _show_self_check_results(_fieldwork_self_check(_plan_check_design, _brief), "Fieldwork Plan checks", "Fieldwork Plan စစ်ဆေးမှု")
-    if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
-        _new_fw = []
-        for _i, _r in enumerate(_fw_edited.to_dict("records")):
-            _grp, _mth, _mod = _ed_str(_r.get("Group")), _ed_str(_r.get("Method")), _ed_str(_r.get("Moderator"))
-            if not _grp and not _mth and not _mod and not _ed_str(_r.get("Date")) and not _ed_str(_r.get("Venue")):
-                continue
-            _seat = _ed_str(_r.get("Moderator seat")) or ("Seat 1" if _mod else "")
-            _new_fw.append({"session": _ed_int(_r.get("Session"), _i + 1), "group": _grp, "method": _mth,
-                            "date": _ed_str(_r.get("Date")), "time": _ed_str(_r.get("Time")),
-                            "seats": _ed_int(_r.get("Seats"), 0), "recruited": _ed_int(_r.get("Recruited"), 0),
-                            "confirmed": _ed_int(_r.get("Confirmed"), 0), "moderator": _mod,
-                            "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
-        _design["fieldwork_plan"] = _new_fw
-        save_design(_design)
-        _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
-        st.rerun()
-
-    _draft_design = dict(_design)
-    _draft_design.update({"approach": _approach or "", "methods": list(_methods),
-                          "rationale": _rationale.strip(), "goal": _goal.strip(), "target": _target.strip(),
-                          "personas": _new_personas, "quotas": _new_quotas,
-                          "screening_criteria": _screening.strip(), "recruitment_criteria": _recruitment.strip()})
-
-    st.divider()
-    st.subheader(T("Proposal draft", "Proposal မူကြမ်း"))
-    st.caption(T("Check the proposal before sharing it. AI never fills in costs.", "Client ကိုမပို့ခင် Proposal ကိုစစ်ပါ။ AI က ကုန်ကျစရိတ် မဖြည့်ပါ။"))
-    _pblocks, _pmissing = proposal_build(_brief, _draft_design)
-    if _pmissing:
-        st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင်သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
-    else:
-        if st.button(T("Generate proposal (DOCX)", "Proposal (DOCX) ထုတ်မယ်"), key="proposal_generate", type="primary"):
-            _design["rationale"] = _rationale.strip()
+    _plan_saved = bool(_design.get("approach") in DESIGN_APPROACHES and _design.get("methods"))
+    _proposal_saved = (NOTES_DIR / "proposal.docx").exists()
+    _quotation_saved = bool(_quotation_versions())
+    _approval_status = _brief.get("approval", "Draft")
+    _progress_cols = st.columns(4)
+    _progress_cols[0].metric(T("Research plan", "သုတေသနအစီအစဉ်"), T("Saved", "သိမ်းပြီး") if _plan_saved else T("Not saved", "မသိမ်းရသေး"))
+    _progress_cols[1].metric(T("Proposal", "Proposal"), T("Ready", "ရှိပြီး") if _proposal_saved else T("Not ready", "မရှိသေး"))
+    _progress_cols[2].metric(T("Quotation", "Quotation"), T("Saved", "သိမ်းပြီး") if _quotation_saved else T("Not saved", "မသိမ်းရသေး"))
+    _progress_cols[3].metric(T("Client approval", "Client အတည်ပြုချက်"), T(_approval_status, _approval_status))
+    st.caption(T("Work from left to right: agree the plan, prepare the proposal, enter costs, then record the client's decision.",
+                 "ဘယ်မှညာသို့ အစဉ်လိုက်လုပ်ပါ — Plan သဘောတူ၊ Proposal ပြင်ဆင်၊ ကုန်ကျစရိတ်ဖြည့်၊ ပြီးမှ Client ဆုံးဖြတ်ချက် မှတ်ပါ။"))
+    _plan_tab, _proposal_tab, _quotation_tab, _approval_tab = st.tabs([
+        T("1 · Plan & fieldwork", "၁ · Plan နဲ့ Fieldwork"),
+        T("2 · Proposal", "၂ · Proposal"),
+        T("3 · Quotation", "၃ · Quotation"),
+        T("4 · Client approval", "၄ · Client အတည်ပြုချက်"),
+    ])
+    with _plan_tab:
+        st.subheader(T("Agreed research approach", "သဘောတူမယ့် သုတေသနနည်းလမ်း"))
+        _approach_idx = DESIGN_APPROACHES.index(_design.get("approach")) if _design.get("approach") in DESIGN_APPROACHES else None
+        _approach = st.radio(T("Research approach", "သုတေသန approach"), DESIGN_APPROACHES, index=_approach_idx, key="design_approach")
+        _methods = st.multiselect(T("Method", "Method"), DESIGN_METHODS, default=[m for m in _design.get("methods", []) if m in DESIGN_METHODS], key="design_methods")
+        if _approach == "Qualitative" and "Survey" in _methods:
+            st.warning(T("Qualitative with a survey is unusual — a survey is usually Quantitative or Mixed.", "Qualitative နဲ့ Survey တွဲတာ မများဘူး — Survey က Quantitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
+        if _approach == "Quantitative" and ("IDI" in _methods or "FGD" in _methods):
+            st.warning(T("Quantitative with IDI / FGD is unusual — interviews and groups are usually Qualitative or Mixed.", "Quantitative နဲ့ IDI / FGD တွဲတာ မများဘူး — IDI / FGD က Qualitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
+        if _approach and _approach != "Mixed" and len(_methods) > 1:
+            st.info(T("More than one method — consider Mixed.", "Method တစ်ခုထက်ပိုရင် Mixed စဉ်းစားကြည့်ပါ။"))
+        _rationale = st.text_area(T("Why this method?", "ဘာလို့ ဒီ method ရွေးတာလဲ။"), value=_design.get("rationale", ""), height=80, key="design_rationale")
+        _goal_default = _design.get("goal", "") or _brief.get("objectives", "")
+        _goal = st.text_area(T("Research goal", "သုတေသန ရည်ရွယ်ချက်"), value=_goal_default, height=80, key="design_goal")
+        _target_default = _design.get("target", "") or _brief.get("target_audience", "")
+        _target = st.text_area(T("Target", "Target"), value=_target_default, height=80, key="design_target")
+        if st.button(T("Save proposal basis", "Proposal အခြေခံအချက်အလက် သိမ်းမယ်"), key="design_save_method", type="primary"):
+            _design.update({"approach": _approach or "", "methods": list(_methods),
+                            "rationale": _rationale.strip(), "goal": _goal.strip(),
+                            "target": _target.strip(), "target_audience": _brief.get("target_audience", "")})
             save_design(_design)
-            _pblocks, _ = proposal_build(_brief, _design)
-            _prop_bytes = proposal_to_docx(_pblocks)
-            _prop_path = store_write_bytes("notes", "proposal.docx", _prop_bytes)
-            st.success(T(f"Proposal draft saved: {_prop_path.name} (costs left blank).", f"Proposal မူကြမ်း သိမ်းပြီးပြီ: {_prop_path.name} (ကုန်ကျစရိတ် ဗလာထားတယ်)။"))
-            st.download_button("Download proposal (DOCX)", data=_prop_bytes, file_name=_prop_path.name,
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        elif (NOTES_DIR / "proposal.docx").exists():
-            st.download_button(T("Download saved proposal", "သိမ်းထားတဲ့ Proposal ဒေါင်းလုပ်ဆွဲမယ်"),
-                               data=(NOTES_DIR / "proposal.docx").read_bytes(), file_name="proposal.docx",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            _flash(T("Proposal basis saved.", "Proposal အခြေခံအချက်အလက် သိမ်းပြီးပြီ။"))
+            st.rerun()
 
-    st.divider()
-    st.subheader(T("Quotation — enter costs manually", "Quotation — ကုန်ကျစရိတ်ကို ကိုယ်တိုင်ဖြည့်ပါ"))
-    st.caption(T("These values are user-entered only. No AI-generated prices or automatic estimates.",
-                 "ဒီတန်ဖိုးတွေကို ကိုယ်တိုင်ဖြည့်ရမယ်။ AI က ဈေးနှုန်းမထုတ်ပေး၊ ခန့်မှန်းတွက်ချက်မှုလည်း မလုပ်ပါ။"))
-    _quote_currency = st.text_input(T("Currency", "ငွေကြေးအမျိုးအစား"), value=_quote.get("currency", ""), key="quote_currency")
-    _quote_items = _quote.get("items") if isinstance(_quote.get("items"), list) else []
-    _quote_df = pd.DataFrame([{"Cost item": _ed_str(row.get("item")), "Amount (manual)": _ed_str(row.get("amount"))}
-                              for row in _quote_items if isinstance(row, dict)], columns=["Cost item", "Amount (manual)"])
-    _quote_edited = st.data_editor(_quote_df, num_rows="dynamic", use_container_width=True, key="quote_items_editor")
-    if st.button(T("Save quotation", "Quotation သိမ်းမယ်"), key="quote_save", type="primary"):
-        _items = [{"item": _ed_str(row.get("Cost item")), "amount": _ed_str(row.get("Amount (manual)"))}
-                  for row in _quote_edited.to_dict("records")
-                  if _ed_str(row.get("Cost item")) or _ed_str(row.get("Amount (manual)"))]
-        _saved_quote = save_quotation({"currency": _quote_currency.strip(), "items": _items})
-        _flash(T(f"Quotation saved as {_saved_quote.name}.", f"Quotation ကို {_saved_quote.name} အဖြစ် သိမ်းပြီးပြီ။"))
-        st.rerun()
+        st.divider()
+        st.subheader(T("Agreed sample and fieldwork plan", "သဘောတူမယ့် Sample နဲ့ Fieldwork Plan"))
+        if _has_brief:
+            st.text_input(T("Target audience (from the brief)", "Target audience (Brief ကနေ)"), value=_brief.get("target_audience", ""), disabled=True, key="design_audience_ro")
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sample_size = _sc1.number_input(T("Sample size (total respondents)", "ဖြေဆိုသူ စုစုပေါင်း"), value=_ed_int(_design.get("sample_size"), 0), min_value=0, step=1, key="design_sample_size")
+        _sessions = _sc2.number_input(T("Sessions (groups / interviews)", "Session အရေအတွက်"), value=_ed_int(_design.get("sessions_count"), 0), min_value=0, step=1, key="design_sessions")
+        _pps = _sc3.number_input(T("Participants per session", "တစ် session မှာ ပါဝင်သူ"), value=_ed_int(_design.get("participants_per_session"), 0), min_value=0, step=1, key="design_pps")
+        st.caption(T("0 means unset — empty is empty, never guessed.", "0 ဆိုတာ မသတ်မှတ်ရသေးဘူး — မရှိရင် မရှိဘူး၊ ခန့်မှန်းမထည့်ဘူး။"))
+        _personas = _design.get("personas") or []
+        _p_df = pd.DataFrame([{"Name": _ed_str(p.get("name")), "Description": _ed_str(p.get("description")), "Value framing": _ed_str(p.get("value_framing"))} for p in _personas if isinstance(p, dict)], columns=["Name", "Description", "Value framing"])
+        _p_edited = st.data_editor(_p_df, num_rows="dynamic", use_container_width=True, key="design_personas")
+        _quotas = _design.get("quotas") or []
+        _qt_df = pd.DataFrame([{"Segment": _ed_str(q.get("segment")), "Share": _ed_str(q.get("share")), "Notes": _ed_str(q.get("notes"))} for q in _quotas if isinstance(q, dict)], columns=["Segment", "Share", "Notes"])
+        _qt_edited = st.data_editor(_qt_df, num_rows="dynamic", use_container_width=True, key="design_quotas")
+        _screening = st.text_area(T("Respondent eligibility / screening criteria", "ဖြေဆိုသူ ရွေးချယ်ရေး စံနှုန်း"), value=_design.get("screening_criteria", ""), height=80, key="design_screening")
+        _recruitment = st.text_area(T("Recruitment criteria / notes", "Recruitment စံနှုန်း / မှတ်စု"), value=_design.get("recruitment_criteria", ""), height=80, key="design_recruitment")
+        _new_personas = []
+        for _r in _p_edited.to_dict("records"):
+            _nm = _ed_str(_r.get("Name"))
+            if _nm or _ed_str(_r.get("Description")) or _ed_str(_r.get("Value framing")):
+                _new_personas.append({"name": _nm, "description": _ed_str(_r.get("Description")), "value_framing": _ed_str(_r.get("Value framing"))})
+        _new_quotas = []
+        for _r in _qt_edited.to_dict("records"):
+            _sg = _ed_str(_r.get("Segment"))
+            if _sg or _ed_str(_r.get("Share")) or _ed_str(_r.get("Notes")):
+                _new_quotas.append({"segment": _sg, "share": _ed_str(_r.get("Share")), "notes": _ed_str(_r.get("Notes"))})
+        if st.button(T("Save sample", "Sample သိမ်းမယ်"), key="design_save_sampling", type="primary"):
+            _design.update({"sample_size": int(_sample_size), "sessions_count": int(_sessions),
+                            "participants_per_session": int(_pps), "personas": _new_personas,
+                            "quotas": _new_quotas, "screening_criteria": _screening.strip(),
+                            "recruitment_criteria": _recruitment.strip(),
+                            "target_audience": _brief.get("target_audience", "")})
+            save_design(_design)
+            _flash(T("Sample saved.", "Sample သိမ်းပြီးပြီ။"))
+            st.rerun()
 
-    st.divider()
-    st.subheader(T("Client approval", "Client အတည်ပြုချက်"))
-    _appr = _brief.get("approval", "Draft")
-    _approval = st.selectbox(T("Approval status", "အတည်ပြုမှု အခြေအနေ"), BRIEF_APPROVALS,
-                             index=BRIEF_APPROVALS.index(_appr) if _appr in BRIEF_APPROVALS else 0,
-                             key="brief_approval")
-    if st.button(T("Save client approval", "Client အတည်ပြုချက် သိမ်းမယ်"), key="proposal_save_approval"):
-        _brief["approval"] = _approval
-        save_brief(_brief)
-        _flash(T("Client approval status saved.", "Client အတည်ပြုချက် အခြေအနေ သိမ်းပြီးပြီ။"))
-        st.rerun()
+        _fw = _design.get("fieldwork_plan") or []
+        _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
+        _fw_rows = []
+        for _i, _r in enumerate(_fw):
+            if isinstance(_r, dict):
+                _fw_rows.append({"Session": _ed_int(_r.get("session"), _i + 1), "Group": _ed_str(_r.get("group")),
+                                 "Method": _ed_str(_r.get("method")), "Date": _ed_str(_r.get("date")),
+                                 "Time": _ed_str(_r.get("time")), "Seats": _ed_int(_r.get("seats"), 0),
+                                 "Recruited": _ed_int(_r.get("recruited"), 0), "Confirmed": _ed_int(_r.get("confirmed"), 0),
+                                 "Moderator": _ed_str(_r.get("moderator")), "Moderator seat": _ed_str(_r.get("moderator_seat")),
+                                 "Venue": _ed_str(_r.get("venue"))})
+        _fw_edited = st.data_editor(pd.DataFrame(_fw_rows, columns=_fw_cols), num_rows="dynamic", use_container_width=True, key="fw_editor", column_config={
+            "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
+        })
+        st.caption(T("Dates are plain text (YYYY-MM-DD). Seats = respondents per session; Recruited covers no-shows.", "ရက်စွဲကို စာသားဖြင့်ထည့်ပါ (YYYY-MM-DD)။ Seats က session တစ်ခုစီအတွက် respondent အရေအတွက်၊ Recruited က မလာသူအစား ခေါ်ထားသူများပါ။"))
+        if _fw:
+            _plan_check_design = dict(_design)
+            _plan_check_design.update({"approach": _approach or "", "methods": list(_methods)})
+            _show_self_check_results(_fieldwork_self_check(_plan_check_design, _brief), "Fieldwork Plan checks", "Fieldwork Plan စစ်ဆေးမှု")
+        if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
+            _new_fw = []
+            for _i, _r in enumerate(_fw_edited.to_dict("records")):
+                _grp, _mth, _mod = _ed_str(_r.get("Group")), _ed_str(_r.get("Method")), _ed_str(_r.get("Moderator"))
+                if not _grp and not _mth and not _mod and not _ed_str(_r.get("Date")) and not _ed_str(_r.get("Venue")):
+                    continue
+                _seat = _ed_str(_r.get("Moderator seat")) or ("Seat 1" if _mod else "")
+                _new_fw.append({"session": _ed_int(_r.get("Session"), _i + 1), "group": _grp, "method": _mth,
+                                "date": _ed_str(_r.get("Date")), "time": _ed_str(_r.get("Time")),
+                                "seats": _ed_int(_r.get("Seats"), 0), "recruited": _ed_int(_r.get("Recruited"), 0),
+                                "confirmed": _ed_int(_r.get("Confirmed"), 0), "moderator": _mod,
+                                "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
+            _design["fieldwork_plan"] = _new_fw
+            save_design(_design)
+            _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
+            st.rerun()
+
+        _draft_design = dict(_design)
+        _draft_design.update({"approach": _approach or "", "methods": list(_methods),
+                              "rationale": _rationale.strip(), "goal": _goal.strip(), "target": _target.strip(),
+                              "sample_size": int(_sample_size), "sessions_count": int(_sessions),
+                              "participants_per_session": int(_pps), "personas": _new_personas, "quotas": _new_quotas,
+                              "screening_criteria": _screening.strip(), "recruitment_criteria": _recruitment.strip(),
+                              "target_audience": _brief.get("target_audience", "")})
+
+    with _proposal_tab:
+        st.subheader(T("Proposal draft", "Proposal မူကြမ်း"))
+        st.caption(T("Save the research approach, sample and fieldwork plan in the first tab before generating. Review the proposal before sharing it; AI never fills in costs.", "Proposal မထုတ်ခင် ပထမ tab မှာ Research approach, Sample နဲ့ Fieldwork plan ကို အရင်သိမ်းပါ။ မျှဝေမပို့ခင် Proposal ကိုစစ်ပါ။ AI က ကုန်ကျစရိတ် မဖြည့်ပါ။"))
+        _pblocks, _pmissing = proposal_build(_brief, _draft_design)
+        if _pmissing:
+            st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင်သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
+        else:
+            if st.button(T("Generate proposal (DOCX)", "Proposal (DOCX) ထုတ်မယ်"), key="proposal_generate", type="primary"):
+                _design.update(_draft_design)
+                save_design(_design)
+                _pblocks, _ = proposal_build(_brief, _design)
+                _prop_bytes = proposal_to_docx(_pblocks)
+                _prop_path = store_write_bytes("notes", "proposal.docx", _prop_bytes)
+                st.success(T(f"Proposal draft saved: {_prop_path.name} (costs left blank).", f"Proposal မူကြမ်း သိမ်းပြီးပြီ: {_prop_path.name} (ကုန်ကျစရိတ် ဗလာထားတယ်)။"))
+                st.download_button("Download proposal (DOCX)", data=_prop_bytes, file_name=_prop_path.name,
+                                   mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            elif (NOTES_DIR / "proposal.docx").exists():
+                st.download_button(T("Download saved proposal", "သိမ်းထားတဲ့ Proposal ဒေါင်းလုပ်ဆွဲမယ်"),
+                                   data=(NOTES_DIR / "proposal.docx").read_bytes(), file_name="proposal.docx",
+                                   mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    with _quotation_tab:
+        st.subheader(T("Quotation — enter costs manually", "Quotation — ကုန်ကျစရိတ်ကို ကိုယ်တိုင်ဖြည့်ပါ"))
+        st.caption(T("These values are user-entered only. No AI-generated prices or automatic estimates.",
+                     "ဒီတန်ဖိုးတွေကို ကိုယ်တိုင်ဖြည့်ရမယ်။ AI က ဈေးနှုန်းမထုတ်ပေး၊ ခန့်မှန်းတွက်ချက်မှုလည်း မလုပ်ပါ။"))
+        _quote_currency = st.text_input(T("Currency", "ငွေကြေးအမျိုးအစား"), value=_quote.get("currency", ""), key="quote_currency")
+        _quote_items = _quote.get("items") if isinstance(_quote.get("items"), list) else []
+        _quote_df = pd.DataFrame([{"Cost item": _ed_str(row.get("item")), "Amount (manual)": _ed_str(row.get("amount"))}
+                                  for row in _quote_items if isinstance(row, dict)], columns=["Cost item", "Amount (manual)"])
+        _quote_edited = st.data_editor(_quote_df, num_rows="dynamic", use_container_width=True, key="quote_items_editor")
+        if st.button(T("Save quotation", "Quotation သိမ်းမယ်"), key="quote_save", type="primary"):
+            _items = [{"item": _ed_str(row.get("Cost item")), "amount": _ed_str(row.get("Amount (manual)"))}
+                      for row in _quote_edited.to_dict("records")
+                      if _ed_str(row.get("Cost item")) or _ed_str(row.get("Amount (manual)"))]
+            _saved_quote = save_quotation({"currency": _quote_currency.strip(), "items": _items})
+            _flash(T(f"Quotation saved as {_saved_quote.name}.", f"Quotation ကို {_saved_quote.name} အဖြစ် သိမ်းပြီးပြီ။"))
+            st.rerun()
+
+    with _approval_tab:
+        st.subheader(T("Client approval", "Client အတည်ပြုချက်"))
+        _appr = _brief.get("approval", "Draft")
+        _approval = st.selectbox(T("Approval status", "အတည်ပြုမှု အခြေအနေ"), BRIEF_APPROVALS,
+                                 index=BRIEF_APPROVALS.index(_appr) if _appr in BRIEF_APPROVALS else 0,
+                                 key="brief_approval")
+        if st.button(T("Save client approval", "Client အတည်ပြုချက် သိမ်းမယ်"), key="proposal_save_approval"):
+            _brief["approval"] = _approval
+            save_brief(_brief)
+            _flash(T("Client approval status saved.", "Client အတည်ပြုချက် အခြေအနေ သိမ်းပြီးပြီ။"))
+            st.rerun()
 
 elif page == "Research Design":
     # Stage 2: build and review the Screener first, then the Discussion Guide.
