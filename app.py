@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.55"
+APP_VERSION = "3.56"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -9724,18 +9724,19 @@ elif page == "Transcripts":
 
 elif page == "Data Cleansing":
     st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
-    st.caption(T("Prepare full transcripts for analysis: run quality checks, review flagged lines, save corrections as separate copies, and keep an audit trail.",
-                 "Analysis မလုပ်ခင် full transcript တွေကို ပြင်ဆင်ပါ — quality check လုပ်၊ ပြဿနာပြထားတဲ့ စာကြောင်းတွေ စစ်၊ ပြင်ထားတာကို မူရင်းခွဲပြီး သိမ်း၊ audit trail ထားပါ။"))
+    st.caption(T("Prepare qualitative transcripts and survey data for analysis. Review flagged issues; source files stay unchanged.",
+                 "Analysis မလုပ်ခင် qualitative transcript နဲ့ survey data ကို ပြင်ဆင်ပါ။ ပြဿနာပြထားတာတွေကို စစ်ပြီး source ဖိုင်တွေကို မပြင်ဘဲ ထားပါတယ်။"))
     _qc_full_files, _qc_pending_groups = get_full_transcripts()
     _qc_state = load_qc()
     _qc_file_state = _qc_state.setdefault("files", {})
     _qc_checked_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") in ("Checked", "Needs correction", "Corrected"))
     _qc_needs_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") == "Needs correction")
     _qc_corrected_n = sum(1 for _f in _qc_full_files if _qc_file_state.get(_f.name, {}).get("status") == "Corrected")
-    _qc_check_tab, _qc_review_tab, _qc_audit_tab = st.tabs([
+    _qc_check_tab, _qc_review_tab, _qc_audit_tab, _qc_survey_tab = st.tabs([
         T("1 · Quality checks", "၁ · အရည်အသွေးစစ်ဆေးရန်"),
         T("2 · Review & correct", "၂ · ပြန်စစ်ပြီး ပြင်ရန်"),
         T("3 · Audit trail", "၃ · ပြင်ဆင်မှုမှတ်တမ်း"),
+        T("4 · Survey data", "၄ · Survey ဒေတာ"),
     ])
 
     with _qc_check_tab:
@@ -9817,6 +9818,57 @@ elif page == "Data Cleansing":
                          use_container_width=True, hide_index=True)
         else:
             st.info(T("No transcript corrections have been recorded yet.", "Transcript ပြင်ဆင်မှု မှတ်တမ်း မရှိသေးပါ။"))
+
+    with _qc_survey_tab:
+        st.subheader(T("Survey data quality check", "Survey ဒေတာ အရည်အသွေးစစ်ဆေးရန်"))
+        st.caption(T("Checks blank cells, exact duplicate rows and column types for saved survey files. This is a review only; nothing is cleaned or overwritten here.",
+                     "သိမ်းထားတဲ့ survey ဖိုင်တွေမှာ ဗလာ cell၊ တူညီတဲ့ row အပြည့်အစုံ၊ column type တွေကို စစ်ပေးပါတယ်။ ပြန်စစ်ရန်သာဖြစ်ပြီး ဒီနေရာမှာ ဖိုင်ကို မပြင်၊ မအစားထိုးပါ။"))
+        _survey_meta = [f for f in (load_fieldwork().get("survey_files") or [])
+                        if isinstance(f, dict) and (NOTES_DIR / str(f.get("name", ""))).exists()]
+        if not _survey_meta:
+            st.info(T("No saved survey files yet. Add a CSV or XLSX in Fieldworks → Collect data first.",
+                      "Survey ဖိုင် မရှိသေးပါ။ Fieldworks → Collect data မှာ CSV သို့မဟုတ် XLSX အရင်တင်ပါ။"))
+        else:
+            _survey_names = [str(f.get("name")) for f in _survey_meta]
+            _survey_name = st.selectbox(T("Choose a survey file", "Survey ဖိုင်ရွေးပါ"), _survey_names, key="survey_qc_file")
+            _survey_path = NOTES_DIR / _survey_name
+            try:
+                if _survey_path.suffix.lower() == ".csv":
+                    _survey_df = pd.read_csv(_survey_path)
+                else:
+                    _survey_sheets = pd.ExcelFile(_survey_path).sheet_names
+                    _survey_sheet = st.selectbox(T("Worksheet", "Worksheet"), _survey_sheets, key="survey_qc_sheet")
+                    _survey_df = pd.read_excel(_survey_path, sheet_name=_survey_sheet)
+                _survey_qc_df = _survey_df.replace(r"^\s*$", pd.NA, regex=True)
+                _survey_missing = int(_survey_qc_df.isna().sum().sum())
+                _survey_duplicates = int(_survey_qc_df.duplicated(keep="first").sum())
+                _survey_blank_rows = int(_survey_qc_df.isna().all(axis=1).sum())
+                _survey_metrics = st.columns(4)
+                _survey_metrics[0].metric(T("Rows", "Row"), len(_survey_qc_df))
+                _survey_metrics[1].metric(T("Columns", "Column"), len(_survey_qc_df.columns))
+                _survey_metrics[2].metric(T("Blank cells", "ဗလာ cell"), _survey_missing)
+                _survey_metrics[3].metric(T("Exact duplicates", "တူညီ row"), _survey_duplicates)
+                st.caption(T(f"Fully blank rows: {_survey_blank_rows}. Blank cells include empty strings and whitespace-only values.",
+                             f"Row တစ်ကြောင်းလုံး ဗလာ: {_survey_blank_rows}။ ဗလာ cell ထဲမှာ စာမရှိတာနဲ့ space ပဲပါတာတွေ ပါပါတယ်။"))
+                _survey_column_checks = pd.DataFrame([{
+                    "Column": str(_col), "Detected type": str(_survey_df[_col].dtype),
+                    "Blank cells": int(_survey_qc_df[_col].isna().sum()),
+                    "Distinct values": int(_survey_qc_df[_col].nunique(dropna=True)),
+                } for _col in _survey_df.columns])
+                st.dataframe(_survey_column_checks, use_container_width=True, hide_index=True)
+                if _survey_duplicates:
+                    st.markdown("**" + T("Exact duplicate rows to review", "ပြန်စစ်ရန် တူညီနေတဲ့ row များ") + "**")
+                    st.dataframe(_survey_qc_df.loc[_survey_qc_df.duplicated(keep=False)].head(100),
+                                 use_container_width=True, hide_index=True)
+                    st.caption(T("Preview is limited to 100 rows. Confirm duplicates against the source before removing any records.",
+                                 "ပြထားတဲ့ preview က row ၁၀၀ အထိပဲပါပါတယ်။ Record မဖယ်ခင် source နဲ့တိုက်ပြီး အတည်ပြုပါ။"))
+                st.download_button(T("Download column check (.csv)", "Column စစ်ဆေးချက် (.csv) ဒေါင်းလုပ်"),
+                                   data=_survey_column_checks.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name=f"{_survey_path.stem}_quality_check.csv", mime="text/csv",
+                                   key="survey_qc_download")
+            except Exception as _survey_qc_error:
+                st.error(T(f"Could not read this survey file: {_survey_qc_error}",
+                           f"ဒီ survey ဖိုင်ကို ဖတ်မရပါ: {_survey_qc_error}"))
 
 elif page == "Market Analysis":
     st.title(T("📊 Market Analysis", "📊 ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု"))
