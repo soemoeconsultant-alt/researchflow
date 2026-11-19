@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.57"
+APP_VERSION = "3.58"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -10233,23 +10233,43 @@ elif page == "Market Analysis":
 elif page == "Quantitative Analysis":
     st.title("📊 Quantitative Analysis")
     st.caption("Survey data (Google Forms / SurveyMonkey / Kobo Collect export — CSV / XLSX) → counts, %, charts, cross-tab.")
-
-    uploaded = st.file_uploader(T("Upload a survey file (CSV / XLSX)", "Survey file တင်ပါ (CSV / XLSX)"), type=["csv", "xlsx"])
+    _quant_clean_files = sorted(NOTES_DIR.glob("*_cleaned_v*.csv"), key=lambda f: f.name)
+    if _quant_clean_files:
+        _quant_source_mode = st.radio(T("Data source", "ဒေတာရင်းမြစ်"),
+                                      ["clean", "upload"],
+                                      format_func=lambda v: T("Use a saved clean copy", "သိမ်းထားတဲ့ clean copy သုံးမယ်") if v == "clean" else T("Upload another file", "တခြားဖိုင်တင်မယ်"),
+                                      horizontal=True, key="quant_source_mode")
+    else:
+        _quant_source_mode = "upload"
+        st.caption(T("No saved clean copies yet — files created on Data Cleansing will appear here.",
+                     "သိမ်းထားတဲ့ clean copy မရှိသေးပါ — Data Cleansing မှာ ဖန်တီးထားတဲ့ဖိုင်တွေ ဒီမှာပေါ်ပါမယ်။"))
     df = None
-    if uploaded is not None:
+    _quant_source_name = ""
+    if _quant_clean_files and _quant_source_mode == "clean":
+        _quant_source_name = st.selectbox(T("Choose a clean survey file", "Clean survey ဖိုင်ရွေးပါ"),
+                                          [f.name for f in _quant_clean_files], key="quant_clean_file")
         try:
-            if uploaded.name.endswith(".csv"):
-                df = pd.read_csv(uploaded)
-            else:
-                df = pd.read_excel(uploaded)
-        except ImportError:
-            st.error(T("openpyxl is not installed — run this in PowerShell: .\\.venv\\Scripts\\python.exe -m pip install openpyxl", "openpyxl မရှိသေးဘူး — PowerShell မှာ ဒါ run လုပ်ပါ: .\\.venv\\Scripts\\python.exe -m pip install openpyxl"))
+            df = pd.read_csv(NOTES_DIR / _quant_source_name)
+            st.caption(T(f"Using the saved clean copy: {_quant_source_name}", f"သိမ်းထားတဲ့ clean copy ကို သုံးနေပါတယ်: {_quant_source_name}"))
         except Exception as e:
-            st.error(T(f"Could not read the file: {e}", f"File ဖတ်မရဘူး: {e}"))
+            st.error(T(f"Could not read the clean copy: {e}", f"Clean copy ကို ဖတ်မရပါ: {e}"))
+    else:
+        uploaded = st.file_uploader(T("Upload a survey file (CSV / XLSX)", "Survey file တင်ပါ (CSV / XLSX)"), type=["csv", "xlsx"])
+        if uploaded is not None:
+            _quant_source_name = uploaded.name
+            try:
+                if uploaded.name.lower().endswith(".csv"):
+                    df = pd.read_csv(uploaded)
+                else:
+                    df = pd.read_excel(uploaded)
+            except ImportError:
+                st.error(T("openpyxl is not installed — run this in PowerShell: .\\.venv\\Scripts\\python.exe -m pip install openpyxl", "openpyxl မရှိသေးဘူး — PowerShell မှာ ဒါ run လုပ်ပါ: .\\.venv\\Scripts\\python.exe -m pip install openpyxl"))
+            except Exception as e:
+                st.error(T(f"Could not read the file: {e}", f"File ဖတ်မရပါ: {e}"))
     if df is not None:
         st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
         st.dataframe(df.head(5))
-        summary_lines = [f"Quant summary — {uploaded.name}", f"Rows: {len(df)}", ""]
+        summary_lines = [f"Quant summary — {_quant_source_name}", f"Rows: {len(df)}", ""]
         cat_cols = []
         for col in df.columns:
             series = df[col].dropna()
@@ -10294,7 +10314,7 @@ elif page == "Quantitative Analysis":
                 summary_lines.append(f"{col_a} x {col_b}")
                 summary_lines.append(ctab.to_string())
         if st.button("Save quant summary"):
-            out_file = store_write_text("analysis", f"quant_{Path(uploaded.name).stem}.txt", "\n".join(summary_lines))
+            out_file = store_write_text("analysis", f"quant_{Path(_quant_source_name).stem}.txt", "\n".join(summary_lines))
             st.success(f"Saved: {out_file.name}")
             st.download_button(
                 "Download quant summary (.txt)",
@@ -10307,7 +10327,7 @@ elif page == "Quantitative Analysis":
             with st.spinner("Interpreting..."):
                 _qres, _qmodel = ask_gemini(_qprompt)
             if _qres:
-                _qfile = store_write_text("analysis", f"quant_{Path(uploaded.name).stem}_interpretation.txt", _qres)
+                _qfile = store_write_text("analysis", f"quant_{Path(_quant_source_name).stem}_interpretation.txt", _qres)
                 st.success(f"Done — model: {_qmodel} — Saved: {_qfile.name}")
             else:
                 st.error(f"Failed: {_qmodel}")
