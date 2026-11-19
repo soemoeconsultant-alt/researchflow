@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.52"
+APP_VERSION = "3.53"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -9869,24 +9869,56 @@ elif page == "Market Analysis":
 
         st.subheader(T("📋 Analysis Planner", "📋 Analysis Planner"))
         st.caption(T("Before analysis: look at the Brief + Discussion Guide + Questionnaire + transcripts together and plan first.", "Analysis မလုပ်ခင်: Brief + Discussion Guide + Questionnaire + transcript ပေါင်းကြည့်ပြီး plan အရင် ဆွဲမယ်။"))
-        # v3.21: Client Brief / Objective + Discussion Guide live on the
-        # Client Brief page now (Stage 1) — the planner reads them from the
-        # saved brief instead of asking again. No duplicate inputs here.
+        # Use the saved Brief, Discussion Guide and Screener as the analysis
+        # pre-read; the DG and Screener are stored in Research Design.
         _brief = load_brief()
         brief_text = _brief.get("objectives", "")
-        dg_text = _brief.get("discussion_guide", "")
-        if brief_text or dg_text:
-            with st.expander(T("Brief & Discussion Guide (from the Client Brief page)", "Brief နဲ့ Discussion Guide (Client Brief page ကနေ)")):
+        dg_text = str(_analysis_design.get("dg_text") or "")
+        _analysis_qdata = _analysis_design.get("questionnaire") or {}
+        if isinstance(_analysis_qdata, list):
+            _analysis_qdata = {"questions": _analysis_qdata}
+        _analysis_q_lines = []
+        if isinstance(_analysis_qdata, dict):
+            for _qi, _q in enumerate(_analysis_qdata.get("questions") or [], start=1):
+                if not isinstance(_q, dict):
+                    continue
+                _q_code = str(_q.get("code") or f"Q{_qi}").strip()
+                _q_section = str(_q.get("section") or "").strip()
+                _q_text_en = str(_q.get("question_en") or "").strip()
+                _q_text_mm = str(_q.get("question_mm") or "").strip()
+                _q_text = _q_text_en or _q_text_mm
+                if not _q_text:
+                    continue
+                if _q_text_mm and _q_text_mm != _q_text_en:
+                    _q_text += f" / {_q_text_mm}"
+                _q_line = f"{_q_code}" + (f" [{_q_section}]" if _q_section else "") + f" {_q_text}"
+                _q_options_en = str(_q.get("options_en") or "").strip()
+                _q_options_mm = str(_q.get("options_mm") or "").strip()
+                _q_options = _q_options_en or _q_options_mm
+                if _q_options_mm and _q_options_mm != _q_options_en:
+                    _q_options += f" / {_q_options_mm}" if _q_options else _q_options_mm
+                if _q_options:
+                    _q_line += f" (Options: {_q_options})"
+                _analysis_q_lines.append(_q_line)
+        _saved_questionnaire_text = "\n".join(_analysis_q_lines)
+        if brief_text or dg_text or _saved_questionnaire_text:
+            with st.expander(T("Brief, Discussion Guide & Screener (saved project records)", "Brief, Discussion Guide နဲ့ Screener (project မှာ သိမ်းထားတာ)")):
                 if brief_text:
                     st.markdown(f"**{T('Objective', 'ရည်ရွယ်ချက်')}**")
                     st.text(brief_text)
                 if dg_text:
                     st.markdown(f"**{T('Discussion Guide', 'Discussion Guide')}**")
                     st.text(dg_text)
-                st.caption(T("Edit these on the Client Brief page.", "ဒါတွေကို Client Brief page မှာ ပြင်ပါ။"))
+                if _saved_questionnaire_text:
+                    st.markdown(f"**{T('Screener / Questionnaire', 'Screener / Questionnaire')}**")
+                    st.text(_saved_questionnaire_text)
+                st.caption(T("Edit the Brief on Client Brief and the instruments on Research Design.", "Brief ကို Client Brief မှာ၊ instrument တွေကို Research Design မှာ ပြင်ပါ။"))
         else:
             st.info(T("No brief saved yet — fill in the Client Brief page first.", "Brief မသိမ်းရသေးဘူး — အရင် Client Brief page မှာ ဖြည့်ပါ။"))
-        questionnaire_text = st.text_area(T("Questionnaire (survey questions — paste here)", "Questionnaire (survey မေးခွန်းတွေ — paste လုပ်)"), key="questionnaire_text", height=150)
+        _analysis_questionnaire_key = f"analysis_questionnaire_{current_project()}"
+        if _analysis_questionnaire_key not in st.session_state:
+            st.session_state[_analysis_questionnaire_key] = _saved_questionnaire_text
+        questionnaire_text = st.text_area(T("Screener / Questionnaire context (prefilled from Research Design; editable)", "Screener / Questionnaire အချက်အလက် (Research Design ကနေ ဖြည့်ထားပြီး ပြင်လို့ရတယ်)"), key=_analysis_questionnaire_key, height=150)
         collection_tool = st.selectbox(
             T("Data collection tool", "Data ကောက်တဲ့ tool"),
             ["Google Forms", "SurveyMonkey", "Kobo Collect", T("Other", "အခြား")],
