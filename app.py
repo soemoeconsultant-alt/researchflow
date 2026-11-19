@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.42"
+APP_VERSION = "3.43"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -4313,6 +4313,39 @@ def _build_topline_text(brief, analysis_text, stem, source_name):
     return "\n".join(lines)
 
 
+def _data_only_files():
+    """Raw-data files for the v3.43 Data only report: the survey
+    responses CSV (notes/responses.csv), the saved quant summary files
+    (analysis/quant_*.txt, interpretation files excluded — those are
+    analysis, not data), and the cleaned transcript files (the
+    transcripts folder, via get_transcript_files()). Returns a list of
+    (zip_name, path) in deterministic order: responses first, then quant
+    files, then transcripts. [] when the project has no raw data."""
+    out = []
+    _resp = NOTES_DIR / FW_RESPONSES_FILE
+    if _resp.exists():
+        out.append((_resp.name, _resp))
+    for _f in sorted(ANALYSIS_DIR.glob("quant_*.txt"), key=lambda f: f.name):
+        if _f.name.endswith("_interpretation.txt"):
+            continue
+        out.append((_f.name, _f))
+    for _f in get_transcript_files():
+        out.append((_f.name, _f))
+    return out
+
+
+def _write_data_zip(out_path):
+    """Write the v3.43 Data only ZIP: raw data files only, NO analysis
+    or report text. Returns the list of file names written. [] when
+    there is nothing to write."""
+    import zipfile
+    _files = _data_only_files()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as _zf:
+        for _name, _path in _files:
+            _zf.write(_path, arcname=_name)
+    return [n for n, _p in _files]
+
+
 def _report_text_with_summary(analysis_text, stem, fallback_text=None):
     """Compose the export text: an Executive Summary section first, then the
     full analysis. Returns (text, source). When the analysis already has an
@@ -7980,7 +8013,7 @@ if st.session_state.get("_last_scrolled_page") != page:
 # and saved analysis.
 REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
                 "Data only", "Tabulation", "Transcripts"]
-REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation"}
+REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only"}
 
 if page == "Dashboard":
 
@@ -10081,7 +10114,8 @@ elif page == "Reports":
         template = st.selectbox(T("Pick a template", "Template ရွေးပါ"), list(TEMPLATES.keys()))
         # v3.39: report types are built one at a time, in REPORT_TYPES
         # order — Summary first, Topline report second (v3.40),
-        # Full report third (v3.41), Presentation fourth (v3.42).
+        # Full report third (v3.41), Presentation fourth (v3.42),
+        # Data only fifth (v3.43).
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
@@ -10136,9 +10170,10 @@ elif page == "Reports":
         # _assembled_text too, so the Full report can render the
         # assembled Qual/Quant report text. v3.42 moves
         # _pptx_subtitle up here too, so Presentation can call
-        # analysis_to_pptx with the same subtitle. Unbuilt types
-        # get an info note only, no export button; the existing
-        # PPTX/DOCX exports below are untouched.
+        # analysis_to_pptx with the same subtitle. v3.43 adds Data
+        # only (fifth) — it uses _stem + the raw-data helpers only.
+        # Unbuilt types get an info note only, no export button;
+        # the existing PPTX/DOCX exports below are untouched.
         if report_type == "Summary":
             if st.button("Export Summary (DOCX)"):
                 _summary_text = _build_summary_text(_pbrief, _analysis_text, _stem, selected)
@@ -10197,6 +10232,23 @@ elif page == "Reports":
                     data=_pres_path.read_bytes(),
                     file_name=_pres_path.name,
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+        elif report_type == "Data only":
+            _data_files = _data_only_files()
+            if not _data_files:
+                st.info(T("No raw data yet — collect survey responses or transcribe recordings first, then export the data.",
+                          "Raw data မရှိသေးဘူး — survey response စုတာ ဒါမှမဟုတ် recording transcribe လုပ်တာ အရင် လုပ်ပါ၊ ပြီးမှ data ထုတ်ပါ။"))
+            elif st.button("Export Data only (ZIP)"):
+                _data_path = REPORTS_DIR / f"{_stem}_data.zip"
+                with st.spinner(T("Exporting Data only...", "Data only ထုတ်နေပါတယ်...")):
+                    _data_names = _write_data_zip(_data_path)
+                store_upload_existing("reports", _data_path.name)
+                st.success(f"Done — {_data_path.name} ({len(_data_names)} files)")
+                st.download_button(
+                    "Download Data only (ZIP)",
+                    data=_data_path.read_bytes(),
+                    file_name=_data_path.name,
+                    mime="application/zip",
                 )
         else:
             st.info(T(f"{report_type} is not built yet — report types are built one at a time, in order, starting with Summary.",
