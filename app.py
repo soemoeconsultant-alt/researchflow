@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.56"
+APP_VERSION = "3.57"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -920,6 +920,7 @@ def seating_plan_to_docx(title_text, session, participants, out_path):
 # corrected copy is saved alongside and every correction is audit-logged.
 QC_FILE = "qc.json"
 QC_AUDIT_FILE = "qc_audit.json"
+SURVEY_CLEAN_AUDIT_FILE = "survey_clean_audit.json"
 INSIGHTS_FILE = "insights.json"
 QC_STATUSES = ["Unchecked", "Checked", "Needs correction", "Corrected"]
 
@@ -9821,8 +9822,8 @@ elif page == "Data Cleansing":
 
     with _qc_survey_tab:
         st.subheader(T("Survey data quality check", "Survey ဒေတာ အရည်အသွေးစစ်ဆေးရန်"))
-        st.caption(T("Checks blank cells, exact duplicate rows and column types for saved survey files. This is a review only; nothing is cleaned or overwritten here.",
-                     "သိမ်းထားတဲ့ survey ဖိုင်တွေမှာ ဗလာ cell၊ တူညီတဲ့ row အပြည့်အစုံ၊ column type တွေကို စစ်ပေးပါတယ်။ ပြန်စစ်ရန်သာဖြစ်ပြီး ဒီနေရာမှာ ဖိုင်ကို မပြင်၊ မအစားထိုးပါ။"))
+        st.caption(T("Checks blank cells, exact duplicate rows and column types. Any selected cleaning saves a separate copy; raw files are never overwritten.",
+                     "ဗလာ cell၊ တူညီတဲ့ row အပြည့်အစုံ၊ column type တွေကို စစ်ပေးပါတယ်။ ရွေးထားတဲ့ cleaning ကို သီးခြားမိတ္တူအဖြစ် သိမ်းပြီး raw ဖိုင်ကို ဘယ်တော့မှ အစားမထိုးပါ။"))
         _survey_meta = [f for f in (load_fieldwork().get("survey_files") or [])
                         if isinstance(f, dict) and (NOTES_DIR / str(f.get("name", ""))).exists()]
         if not _survey_meta:
@@ -9832,13 +9833,14 @@ elif page == "Data Cleansing":
             _survey_names = [str(f.get("name")) for f in _survey_meta]
             _survey_name = st.selectbox(T("Choose a survey file", "Survey ဖိုင်ရွေးပါ"), _survey_names, key="survey_qc_file")
             _survey_path = NOTES_DIR / _survey_name
+            _survey_sheet_name = "CSV"
             try:
                 if _survey_path.suffix.lower() == ".csv":
                     _survey_df = pd.read_csv(_survey_path)
                 else:
                     _survey_sheets = pd.ExcelFile(_survey_path).sheet_names
-                    _survey_sheet = st.selectbox(T("Worksheet", "Worksheet"), _survey_sheets, key="survey_qc_sheet")
-                    _survey_df = pd.read_excel(_survey_path, sheet_name=_survey_sheet)
+                    _survey_sheet_name = st.selectbox(T("Worksheet", "Worksheet"), _survey_sheets, key="survey_qc_sheet")
+                    _survey_df = pd.read_excel(_survey_path, sheet_name=_survey_sheet_name)
                 _survey_qc_df = _survey_df.replace(r"^\s*$", pd.NA, regex=True)
                 _survey_missing = int(_survey_qc_df.isna().sum().sum())
                 _survey_duplicates = int(_survey_qc_df.duplicated(keep="first").sum())
@@ -9866,6 +9868,76 @@ elif page == "Data Cleansing":
                                    data=_survey_column_checks.to_csv(index=False).encode("utf-8-sig"),
                                    file_name=f"{_survey_path.stem}_quality_check.csv", mime="text/csv",
                                    key="survey_qc_download")
+
+                st.divider()
+                st.markdown("### " + T("Create a reviewed clean copy", "စစ်ပြီး clean copy ဖန်တီးရန်"))
+                _survey_clean_col1, _survey_clean_col2 = st.columns(2)
+                _survey_clean_key = re.sub(r"[^\w]+", "_", f"{current_project()}_{_survey_name}_{_survey_sheet_name}")
+                _remove_exact_duplicates = _survey_clean_col1.checkbox(
+                    T("Remove exact duplicate rows", "တူညီတဲ့ row အပြည့်အစုံကို ဖယ်မယ်"),
+                    key="survey_remove_duplicates_" + _survey_clean_key)
+                _remove_blank_rows = _survey_clean_col2.checkbox(
+                    T("Remove fully blank rows", "လုံးဝဗလာ row ကို ဖယ်မယ်"),
+                    key="survey_remove_blank_rows_" + _survey_clean_key)
+                _survey_remove_mask = pd.Series(False, index=_survey_df.index)
+                if _remove_exact_duplicates:
+                    _survey_remove_mask |= _survey_qc_df.duplicated(keep="first")
+                if _remove_blank_rows:
+                    _survey_remove_mask |= _survey_qc_df.isna().all(axis=1)
+                _survey_removed_n = int(_survey_remove_mask.sum())
+                st.caption(T(f"Selected operations will remove {_survey_removed_n} row(s). Missing cells and other values will stay unchanged.",
+                             f"ရွေးထားတဲ့လုပ်ဆောင်ချက်အရ row {_survey_removed_n} ခု ဖယ်ပါမယ်။ ဗလာ cell နဲ့ အခြားတန်ဖိုးတွေကို မပြောင်းပါ။"))
+                if _survey_removed_n:
+                    st.dataframe(_survey_df.loc[_survey_remove_mask].head(100), use_container_width=True, hide_index=True)
+                if st.button(T("Save clean copy (CSV)", "Clean copy (CSV) သိမ်းမယ်"),
+                             key="survey_clean_save_" + _survey_clean_key, type="primary",
+                             disabled=_survey_removed_n == 0):
+                    _survey_cleaned_df = _survey_df.loc[~_survey_remove_mask].copy()
+                    _survey_sheet_part = re.sub(r"[^\w\-.]+", "_", str(_survey_sheet_name)).strip("_") or "data"
+                    _survey_clean_base = f"{_survey_path.stem}_{_survey_sheet_part}_cleaned"
+                    _survey_clean_version = 1
+                    while (NOTES_DIR / f"{_survey_clean_base}_v{_survey_clean_version:02d}.csv").exists():
+                        _survey_clean_version += 1
+                    _survey_clean_name = f"{_survey_clean_base}_v{_survey_clean_version:02d}.csv"
+                    _survey_clean_path = store_write_bytes("notes", _survey_clean_name,
+                                                           _survey_cleaned_df.to_csv(index=False).encode("utf-8-sig"))
+                    _survey_audit_path = NOTES_DIR / SURVEY_CLEAN_AUDIT_FILE
+                    try:
+                        _survey_audit = json.loads(_survey_audit_path.read_text(encoding="utf-8"))
+                        if not isinstance(_survey_audit, list):
+                            _survey_audit = []
+                    except Exception:
+                        _survey_audit = []
+                    _survey_audit.append({
+                        "timestamp": datetime.datetime.now(ZoneInfo("Asia/Rangoon")).strftime("%Y-%m-%d %H:%M"),
+                        "source": _survey_name, "worksheet": str(_survey_sheet_name),
+                        "clean_copy": _survey_clean_name, "rows_before": int(len(_survey_df)),
+                        "rows_after": int(len(_survey_cleaned_df)), "rows_removed": _survey_removed_n,
+                        "removed_duplicates": int((_survey_qc_df.duplicated(keep="first") & _survey_remove_mask & ~_survey_qc_df.isna().all(axis=1)).sum()),
+                        "removed_blank_rows": int((_survey_qc_df.isna().all(axis=1) & _survey_remove_mask).sum()),
+                        "missing_cells_left": _survey_missing,
+                    })
+                    store_write_text("notes", SURVEY_CLEAN_AUDIT_FILE, json.dumps(_survey_audit, ensure_ascii=False, indent=2))
+                    _flash(T(f"Clean copy saved: {_survey_clean_name}. Original file is unchanged.",
+                             f"Clean copy သိမ်းပြီးပါပြီ: {_survey_clean_name}။ မူရင်းဖိုင်ကို မပြင်ထားပါ။"))
+                    st.rerun()
+                st.caption(T("Only the selected worksheet is exported as CSV. Missing values are never filled automatically; the original CSV/XLSX is unchanged.",
+                             "ရွေးထားတဲ့ worksheet ကိုပဲ CSV အဖြစ် ထုတ်ပါတယ်။ ဗလာတန်ဖိုးတွေကို အလိုအလျောက် မဖြည့်ပါ။ မူရင်း CSV/XLSX ကို မပြင်ပါ။"))
+                _survey_audit_path = NOTES_DIR / SURVEY_CLEAN_AUDIT_FILE
+                if _survey_audit_path.exists():
+                    try:
+                        _survey_audit_rows = json.loads(_survey_audit_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        _survey_audit_rows = []
+                    if _survey_audit_rows:
+                        st.markdown("**" + T("Clean-copy history", "Clean copy မှတ်တမ်း") + "**")
+                        st.dataframe(pd.DataFrame(list(reversed(_survey_audit_rows))), use_container_width=True, hide_index=True)
+                        for _audit_i, _audit_row in enumerate(reversed(_survey_audit_rows)):
+                            _cleaned_path = NOTES_DIR / str(_audit_row.get("clean_copy", ""))
+                            if _cleaned_path.exists():
+                                st.download_button(T(f"Download {_cleaned_path.name}", f"{_cleaned_path.name} ဒေါင်းလုပ်"),
+                                                   data=_cleaned_path.read_bytes(), file_name=_cleaned_path.name,
+                                                   mime="text/csv", key=f"survey_clean_download_{_audit_i}")
             except Exception as _survey_qc_error:
                 st.error(T(f"Could not read this survey file: {_survey_qc_error}",
                            f"ဒီ survey ဖိုင်ကို ဖတ်မရပါ: {_survey_qc_error}"))
