@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.46"
+APP_VERSION = "3.47"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -7071,6 +7071,32 @@ h2, h3 { font-weight: 600; }
 .rf-hero h1 span.t { color: #0D9488; }
 .rf-hero p { color: #475569; font-size: 16px; margin: 0; max-width: 760px; line-height: 1.7; }
 
+/* Dashboard: one clear project heading, one next action, one workflow map. */
+.rf-home-head { display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  background: linear-gradient(115deg, #FFFFFF 0%, #F4F8FF 62%, #F0FBF8 100%);
+  border: 1px solid var(--rf-border); border-radius: 18px; padding: 22px 26px; margin: 4px 0 8px;
+  box-shadow: 0 8px 24px rgba(16,38,74,.05); }
+.rf-home-head h1 { color: var(--rf-ink); font-size: clamp(24px, 2.4vw, 32px); font-weight: 750; line-height: 1.35; margin: 2px 0 4px; overflow-wrap: anywhere; }
+.rf-home-head p { color: var(--rf-muted); font-size: 14px; line-height: 1.6; margin: 0; }
+.rf-home-eyebrow { color: var(--rf-accent); font-size: 11px; font-weight: 800; letter-spacing: .08em; line-height: 1.5; }
+.rf-next-step { min-height: 88px; display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  border-left: 3px solid var(--rf-accent); border-radius: 0 12px 12px 0; background: var(--rf-accent-soft); padding: 10px 16px; }
+.rf-next-step strong { color: var(--rf-ink); font-size: 18px; line-height: 1.5; }
+.rf-next-step span { color: var(--rf-muted); font-size: 13px; line-height: 1.5; }
+.rf-home-stage { min-height: 112px; display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid var(--rf-border); border-radius: 14px; background: var(--rf-surface); padding: 13px 11px;
+  box-shadow: 0 4px 14px rgba(16,38,74,.04); }
+.rf-home-stage.active { border-color: var(--rf-accent); box-shadow: 0 0 0 2px rgba(37,99,235,.10); }
+.rf-home-stage-no { width: 30px; height: 30px; flex: 0 0 30px; display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; background: var(--rf-accent-soft); color: var(--rf-accent); font-size: 11px; font-weight: 800; }
+.rf-home-stage-copy { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.rf-home-stage-copy strong { color: var(--rf-ink); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.rf-home-status { font-size: 11px; line-height: 1.5; font-weight: 700; }
+.rf-home-status.done { color: #0E7A5F; }
+.rf-home-status.wip { color: var(--rf-accent); }
+.rf-home-status.todo { color: var(--rf-muted); }
+div[data-testid="stHorizontalBlock"]:has(.rf-home-stage) { gap: .65rem; }
+
 /* Modern metric cards */
 .rf-metric { position: relative; overflow: hidden; background: #FFFFFF; border: 1px solid var(--rf-border); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(16,38,74,.06); }
 .rf-metric:before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #2563EB, #0891B2, #0D9488); }
@@ -7228,6 +7254,8 @@ hr { border-color: var(--rf-line); }
   .block-container { padding: 4.5rem 1rem 6rem; }
   .rf-hero { padding: 23px 20px; }
   .rf-step { min-height: 132px; }
+  div[data-testid="stHorizontalBlock"]:has(.rf-home-stage) { flex-wrap: wrap !important; }
+  div[data-testid="stHorizontalBlock"]:has(.rf-home-stage) > [data-testid="stColumn"] { flex: 1 1 30% !important; min-width: 145px !important; }
 }
 </style>
 """
@@ -7277,6 +7305,17 @@ section[data-testid="stSidebar"][aria-expanded="true"] { background: #0F172A; bo
 .rf-hero { background: linear-gradient(115deg, #0F1B33 0%, #12233F 55%, #0F2A33 100%); border-color: #1E293B; }
 .rf-hero h1 { color: #F8FAFC; }
 .rf-hero p { color: #CBD5E1; }
+.rf-home-head { background: linear-gradient(115deg, #111827 0%, #17243B 62%, #122A2C 100%); border-color: #334155; }
+.rf-home-head h1, .rf-next-step strong { color: #F8FAFC; }
+.rf-home-head p, .rf-next-step span { color: #CBD5E1; }
+.rf-next-step { background: #1E293B; }
+.rf-home-stage { background: #111827; border-color: #334155; }
+.rf-home-stage.active { border-color: #3B82F6; box-shadow: 0 0 0 2px rgba(59,130,246,.18); }
+.rf-home-stage-no { background: #1E293B; color: #93C5FD; }
+.rf-home-stage-copy strong { color: #F8FAFC; }
+.rf-home-status.done { color: #6EE7B7; }
+.rf-home-status.wip { color: #93C5FD; }
+.rf-home-status.todo { color: #94A3B8; }
 .rf-metric { background: #1E293B; border-color: #334155; }
 .rf-metric-label { color: #CBD5E1; }
 .rf-metric-value { color: #F8FAFC; }
@@ -8105,71 +8144,32 @@ REPORT_TYPES = ["Summary", "Topline report", "Full report", "Presentation",
 REPORT_TYPES_BUILT = {"Summary", "Topline report", "Full report", "Presentation", "Data only", "Tabulation", "Transcripts"}
 
 if page == "Dashboard":
-
     st.markdown(
-        '<div class="rf-hero"><h1>' + T("Welcome to", "ကြိုဆိုပါတယ်") + ' <span class="b">Research</span>'
-        '<span class="t">Flow</span></h1><p>'
-        + T("Transform your interview data into actionable insights.",
-            "Interview data တွေကို အသုံးဝင်တဲ့ insight အဖြစ် ပြောင်းလဲပေးပါတယ်။")
-        + "</p></div>",
-        unsafe_allow_html=True,
+        '<div class="rf-home-head"><div><div class="rf-home-eyebrow">'
+        + T("RESEARCH PROJECT", "သုတေသန Project")
+        + '</div><h1>' + html.escape(current_project()) + '</h1><p>'
+        + T("One clear path from client brief to evidence-backed report.",
+            "Client Brief ကနေ သက်သေအထောက်အထားပါတဲ့ Report အထိ အဆင့်လိုက်လုပ်ဆောင်ပါ။")
+        + '</p></div></div>', unsafe_allow_html=True,
     )
-    _hc1, _hc2, _hc3 = st.columns([2.2, 2.2, 4.6])  # v3.24.1 (#10): wider hero buttons so labels are never truncated
-    with _hc1:
-        if st.button(T("▶ Start New Project", "▶ Project အသစ် စမယ်"), key="hero_new_project", type="primary", use_container_width=True):
+    _ha1, _ha2 = st.columns([1, 5])
+    with _ha1:
+        if st.button(T("＋ New project", "＋ Project အသစ်"), key="hero_new_project", type="primary", use_container_width=True):
             st.session_state["page"] = "New Project"
             st.rerun()
-    with _hc2:
-        if st.button(T("📖 View Guide", "📖 လမ်းညွှန်ကြည့်မယ်"), key="hero_view_guide", use_container_width=True):
-            st.session_state["show_guide"] = not st.session_state.get("show_guide", False)
-            st.rerun()
-    if st.session_state.get("show_guide"):
-        st.markdown(
-            '<div class="rf-guide"><h3>' + T("📖 How ResearchFlow works", "📖 ResearchFlow အလုပ်လုပ်ပုံ") + '</h3><p>'
-            + T("One project flows through 5 stages — brief, design, fieldwork, "
-                "cleanse, analyse & report. Files live in Google Drive "
-                "(ResearchFlow / project / audio, transcripts, notes, reports) and "
-                "this app works on those same files.",
-                "Project တစ်ခုက အဆင့် ၅ ဆင့် ဖြတ်သန်းတယ် — brief, ဒီဇိုင်း, ကွင်းဆင်း, "
-                "သန့်စင်, ခွဲခြမ်းစိတ်ဖြာပြီး report ထုတ်လုပ်ခြင်း။ ဖိုင်တွေက Google Drive "
-                "(ResearchFlow / project / audio, transcripts, notes, reports) ထဲမှာ ရှိပြီး "
-                "ဒီ app က အဲဒီဖိုင်တွေပေါ်မှာပဲ အလုပ်လုပ်တယ်။")
-            + "</p></div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(T("**System Architecture**", "**စနစ်ဖွဲ့စည်းပုံ**"))
-        st.markdown(
-            '<div class="rf-arch">' + T("Research Project Management", "Research Project စီမံခန့်ခွဲမှု")
-            + '<small>' + T("Client Brief • Project Setup • Objectives", "Client Brief • Project သတ်မှတ်ခြင်း • ရည်ရွယ်ချက်များ") + '</small></div>'
-            '<div class="rf-arch-arrow">↓</div>',
-            unsafe_allow_html=True,
-        )
-        _ac1, _ac2 = st.columns(2)
-        with _ac1:
-            st.markdown('<div class="rf-arch">' + T("Fieldworks", "ကွင်းဆင်းလုပ်ငန်း") + '<small>' + T("Interviews • Surveys • FGDs", "Interview • Survey • FGD") + '</small></div>', unsafe_allow_html=True)
-        with _ac2:
-            st.markdown('<div class="rf-arch">' + T("Batch Processing", "Batch လုပ်ဆောင်ခြင်း") + '<small>' + T("Audio • Documents", "Audio • စာရွက်စာတမ်းများ") + '</small></div>', unsafe_allow_html=True)
-        st.markdown('<div class="rf-arch-arrow">↓</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="rf-arch">' + T("AI Processing Engine", "AI လုပ်ဆောင်စနစ်")
-            + '<small>' + T("Transcription • Data Cleansing", "Transcription • ဒေတာ သန့်စင်ခြင်း") + '</small></div>'
-            '<div class="rf-arch-arrow">↓</div>'
-            '<div class="rf-arch">' + T("Research Intelligence", "သုတေသန Intelligence")
-            + '<small>' + T("Qualitative • Quantitative • Market Analysis", "Qualitative • Quantitative • ဈေးကွက် ခွဲခြမ်းစိတ်ဖြာမှု") + '</small></div>'
-            '<div class="rf-arch-arrow">↓</div>'
-            '<div class="rf-arch">' + T("AI Reports &amp; Presentation", "AI Report နဲ့ တင်ပြမှု")
-            + '<small>' + T("Insights • Recommendations • Client Reports", "Insight • အကြံပြုချက်များ • Client Report များ") + '</small></div>',
-            unsafe_allow_html=True,
-        )
-        # v3.21: the old caption was wrong — surveys ARE in Stage 3
-        # ("Survey data"), and Coding / Video are not in the 5-stage table.
+    with _ha2:
+        with st.expander(T("How the workflow works", "Workflow အလုပ်လုပ်ပုံ")):
+            st.write(T(
+                "Brief → proposal and quotation → client approval → screener → discussion guide → fieldwork → data quality check → analysis → client deliverables.",
+                "Brief → Proposal နဲ့ Quotation → Client အတည်ပြုချက် → Screener → Discussion Guide → Fieldwork → Data အရည်အသွေးစစ်ခြင်း → Analysis → Client ကိုပေးမယ့်ဖိုင်များ။",
+            ))
 
     _projects = st.session_state.get("project_list", ["Default"])
     _transcripts = get_transcript_files()
     _reports = list(REPORTS_DIR.glob("*.pptx")) + list(REPORTS_DIR.glob("*.docx"))
     _audio = [f for f in AUDIO_DIR.glob("*") if f.is_file()]
     _cards = [
-        ("📁", T("Total Projects", "Project စုစုပေါင်း"), len(_projects), "#2563EB"),
+        ("📁", T("Workspace projects", "Workspace ထဲက Project များ"), len(_projects), "#2563EB"),
         ("📝", T("Transcripts", "Transcript များ"), len(_transcripts), "#0D9488"),
         ("📊", T("Research Reports", "သုတေသန Report များ"), len(_reports), "#0891B2"),
         ("🎙️", T("Audio Files", "Audio ဖိုင်များ"), len(_audio), "#7C3AED"),
@@ -8184,70 +8184,64 @@ if page == "Dashboard":
 
     _stages = stage_status()
     _done = sum(1 for _s in _stages if _stage_badge(_s)[1] == "done")
-    _pct = round(_done / len(_stages) * 100)
-    _icons = ["📋", "📐", "👥", "🧹", "📊"]
-    _step_colors = ["#2563EB", "#0891B2", "#0D9488", "#2563EB", "#0891B2"]
-
-    st.subheader(T("🚀 Research Workflow", "🚀 သုတေသန လုပ်ငန်းစဉ်"))
-    st.caption(T("Follow the complete research process from brief to presentation", "Brief ကနေ တင်ပြမှုအထိ သုတေသနလုပ်ငန်းစဉ် အပြည့်အစုံကို လိုက်ကြည့်ပါ"))
-    # Current step = first stage that is not Done (computed from real status).
+    _wip = sum(1 for _s in _stages if _stage_badge(_s)[1] == "wip")
+    _pct = round((_done + 0.5 * _wip) / len(_stages) * 100) if _stages else 0
     _cur_step = next((i + 1 for i, _s in enumerate(_stages) if _stage_badge(_s)[1] != "done"), None)
+    st.subheader(T("Project workflow", "Project workflow"))
+    st.progress(_pct / 100, text=T(f"{_pct}% complete · {_done} of 5 stages", f"{_pct}% ပြီးပြီ · အဆင့် ၅ ဆင့်အနက် {_done} ဆင့်"))
     if _cur_step:
-        st.markdown('<div class="rf-current">' + T(f"Current: Step {_cur_step}", f"အခု အဆင့်: {_cur_step}") + '</div>', unsafe_allow_html=True)
+        _cur_label, _cur_desc, _cur_started, _cur_subs = _stages[_cur_step - 1]
+        _cur_name = _cur_label.split(" · ", 1)[1]
+        _next_col, _next_action = st.columns([4, 1.25], vertical_alignment="center")
+        with _next_col:
+            st.markdown(
+                '<div class="rf-next-step"><div class="rf-home-eyebrow">'
+                + T(f"NEXT · STAGE {_cur_step}", f"နောက်တစ်ဆင့် · အဆင့် {_cur_step}")
+                + '</div><strong>' + html.escape(T(_cur_name, _STAGE_MM.get(_cur_name)))
+                + '</strong><span>' + html.escape(_cur_desc) + '</span></div>',
+                unsafe_allow_html=True,
+            )
+        with _next_action:
+            if st.button(T("Continue →", "ဆက်လုပ်မယ် →"), key="workflow_continue", type="primary", use_container_width=True):
+                st.session_state["page"] = _STAGE_HOME[_cur_step]
+                st.rerun()
     else:
-        st.markdown('<div class="rf-current">' + T("✅ All stages complete", "✅ အဆင့်အားလုံး ပြီးပြီ") + '</div>', unsafe_allow_html=True)
-    _flow_cards = []
-    for _i, (_label, _desc, _d, _subs) in enumerate(_stages):
-        _nm = _label.split(" · ", 1)[1]
-        _b_txt, _b_cls = _stage_badge((_label, _desc, _d, _subs))
-        _pill_cls = {"done": "pill-done", "wip": "pill-wip", "todo": "pill-todo"}[_b_cls]
-        _subs_html = "".join(
-            '<div class="sub"><span class="'
-            + ("ok" if _s == "done" else "no" if _s == "todo" else "cm")
-            + '">'
-            + ("✓" if _s == "done" else "○" if _s == "todo" else "–")
-            + "</span> " + html.escape(T(_en, _mm))
-            + (" <i>(" + T("coming", "မလာသေးဘူး") + ")</i>" if _s == "coming" else "")
-            + "</div>"
-            for _en, _mm, _s in _subs
-        )
-        _flow_cards.append(
-            f'<div class="rf-step"><div class="ico" style="background:{_step_colors[_i]}1A">{_icons[_i]}</div>'
-            f'<div class="nm">{_i + 1}. {html.escape(_nm)}</div>'
-            f'<div class="ds">{html.escape(_desc)}</div>'
-            f'<div class="st"><span class="rf-pill {_pill_cls}">{_b_txt}</span></div>'
-            f'<div class="subs">{_subs_html}</div></div>'
-        )
-    st.markdown('<div class="rf-flow">' + '<div class="rf-flow-arrow">→</div>'.join(_flow_cards) + '</div>', unsafe_allow_html=True)
+        st.success(T("All five stages are complete for this project.", "ဒီ Project ရဲ့ အဆင့်ငါးဆင့်လုံး ပြီးပါပြီ။"))
 
-    st.subheader(T("💡 Project Progress", "💡 Project တိုးတက်မှု"))
-    _pc1, _pc2 = st.columns([1, 2])
-    with _pc1:
-        st.markdown(
-            f'<div class="rf-ring" style="--p:{_pct}"><span>{_pct}%</span></div>',
-            unsafe_allow_html=True,
-        )
-        st.caption(T(f"{_done} of {len(_stages)} stages complete", f"အဆင့် {len(_stages)} ခုအနက် {_done} ခု ပြီးပြီ"))
-    with _pc2:
-        _s1, _s2 = st.columns(2)
-        for _i, (_label, _desc, _d, _subs) in enumerate(_stages):
-            with (_s1 if _i < 3 else _s2):
-                _mk = {"done": "✅ ", "wip": "● ", "todo": "○ "}[_stage_badge((_label, _desc, _d, _subs))[1]]
-                st.write(_mk + _label)
+    _stage_cols = st.columns(5)
+    for _i, (_stage, _col) in enumerate(zip(_stages, _stage_cols)):
+        _label, _desc, _started, _subs = _stage
+        _status_text, _status_class = _stage_badge(_stage)
+        _stage_no = _i + 1
+        _stage_name = _label.split(" · ", 1)[1]
+        _active_cls = " active" if _stage_no == _cur_step else ""
+        with _col:
+            st.markdown(
+                '<div class="rf-home-stage' + _active_cls + '"><div class="rf-home-stage-no">'
+                + f"{_stage_no:02d}</div><div class=\"rf-home-stage-copy\"><strong>"
+                + html.escape(T(_stage_name, _STAGE_MM.get(_stage_name)))
+                + '</strong><span class="rf-home-status ' + _status_class + '">'
+                + html.escape(_status_text) + '</span></div></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(T("Open stage", "အဆင့်ဖွင့်မယ်"), key=f"home_stage_{_stage_no}", use_container_width=True):
+                st.session_state["page"] = _STAGE_HOME[_stage_no]
+                st.rerun()
 
-    # v3.24: Recent Activities + Quick Actions + System Status, side by side.
-    # Every row is real data only — no fake activities, no fake deltas.
-    _ra, _qa, _ss = st.columns([1.6, 0.85, 1])  # v3.24.3 (#3): Recent Activity needs more room so the Status column fits; Quick Actions buttons are short and System Status wraps fine in less width
-    with _ra:
-        with st.container(border=True):
-            st.subheader(T("🕐 Recent Activity", "🕐 မကြာသေးခင်က လုပ်ဆောင်ချက်များ"))
+    with st.expander(T("Activity and project tools", "လုပ်ဆောင်ချက်နဲ့ Project tools")):
+        _activity_tab, _backup_tab, _system_tab = st.tabs([
+            T("Recent activity", "နောက်ဆုံးလုပ်ဆောင်ချက်များ"),
+            T("Backup & restore", "Backup နဲ့ Restore"),
+            T("System status", "စနစ်အခြေအနေ"),
+        ])
+        with _activity_tab:
             _act = recent_activity()
             if _act:
                 _rows = "".join(
                     f"<tr><td>{html.escape(_t)}</td><td title=\"{html.escape(_f, quote=True)}\">{html.escape(_f)}</td><td>{html.escape(_a)}</td>"
                     f'<td><span class="rf-badge">{html.escape(_s)}</span></td></tr>'
                     for _t, _f, _a, _s in _act
-                )  # v3.24.3 (#3): the File cell truncates with an ellipsis in CSS — the title attribute keeps the full name on hover.
+                )
                 st.markdown(
                     '<div class="rf-table-wrap"><table class="rf-table"><tr><th>' + T("Date &amp; Time", "ရက်စွဲနဲ့ အချိန်") + '</th><th>'
                     + T("File / Project", "ဖိုင် / Project") + "</th><th>" + T("Activity", "လုပ်ဆောင်ချက်")
@@ -8255,79 +8249,54 @@ if page == "Dashboard":
                     unsafe_allow_html=True,
                 )
             else:
-                st.info(T("No activity yet — record or upload audio to begin.", "လုပ်ဆောင်ချက် မရှိသေးဘူး — စဖို့ audio record လုပ်ပါ၊ ဒါမှမဟုတ် upload လုပ်ပါ။"))
-    with _qa:
-        with st.container(border=True):
-            st.subheader(T("⚡ Quick Actions", "⚡ အမြန်လုပ်ဆောင်ချက်များ"))
-            # v3.24.2 (#7): the 2 sub-columns squeezed labels to ~180px and
-            # broke them mid-word ("Uplo ad Files") — stack the 4 buttons
-            # vertically in the full column width instead.
-            if st.button(T("🎙️ Start Interview", "🎙️ Interview စမယ်"), key="qa_record", use_container_width=True):
-                st.session_state["page"] = "Fieldworks"
-                st.rerun()
-            if st.button(T("📊 Run Analysis", "📊 Analysis လုပ်မယ်"), key="qa_analyze", use_container_width=True):
-                st.session_state["page"] = "Market Analysis"
-                st.rerun()
-            if st.button(T("📤 Upload Files", "📤 ဖိုင်တင်မယ်"), key="qa_upload", use_container_width=True):
-                st.session_state["page"] = "Upload & Transcribe"
-                st.rerun()
-            if st.button(T("📑 Create Report", "📑 Report လုပ်မယ်"), key="qa_report", use_container_width=True):
-                st.session_state["page"] = "Reports"
-                st.rerun()
-    with _ss:
-        with st.container(border=True):
-            st.subheader(T("💚 System Status", "💚 စနစ် အခြေအနေ"))
-            _drive_st = (T("✅ Connected (OAuth)", "✅ ချိတ်ထားတယ် (OAuth)") if DRIVE_AUTH == "oauth"
-                         else T("✅ Connected", "✅ ချိတ်ထားတယ်") if DRIVE_AUTH == "service"
-                         else T("○ Local only", "○ Local ပဲ"))
-            _gem_st = (T("✅ Ready", "✅ အဆင်သင့်") if get_gemini_client() is not None
-                       else T("⚠️ No API key", "⚠️ API key မရှိဘူး"))
+                st.info(T("No activity recorded yet.", "လုပ်ဆောင်ချက် မှတ်တမ်း မရှိသေးပါ။"))
+        with _backup_tab:
+            _b1, _b2 = st.columns(2)
+            with _b1:
+                st.write(T("Save a project copy to your computer as a ZIP.", "Project ကို ZIP အဖြစ် ကွန်ပျူတာမှာ သိမ်းပါ။"))
+                if st.button(T("Create backup ZIP", "Backup ZIP လုပ်မယ်"), key="create_backup"):
+                    with st.spinner(T("Creating backup ZIP...", "Backup ZIP လုပ်နေပါတယ်...")):
+                        _bname, _bdata = build_backup_zip()
+                        st.session_state["backup_zip"] = (_bname, _bdata)
+                if "backup_zip" in st.session_state:
+                    _bname, _bdata = st.session_state["backup_zip"]
+                    st.download_button(T("Download backup", "Backup ဒေါင်းလုတ်"), data=_bdata, file_name=_bname,
+                                       mime="application/zip", key="download_backup")
+                    st.caption(f"{_bname} — {len(_bdata) / 1024 / 1024:.1f} MB")
+            with _b2:
+                st.write(T("Restore from a ZIP. Existing files are backed up before replacement.", "ZIP ကနေ Restore လုပ်ပါ။ အစားမထိုးခင် ရှိပြီးသားဖိုင်တွေကို Backup ယူမယ်။"))
+                _up = st.file_uploader(T("Choose a backup ZIP", "Backup ZIP ရွေးပါ"), type=["zip"], key="restore_upload")
+                if _up is not None:
+                    _rdata = _up.getvalue()
+                    _rman, _rerr = read_backup_manifest(_rdata)
+                    if _rerr:
+                        st.error(_rerr)
+                    elif _rman.get("project", "Default") != current_project():
+                        _bproj = _rman.get("project", "Default")
+                        st.warning(T(f"This backup is from **{_bproj}**. Restore it into **{current_project()}**?", f"ဒီ Backup က **{_bproj}** Project ကပါ။ **{current_project()}** ထဲ Restore လုပ်မလား။"))
+                        if st.button(T("Restore anyway", "ဆက်ပြီး Restore လုပ်မယ်"), key="confirm_restore"):
+                            with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
+                                _restore_report(restore_backup_zip(_rdata, force=True))
+                    elif st.button(T("Restore backup", "Backup ပြန်ထည့်မယ်"), key="do_restore"):
+                        with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
+                            _restore_report(restore_backup_zip(_rdata))
+        with _system_tab:
+            _drive_st = (T("Connected (OAuth)", "ချိတ်ဆက်ထားသည် (OAuth)") if DRIVE_AUTH == "oauth"
+                         else T("Connected", "ချိတ်ဆက်ထားသည်") if DRIVE_AUTH == "service"
+                         else T("Local only", "Local သာ"))
+            _gem_st = (T("Ready", "အဆင်သင့်") if get_gemini_client() is not None
+                       else T("No API key", "API key မရှိပါ"))
             st.write(f"☁️ **{T('Google Drive', 'Google Drive')}** — {_drive_st}")
             st.write(f"✦ **{T('Gemini AI', 'Gemini AI')}** — {_gem_st}")
-            st.write(f"💾 **{T('Local Storage', 'Local Storage')}** — {T('✅ Healthy', '✅ ကောင်းတယ်')}")
-            st.write(f"📦 **{T('Backup', 'Backup')}** — {T('○ On demand', '○ လိုအပ်မှ လုပ်မယ်')}")
-            st.caption(T("Create a backup ZIP in Backup & Restore below.", "Backup & Restore မှာ ZIP လုပ်လို့ရတယ်။"))
-
-    st.subheader(T("💾 Backup & Restore", "💾 Backup နဲ့ Restore"))
-    _b1, _b2 = st.columns(2)
-    with _b1:
-        st.write(T("You can save the whole project to your PC as a ZIP.", "Project တခုလုံး ZIP အဖြစ် PC မှာ သိမ်းထားလို့ရတယ်။"))
-        if st.button(T("📦 Create backup ZIP", "📦 Backup ZIP လုပ်မယ်"), key="create_backup"):
-            with st.spinner(T("Creating backup ZIP...", "Backup ZIP လုပ်နေပါတယ်...")):
-                _bname, _bdata = build_backup_zip()
-                st.session_state["backup_zip"] = (_bname, _bdata)
-        if "backup_zip" in st.session_state:
-            _bname, _bdata = st.session_state["backup_zip"]
-            st.download_button(T("⬇️ Download backup", "⬇️ Backup ဒေါင်းလုတ်"), data=_bdata, file_name=_bname,
-                               mime="application/zip", key="download_backup")
-            st.caption(f"{_bname} — {len(_bdata) / 1024 / 1024:.1f} MB")
-    with _b2:
-        st.write(T("You can restore from a backup ZIP. Existing files are backed up first, then replaced.", "Backup ZIP ကနေ ပြန်ထည့်လို့ရတယ်။ ရှိပြီးသားဖိုင်တွေကို အရင် backup ယူပြီးမှ အစားထိုးမယ်။"))
-        _up = st.file_uploader(T("Choose a backup ZIP", "Backup ZIP ရွေးပါ"), type=["zip"], key="restore_upload")
-        if _up is not None:
-            _rdata = _up.getvalue()
-            _rman, _rerr = read_backup_manifest(_rdata)
-            if _rerr:
-                st.error(_rerr)
-            elif _rman.get("project", "Default") != current_project():
-                _bproj = _rman.get("project", "Default")
-                st.warning(T(f"⚠️ This backup is from project **{_bproj}**. Restore it into **{current_project()}** now? If this is a mistake, Project A's data will end up in Project B.", f"⚠️ ဒီ Backup က **{_bproj}** Project ကပါ။ အခု **{current_project()}** Project မှာ restore လုပ်မလား? မှားရင် Project B မှာ Project A data ရောက်သွားမယ်။"))
-                if st.button(T(f"↩️ Restore anyway ({_bproj} → {current_project()})", f"↩️ ဒါပေမယ့် Restore လုပ်မယ် ({_bproj} → {current_project()})"), key="confirm_restore"):
-                    with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
-                        _restore_report(restore_backup_zip(_rdata, force=True))
-            elif st.button(T("↩️ Restore backup", "↩️ Backup ပြန်ထည့်မယ်"), key="do_restore"):
-                with st.spinner(T("Restoring...", "Restore လုပ်နေပါတယ်...")):
-                    _restore_report(restore_backup_zip(_rdata))
-
-    with st.expander(T("🩺 System check", "🩺 စနစ် စစ်ဆေးမှု")):
-        st.caption(T("Checks setup only — no Gemini request quota is used.",
-                     "Setup ကိုပဲ စစ်တာ — Gemini request quota မကုန်ဘူး။"))
-        if st.button(T("Run check", "စစ်မယ်"), key="run_system_check"):
-            with st.spinner(T("Checking...", "စစ်နေပါတယ်...")):
-                st.session_state["sys_check"] = run_system_check()
-        for _ok, _lab, _det in st.session_state.get("sys_check", []):
-            _icon = "✅" if _ok else ("⚠️" if _ok is None else "❌")
-            st.write(f"{_icon} **{_lab}** — {_det}")
+            st.write(f"💾 **{T('Local storage', 'Local storage')}** — {T('Healthy', 'ပုံမှန်')}")
+            st.write(f"📦 **{T('Backup', 'Backup')}** — {T('On demand', 'လိုအပ်သလို')}")
+            st.caption(T("System check does not use Gemini request quota.", "System check လုပ်ရာမှာ Gemini request quota မသုံးပါ။"))
+            if st.button(T("Run system check", "စနစ်စစ်မယ်"), key="run_system_check"):
+                with st.spinner(T("Checking...", "စစ်ဆေးနေသည်...")):
+                    st.session_state["sys_check"] = run_system_check()
+            for _ok, _lab, _det in st.session_state.get("sys_check", []):
+                _icon = "✅" if _ok else ("⚠️" if _ok is None else "❌")
+                st.write(f"{_icon} **{_lab}** — {_det}")
 
 elif page == "New Project":
     # v3.21: the ONE place to create a project. Reached only from the sidebar
