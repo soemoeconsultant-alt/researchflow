@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.54"
+APP_VERSION = "3.55"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -10208,6 +10208,24 @@ elif page == "Reports":
         # Transcripts seventh (v3.45) — all 7 types built.
         report_type = st.selectbox(T("Report type", "Report အမျိုးအစား"), REPORT_TYPES)
         _stem = selected[:-len("_analysis.txt")] if selected.endswith("_analysis.txt") else selected
+        _report_artifacts = [
+            ("Summary", f"{_stem}_summary.docx"),
+            ("Topline report", f"{_stem}_topline.docx"),
+            ("Full report", f"{_stem}_full_report.docx"),
+            ("Presentation", f"{_stem}.pptx"),
+            ("Data only", f"{_stem}_data.zip"),
+            ("Tabulation", f"{_stem}_tabulation.xlsx"),
+            ("Transcripts", f"{_stem}_transcripts.docx"),
+        ]
+        _report_done_n = sum(1 for _kind, _name in _report_artifacts if (REPORTS_DIR / _name).exists())
+        st.caption(T("Deliverables order: Summary → Topline report → Full report → Presentation → Data only → Tabulation → Transcripts.",
+                     "Deliverable အစဉ်: Summary → Topline report → Full report → Presentation → Data only → Tabulation → Transcripts။"))
+        st.caption(T(f"Prepared for this analysis: {_report_done_n} of 7 deliverables.",
+                     f"ဒီ analysis အတွက် ပြင်ဆင်ပြီး deliverable: ၇ ခုမှာ {_report_done_n} ခု။"))
+        st.dataframe(pd.DataFrame([
+            {"Step": i, "Deliverable": T(_kind, _kind), "Status": T("Ready", "ရှိပြီး") if (REPORTS_DIR / _name).exists() else T("Not prepared", "မပြင်ဆင်ရသေး"), "File": _name}
+            for i, (_kind, _name) in enumerate(_report_artifacts, start=1)
+        ]), use_container_width=True, hide_index=True)
         _analysis_text = (ANALYSIS_DIR / selected).read_text(encoding="utf-8")
         if looks_like_html(_analysis_text):
             _analysis_text = html_to_text(_analysis_text)
