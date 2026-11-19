@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.47"
+APP_VERSION = "3.48"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -8602,15 +8602,30 @@ elif page == "Proposal & Quotation":
 
     with _approval_tab:
         st.subheader(T("Client approval", "Client အတည်ပြုချက်"))
+        _approval_checks = st.columns(2)
+        _approval_checks[0].metric(T("Proposal draft", "Proposal မူကြမ်း"),
+                                   T("Ready", "အသင့်ဖြစ်ပြီ") if _proposal_saved else T("Required", "လိုအပ်နေသေးသည်"))
+        _approval_checks[1].metric(T("Quotation", "Quotation"),
+                                   T("Ready", "အသင့်ဖြစ်ပြီ") if _quotation_saved else T("Required", "လိုအပ်နေသေးသည်"))
+        if _proposal_saved and _quotation_saved:
+            st.success(T("Proposal and quotation are ready for the client's decision. Approved status unlocks Stage 2.",
+                         "Proposal နဲ့ Quotation ကို Client ဆုံးဖြတ်ချက်အတွက် ပြင်ဆင်ပြီးပါပြီ။ Approved ဖြစ်မှ Stage 2 ကို စတင်နိုင်ပါမယ်။"))
+        else:
+            st.info(T("Prepare and save both the proposal and quotation before recording an approval. Stage 2 starts after approval.",
+                      "အတည်ပြုချက် မမှတ်ခင် Proposal နဲ့ Quotation နှစ်ခုလုံးကို ပြင်ဆင်သိမ်းပါ။ Approved ဖြစ်မှ Stage 2 ကို စတင်နိုင်ပါမယ်။"))
         _appr = _brief.get("approval", "Draft")
         _approval = st.selectbox(T("Approval status", "အတည်ပြုမှု အခြေအနေ"), BRIEF_APPROVALS,
                                  index=BRIEF_APPROVALS.index(_appr) if _appr in BRIEF_APPROVALS else 0,
                                  key="brief_approval")
         if st.button(T("Save client approval", "Client အတည်ပြုချက် သိမ်းမယ်"), key="proposal_save_approval"):
-            _brief["approval"] = _approval
-            save_brief(_brief)
-            _flash(T("Client approval status saved.", "Client အတည်ပြုချက် အခြေအနေ သိမ်းပြီးပြီ။"))
-            st.rerun()
+            if _approval == "Approved" and not (_proposal_saved and _quotation_saved):
+                st.error(T("Approval not saved. Save the proposal and quotation first.",
+                            "အတည်ပြုချက်ကို မသိမ်းရသေးပါ။ Proposal နဲ့ Quotation ကို အရင်သိမ်းပါ။"))
+            else:
+                _brief["approval"] = _approval
+                save_brief(_brief)
+                _flash(T("Client approval status saved.", "Client အတည်ပြုချက် အခြေအနေ သိမ်းပြီးပြီ။"))
+                st.rerun()
 
 elif page == "Research Design":
     # Stage 2: build and review the Screener first, then the Discussion Guide.
