@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.51"
+APP_VERSION = "3.52"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -9806,6 +9806,59 @@ elif page == "Market Analysis":
 
     # Analysis uses FULL transcripts only — never chunks.
     full_files, pending = get_full_transcripts()
+    _analysis_design = load_design()
+    _analysis_fw = load_fieldwork()
+    _analysis_plan = _fw_plan_sessions(_analysis_design)
+    _analysis_methods = _analysis_design.get("methods") or []
+    _analysis_statuses = _analysis_fw.get("session_status") or {}
+    _analysis_completed = sum(1 for _s in _analysis_plan
+                              if _analysis_statuses.get(_fw_session_key(_s)) == "Completed")
+    _analysis_sample_target = _ed_int(_analysis_design.get("sample_size"), 0)
+    _analysis_participants = sum(len(_v) for _v in (_analysis_fw.get("participants") or {}).values() if isinstance(_v, list))
+    _analysis_responses_header, _analysis_responses = read_responses()
+    _analysis_survey_files = [f for f in (_analysis_fw.get("survey_files") or []) if isinstance(f, dict)]
+    _analysis_survey_rows = sum(_ed_int(f.get("rows"), 0) for f in _analysis_survey_files)
+    _analysis_qual_sessions = sum(1 for _s in _analysis_plan if _s.get("method") in ("IDI", "FGD"))
+    _analysis_qc = load_qc().get("files", {})
+    _analysis_qc_checked = sum(1 for _f in full_files
+                               if isinstance(_analysis_qc.get(_f.name), dict)
+                               and _analysis_qc[_f.name].get("status") in ("Checked", "Needs correction", "Corrected"))
+    _analysis_qc_needs = sum(1 for _f in full_files
+                             if isinstance(_analysis_qc.get(_f.name), dict)
+                             and _analysis_qc[_f.name].get("status") == "Needs correction")
+
+    st.caption(T("Analysis workflow: 1. Check completeness → 2. Preserve source files → 3. Clean and verify → 4. Analyze → 5. Prepare the client deliverable.",
+                 "Analysis အလုပ်စဉ်: ၁။ ဒေတာပြည့်စုံမှုစစ် → ၂။ မူရင်းဖိုင်ထိန်းသိမ်း → ၃။ သန့်စင်စစ်ဆေး → ၄။ ခွဲခြမ်းစိတ်ဖြာ → ၅။ Client အတွက် deliverable ပြင်ဆင်။"))
+    st.subheader(T("1 · Data completeness against the Fieldwork Plan", "၁ · Fieldwork Plan နဲ့ ဒေတာပြည့်စုံမှု တိုက်စစ်ရန်"))
+    st.caption(T("Review what was planned against what has arrived. Counts stay separate by data type; file names are not assumed to match sessions.",
+                 "Plan ထားတာနဲ့ ရောက်လာတဲ့ဒေတာကို တိုက်စစ်ပါ။ Data အမျိုးအစားအလိုက် သီးခြားရေတွက်ပြီး ဖိုင်နာမည်ကို session နဲ့ အလိုအလျောက် မချိတ်ဆက်ပါ။"))
+    _survey_method = "Survey" in _analysis_methods
+    _qual_method = any(_m in _analysis_methods for _m in ("IDI", "FGD"))
+    _completeness_rows = [
+        {"Check": "Planned sessions", "Expected": len(_analysis_plan),
+         "Received / done": f"{_analysis_completed} marked Completed", "Review": "Match status to the Fieldwork Plan" if _analysis_plan else "Set the plan in Proposal & Quotation"},
+        {"Check": "Survey responses", "Expected": _analysis_sample_target if _survey_method and _analysis_sample_target else ("Not set" if _survey_method else "Not applicable"),
+         "Received / done": len(_analysis_responses), "Review": "Compare with target and quotas" if _survey_method else "No Survey method in this project"},
+        {"Check": "Recruitment-list entries", "Expected": _analysis_sample_target if _qual_method and _analysis_sample_target else ("Not set" if _qual_method else "Not applicable"),
+         "Received / done": _analysis_participants, "Review": "List entries do not confirm attendance" if _qual_method else "No IDI / FGD method in this project"},
+        {"Check": "Qualitative sessions / full transcripts", "Expected": _analysis_qual_sessions,
+         "Received / done": f"{len(full_files)} full transcript(s); {len(pending)} group(s) unmerged", "Review": "Match each transcript to its session" if _qual_method else "Not applicable"},
+        {"Check": "Survey source files", "Expected": "As specified in plan", "Received / done": f"{len(_analysis_survey_files)} file(s), {_analysis_survey_rows} row(s)", "Review": "Confirm file coverage and duplicates"},
+        {"Check": "Transcript quality review", "Expected": len(full_files),
+         "Received / done": f"{_analysis_qc_checked} checked; {_analysis_qc_needs} need correction", "Review": "Resolve flagged items on Data Cleansing" if _analysis_qc_needs or _analysis_qc_checked < len(full_files) else "Review complete"},
+    ]
+    st.dataframe(pd.DataFrame(_completeness_rows), use_container_width=True, hide_index=True)
+    _completeness_actions = st.columns(3)
+    if _completeness_actions[0].button(T("Open Fieldworks", "Fieldworks ဖွင့်မယ်"), key="analysis_open_fieldworks"):
+        st.session_state["page"] = "Fieldworks"
+        st.rerun()
+    if _completeness_actions[1].button(T("Open Transcripts", "Transcripts ဖွင့်မယ်"), key="analysis_open_transcripts"):
+        st.session_state["page"] = "Transcripts"
+        st.rerun()
+    if _completeness_actions[2].button(T("Open Data Cleansing", "Data Cleansing ဖွင့်မယ်"), key="analysis_open_cleansing"):
+        st.session_state["page"] = "Data Cleansing"
+        st.rerun()
+    st.divider()
     if not full_files:
         st.warning(T("No full transcript yet — merge on the Transcripts page first.", "Full transcript မရှိသေးပါ — အရင် Transcripts page မှာ Merge လုပ်ပါ။"))
     else:
