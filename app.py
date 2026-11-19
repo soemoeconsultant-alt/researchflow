@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.49"
+APP_VERSION = "3.50"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -9080,514 +9080,528 @@ elif page == "Fieldworks":
     st.caption(" · ".join(_fw_sum))
     st.info(T("Offline: no internet in the field? Record or take notes first, then fill in and upload when you are back online. Responses submitted here are saved live to Drive (CSV).",
               "Offline: ကွင်းမှာ internet မရှိရင် အရင် record လုပ်ပါ / မှတ်စုရေးပါ၊ online ပြန်ရမှ form ဖြည့် / တင်ပါ။ ဒီမှာ တင်လိုက်တဲ့ response တွေ Drive (CSV) ထဲ တိုက်ရိုက် သိမ်းမယ်။"))
+    st.caption(T("Choose a fieldwork activity below. Start from data collection, manage participants and sessions, then check progress.",
+                 "အောက်က Fieldwork လုပ်ငန်းကို ရွေးပါ။ ဒေတာကောက်ယူခြင်း၊ participant နဲ့ session စီမံခြင်း၊ ပြီးမှ တိုးတက်မှုစစ်ခြင်း အစဉ်လိုက်လုပ်ပါ။"))
+    _fw_collect_tab, _fw_manage_tab, _fw_session_tab, _fw_progress_tab = st.tabs([
+        T("1 · Collect data", "၁ · ဒေတာကောက်ယူရန်"),
+        T("2 · Participants", "၂ · ပါဝင်သူများ"),
+        T("3 · Sessions & audio", "၃ · Session နဲ့ အသံ"),
+        T("4 · Progress", "၄ · တိုးတက်မှု"),
+    ])
 
-    # ---- 1. Respondent form ----
-    st.subheader(T("1. Respondent form", "၁။ ဖြေဆိုသူ form"))
-    st.caption(T("This form runs here while you are logged in. A public link-only form for respondents needs a separate login exception — not built in this version.",
-                "ဒီ form က login ဝင်ပြီးသား ဒီမှာပဲ သုံးရတယ်။ ဖြေဆိုသူ link တစ်ခုတည်းနဲ့ ဝင်လို့ရတဲ့ form ကတော့ login exception သပ်သပ် လိုတယ် — ဒီ version မှာ မပါသေးဘူး။"))
-    if not _fw_qs:
-        st.warning(T("No questionnaire saved yet — build one on the Research Design page first. Nothing is invented here.",
-                    "Questionnaire မသိမ်းရသေးဘူး — အရင် Research Design page မှာ ဆောက်ပါ။ ဒီမှာ ဘာမှ အလိုအလျောက် မထည့်ဘူး။"))
-        if st.button(T("Go to Research Design", "Research Design သွားမယ်"), key="fw_goto_design"):
-            st.session_state["page"] = "Research Design"
-            st.rerun()
-    else:
-        _fw_run = st.session_state.get("fw_run", 0)
-        if st.session_state.pop("fw_just_submitted", False):
-            _ls = st.session_state.get("fw_last_submit") or {}
-            _closing = _fw_q.get("closing_mm") if _fw_lang == "Myanmar" else _fw_q.get("closing_en")
-            if not _closing:
-                _closing = _fw_q.get("closing_en") or _fw_q.get("closing_mm") or ""
-            if _ls.get("terminated"):
-                st.info((_closing + " " if _closing else "") + T(f"(Screened out at {_ls.get('reason', '')} — the answer was saved.)", f"({_ls.get('reason', '')} မှာ screening ပြီးသွားတယ် — အဖြေ သိမ်းပြီးပြီ။)"))
-            else:
-                st.success((_closing + " " if _closing else "") + T("Response saved.", "Response သိမ်းပြီးပြီ။"))
-        _intro = _fw_q.get("intro_mm") if _fw_lang == "Myanmar" else _fw_q.get("intro_en")
-        if not _intro:
-            _intro = _fw_q.get("intro_en") or _fw_q.get("intro_mm") or ""
-        if _intro.strip():
-            st.info(_intro)
-        _fw_sess_opts = [""] + [_fw_session_key(s) for s in _fw_plan]
-        _fw_sess = st.selectbox(T("Session (optional — which session is this response for?)", "Session (မဖြစ်မနေ မဟုတ် — ဒီ response ဘယ် session အတွက်လဲ)"), _fw_sess_opts,
-                                format_func=lambda k: T("(not assigned)", "(မသတ်မှတ်ရသေး)") if not k else next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
-                                key=f"fw_run{_fw_run}_session")
-        _fw_header_vals = {}
-        for _h in (_fw_q.get("header_fields") or []):
-            _hl = str(_h).strip().lower()
-            if "confirmation" in _hl:
-                _fw_header_vals[_h] = st.selectbox(str(_h), ["", "Yes", "No"], key=f"fw_run{_fw_run}_hdr_{_xlsform_slug(str(_h))}")
-            else:
-                _fw_header_vals[_h] = st.text_input(str(_h), key=f"fw_run{_fw_run}_hdr_{_xlsform_slug(str(_h))}")
-        _fw_answers = {}
-        _fw_cur_section = None
-        for _q in _fw_qs:
-            if not isinstance(_q, dict):
-                continue
-            _sec = str(_q.get("section") or "").strip()
-            if _sec and _sec != _fw_cur_section:
-                _fw_cur_section = _sec
-                st.markdown(f"**{_sec}**")
-            _qlabel = _fw_question_label(_q, _fw_lang)
-            _qcode = str(_q.get("code") or "")
-            _qtype = _q.get("type") or "open_text"
-            _qname = str(_q.get("name") or _xlsform_slug(_qcode) or "q").strip()
-            _opts = _fw_question_options(_q, _fw_lang)
-            _opts_en = _fw_question_options(_q, "English")
-            _opts_mm = _fw_question_options(_q, "Myanmar")
-            _key = f"fw_run{_fw_run}_q_{_qname}"
-            _ql = f"{_qcode}. {_qlabel}" if _qcode else _qlabel
-            if _q.get("required"):
-                _ql += " *"
-            _val_en = ""
-            _val_mm = ""
-            _disp = ""
-            _name_part = ""
-            _phone_part = ""
-            if _qtype == "note":
-                st.info(_qlabel)
-                continue
-            elif _qtype in ("single_select", "observed"):
-                if _qtype == "observed":
-                    st.caption(T("Observe — do not ask.", "ကြည့်မှတ်ပါ — မမေးပါနဲ့။"))
-                if _opts:
-                    _sel = st.selectbox(_ql, [""] + _opts, key=_key)
-                    if _sel and _sel in _opts:
-                        _i = _opts.index(_sel)
-                        _val_en = _opts_en[_i] if _i < len(_opts_en) else _sel
-                        _val_mm = _opts_mm[_i] if _i < len(_opts_mm) else _sel
-                        _disp = _sel
+    with _fw_collect_tab:
+        # ---- 1. Respondent form ----
+        st.subheader(T("1. Respondent form", "၁။ ဖြေဆိုသူ form"))
+        st.caption(T("This form runs here while you are logged in. A public link-only form for respondents needs a separate login exception — not built in this version.",
+                    "ဒီ form က login ဝင်ပြီးသား ဒီမှာပဲ သုံးရတယ်။ ဖြေဆိုသူ link တစ်ခုတည်းနဲ့ ဝင်လို့ရတဲ့ form ကတော့ login exception သပ်သပ် လိုတယ် — ဒီ version မှာ မပါသေးဘူး။"))
+        if not _fw_qs:
+            st.warning(T("No questionnaire saved yet — build one on the Research Design page first. Nothing is invented here.",
+                        "Questionnaire မသိမ်းရသေးဘူး — အရင် Research Design page မှာ ဆောက်ပါ။ ဒီမှာ ဘာမှ အလိုအလျောက် မထည့်ဘူး။"))
+            if st.button(T("Go to Research Design", "Research Design သွားမယ်"), key="fw_goto_design"):
+                st.session_state["page"] = "Research Design"
+                st.rerun()
+        else:
+            _fw_run = st.session_state.get("fw_run", 0)
+            if st.session_state.pop("fw_just_submitted", False):
+                _ls = st.session_state.get("fw_last_submit") or {}
+                _closing = _fw_q.get("closing_mm") if _fw_lang == "Myanmar" else _fw_q.get("closing_en")
+                if not _closing:
+                    _closing = _fw_q.get("closing_en") or _fw_q.get("closing_mm") or ""
+                if _ls.get("terminated"):
+                    st.info((_closing + " " if _closing else "") + T(f"(Screened out at {_ls.get('reason', '')} — the answer was saved.)", f"({_ls.get('reason', '')} မှာ screening ပြီးသွားတယ် — အဖြေ သိမ်းပြီးပြီ။)"))
                 else:
+                    st.success((_closing + " " if _closing else "") + T("Response saved.", "Response သိမ်းပြီးပြီ။"))
+            _intro = _fw_q.get("intro_mm") if _fw_lang == "Myanmar" else _fw_q.get("intro_en")
+            if not _intro:
+                _intro = _fw_q.get("intro_en") or _fw_q.get("intro_mm") or ""
+            if _intro.strip():
+                st.info(_intro)
+            _fw_sess_opts = [""] + [_fw_session_key(s) for s in _fw_plan]
+            _fw_sess = st.selectbox(T("Session (optional — which session is this response for?)", "Session (မဖြစ်မနေ မဟုတ် — ဒီ response ဘယ် session အတွက်လဲ)"), _fw_sess_opts,
+                                    format_func=lambda k: T("(not assigned)", "(မသတ်မှတ်ရသေး)") if not k else next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
+                                    key=f"fw_run{_fw_run}_session")
+            _fw_header_vals = {}
+            for _h in (_fw_q.get("header_fields") or []):
+                _hl = str(_h).strip().lower()
+                if "confirmation" in _hl:
+                    _fw_header_vals[_h] = st.selectbox(str(_h), ["", "Yes", "No"], key=f"fw_run{_fw_run}_hdr_{_xlsform_slug(str(_h))}")
+                else:
+                    _fw_header_vals[_h] = st.text_input(str(_h), key=f"fw_run{_fw_run}_hdr_{_xlsform_slug(str(_h))}")
+            _fw_answers = {}
+            _fw_cur_section = None
+            for _q in _fw_qs:
+                if not isinstance(_q, dict):
+                    continue
+                _sec = str(_q.get("section") or "").strip()
+                if _sec and _sec != _fw_cur_section:
+                    _fw_cur_section = _sec
+                    st.markdown(f"**{_sec}**")
+                _qlabel = _fw_question_label(_q, _fw_lang)
+                _qcode = str(_q.get("code") or "")
+                _qtype = _q.get("type") or "open_text"
+                _qname = str(_q.get("name") or _xlsform_slug(_qcode) or "q").strip()
+                _opts = _fw_question_options(_q, _fw_lang)
+                _opts_en = _fw_question_options(_q, "English")
+                _opts_mm = _fw_question_options(_q, "Myanmar")
+                _key = f"fw_run{_fw_run}_q_{_qname}"
+                _ql = f"{_qcode}. {_qlabel}" if _qcode else _qlabel
+                if _q.get("required"):
+                    _ql += " *"
+                _val_en = ""
+                _val_mm = ""
+                _disp = ""
+                _name_part = ""
+                _phone_part = ""
+                if _qtype == "note":
+                    st.info(_qlabel)
+                    continue
+                elif _qtype in ("single_select", "observed"):
+                    if _qtype == "observed":
+                        st.caption(T("Observe — do not ask.", "ကြည့်မှတ်ပါ — မမေးပါနဲ့။"))
+                    if _opts:
+                        _sel = st.selectbox(_ql, [""] + _opts, key=_key)
+                        if _sel and _sel in _opts:
+                            _i = _opts.index(_sel)
+                            _val_en = _opts_en[_i] if _i < len(_opts_en) else _sel
+                            _val_mm = _opts_mm[_i] if _i < len(_opts_mm) else _sel
+                            _disp = _sel
+                    else:
+                        _sel = st.text_input(_ql, key=_key)
+                        _val_en = _val_mm = _disp = _sel.strip()
+                elif _qtype == "multi_select":
+                    _sel = st.multiselect(_ql, _opts, key=_key)
+                    _val_en = "; ".join(_opts_en[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_en) else o for o in _sel)
+                    _val_mm = "; ".join(_opts_mm[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_mm) else o for o in _sel)
+                    _disp = "; ".join(_sel)
+                elif _qtype == "ranking_top3":
+                    _sel = st.multiselect(_ql + T(" (pick the top 3)", " (အကောင်းဆုံး ၃ ခု ရွေးပါ)"), _opts, max_selections=3, key=_key)
+                    _val_en = "; ".join(_opts_en[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_en) else o for o in _sel)
+                    _val_mm = "; ".join(_opts_mm[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_mm) else o for o in _sel)
+                    _disp = "; ".join(_sel)
+                elif _qtype in ("likert_1_5", "rating"):
+                    _sel = st.selectbox(_ql, ["", "1", "2", "3", "4", "5"], key=_key)
+                    _val_en = _val_mm = _disp = _sel
+                elif _qtype == "numeric":
                     _sel = st.text_input(_ql, key=_key)
                     _val_en = _val_mm = _disp = _sel.strip()
-            elif _qtype == "multi_select":
-                _sel = st.multiselect(_ql, _opts, key=_key)
-                _val_en = "; ".join(_opts_en[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_en) else o for o in _sel)
-                _val_mm = "; ".join(_opts_mm[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_mm) else o for o in _sel)
-                _disp = "; ".join(_sel)
-            elif _qtype == "ranking_top3":
-                _sel = st.multiselect(_ql + T(" (pick the top 3)", " (အကောင်းဆုံး ၃ ခု ရွေးပါ)"), _opts, max_selections=3, key=_key)
-                _val_en = "; ".join(_opts_en[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_en) else o for o in _sel)
-                _val_mm = "; ".join(_opts_mm[_opts.index(o)] if o in _opts and _opts.index(o) < len(_opts_mm) else o for o in _sel)
-                _disp = "; ".join(_sel)
-            elif _qtype in ("likert_1_5", "rating"):
-                _sel = st.selectbox(_ql, ["", "1", "2", "3", "4", "5"], key=_key)
-                _val_en = _val_mm = _disp = _sel
-            elif _qtype == "numeric":
-                _sel = st.text_input(_ql, key=_key)
-                _val_en = _val_mm = _disp = _sel.strip()
-            elif _qtype == "date":
-                _sel = st.text_input(_ql + " (YYYY-MM-DD)", key=_key)
-                _val_en = _val_mm = _disp = _sel.strip()
-            elif _qtype == "contact":
-                _c1, _c2 = st.columns(2)
-                _name_part = _c1.text_input(T("Name", "နာမည်"), key=_key + "_name").strip()
-                _phone_part = _c2.text_input(T("Phone", "ဖုန်း"), key=_key + "_phone").strip()
-                _val_en = _val_mm = f"{_name_part} | {_phone_part}"
-                _disp = _val_en if (_name_part or _phone_part) else ""
-            else:
-                _sel = st.text_area(_ql, key=_key, height=80)
-                _val_en = _val_mm = _disp = _sel.strip()
-            _fw_answers[_qname] = {"code": _qcode, "q": _q, "en": _val_en, "mm": _val_mm,
-                                   "disp": _disp, "name_part": _name_part, "phone_part": _phone_part}
-            if _disp and _q.get("outcome"):
-                _oc = _resolve_outcome(_q.get("outcome"), _val_en, _val_mm)
-                if _oc["terminates"]:
-                    st.warning(T(f"This answer ends the screening here ({_qcode}) — submit to finish.", f"ဒီအဖြေနဲ့ screening ဒီမှာပြီးတယ် ({_qcode}) — Submit နှိပ်ပြီး အဆုံးသတ်ပါ။"))
-            _hint = _q.get("hint_mm") if _fw_lang == "Myanmar" else _q.get("hint_en")
-            if not _hint:
-                _hint = _q.get("hint_en") or _q.get("hint_mm") or ""
-            if str(_hint).strip():
-                st.caption(str(_hint))
-        if st.button(T("Submit response", "Response တင်မယ်"), key=f"fw_run{_fw_run}_submit", type="primary"):
-            _missing = []
-            for _qn, _a in _fw_answers.items():
-                if _a["q"].get("required") and not _a["disp"]:
-                    _missing.append(_a["code"] or _qn)
-            _bad_num = []
-            for _qn, _a in _fw_answers.items():
-                if _a["q"].get("type") == "numeric" and _a["disp"]:
-                    try:
-                        float(_a["disp"])
-                    except ValueError:
-                        _bad_num.append(_a["code"] or _qn)
-            if _missing:
-                st.error(T(f"Please answer the required questions: {', '.join(_missing)}", f"မဖြစ်မနေ ဖြေရမယ့် မေးခွန်းတွေ ကျန်နေတယ်: {', '.join(_missing)}"))
-            elif _bad_num:
-                st.error(T(f"Numbers only: {', '.join(_bad_num)}", f"ဂဏန်းပဲ ထည့်ပါ: {', '.join(_bad_num)}"))
-            else:
-                _terminated = 0
-                _term_reason = ""
-                _grp = ""
-                _quota = ""
+                elif _qtype == "date":
+                    _sel = st.text_input(_ql + " (YYYY-MM-DD)", key=_key)
+                    _val_en = _val_mm = _disp = _sel.strip()
+                elif _qtype == "contact":
+                    _c1, _c2 = st.columns(2)
+                    _name_part = _c1.text_input(T("Name", "နာမည်"), key=_key + "_name").strip()
+                    _phone_part = _c2.text_input(T("Phone", "ဖုန်း"), key=_key + "_phone").strip()
+                    _val_en = _val_mm = f"{_name_part} | {_phone_part}"
+                    _disp = _val_en if (_name_part or _phone_part) else ""
+                else:
+                    _sel = st.text_area(_ql, key=_key, height=80)
+                    _val_en = _val_mm = _disp = _sel.strip()
+                _fw_answers[_qname] = {"code": _qcode, "q": _q, "en": _val_en, "mm": _val_mm,
+                                       "disp": _disp, "name_part": _name_part, "phone_part": _phone_part}
+                if _disp and _q.get("outcome"):
+                    _oc = _resolve_outcome(_q.get("outcome"), _val_en, _val_mm)
+                    if _oc["terminates"]:
+                        st.warning(T(f"This answer ends the screening here ({_qcode}) — submit to finish.", f"ဒီအဖြေနဲ့ screening ဒီမှာပြီးတယ် ({_qcode}) — Submit နှိပ်ပြီး အဆုံးသတ်ပါ။"))
+                _hint = _q.get("hint_mm") if _fw_lang == "Myanmar" else _q.get("hint_en")
+                if not _hint:
+                    _hint = _q.get("hint_en") or _q.get("hint_mm") or ""
+                if str(_hint).strip():
+                    st.caption(str(_hint))
+            if st.button(T("Submit response", "Response တင်မယ်"), key=f"fw_run{_fw_run}_submit", type="primary"):
+                _missing = []
                 for _qn, _a in _fw_answers.items():
-                    if not _a["disp"]:
-                        continue
-                    _oc = _resolve_outcome(_a["q"].get("outcome"), _a["en"], _a["mm"])
-                    if _oc["terminates"] and not _terminated:
-                        _terminated = 1
-                        _term_reason = f"{_a['code']}: {_a['disp']}"
-                    if not _grp and _oc["group"]:
-                        _grp = _oc["group"]
-                    if not _quota and _oc["quota"]:
-                        _quota = _oc["quota"]
-                _header = _responses_header(_fw_q)
-                _row = {"submitted_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "session": _fw_sess, "terminated": str(_terminated),
-                        "terminate_reason": _term_reason, "group_assignment": _grp, "quota_tag": _quota}
-                for _h in (_fw_q.get("header_fields") or []):
-                    _row["header_" + _xlsform_slug(str(_h))] = _fw_header_vals.get(_h, "")
+                    if _a["q"].get("required") and not _a["disp"]:
+                        _missing.append(_a["code"] or _qn)
+                _bad_num = []
                 for _qn, _a in _fw_answers.items():
-                    if _a["q"].get("type") == "contact":
-                        _row[_qn + "_name"] = _a.get("name_part", "")
-                        _row[_qn + "_phone"] = _a.get("phone_part", "")
-                    elif _a["q"].get("type") == "note":
-                        continue
-                    else:
-                        _row[_qn] = _a["en"] if _fw_lang == "English" else _a["mm"]
-                append_response_row(_header, _row)
-                st.session_state["fw_run"] = _fw_run + 1
-                st.session_state["fw_last_submit"] = {"terminated": _terminated, "reason": _term_reason}
-                st.session_state["fw_just_submitted"] = True
-                st.rerun()
+                    if _a["q"].get("type") == "numeric" and _a["disp"]:
+                        try:
+                            float(_a["disp"])
+                        except ValueError:
+                            _bad_num.append(_a["code"] or _qn)
+                if _missing:
+                    st.error(T(f"Please answer the required questions: {', '.join(_missing)}", f"မဖြစ်မနေ ဖြေရမယ့် မေးခွန်းတွေ ကျန်နေတယ်: {', '.join(_missing)}"))
+                elif _bad_num:
+                    st.error(T(f"Numbers only: {', '.join(_bad_num)}", f"ဂဏန်းပဲ ထည့်ပါ: {', '.join(_bad_num)}"))
+                else:
+                    _terminated = 0
+                    _term_reason = ""
+                    _grp = ""
+                    _quota = ""
+                    for _qn, _a in _fw_answers.items():
+                        if not _a["disp"]:
+                            continue
+                        _oc = _resolve_outcome(_a["q"].get("outcome"), _a["en"], _a["mm"])
+                        if _oc["terminates"] and not _terminated:
+                            _terminated = 1
+                            _term_reason = f"{_a['code']}: {_a['disp']}"
+                        if not _grp and _oc["group"]:
+                            _grp = _oc["group"]
+                        if not _quota and _oc["quota"]:
+                            _quota = _oc["quota"]
+                    _header = _responses_header(_fw_q)
+                    _row = {"submitted_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                            "session": _fw_sess, "terminated": str(_terminated),
+                            "terminate_reason": _term_reason, "group_assignment": _grp, "quota_tag": _quota}
+                    for _h in (_fw_q.get("header_fields") or []):
+                        _row["header_" + _xlsform_slug(str(_h))] = _fw_header_vals.get(_h, "")
+                    for _qn, _a in _fw_answers.items():
+                        if _a["q"].get("type") == "contact":
+                            _row[_qn + "_name"] = _a.get("name_part", "")
+                            _row[_qn + "_phone"] = _a.get("phone_part", "")
+                        elif _a["q"].get("type") == "note":
+                            continue
+                        else:
+                            _row[_qn] = _a["en"] if _fw_lang == "English" else _a["mm"]
+                    append_response_row(_header, _row)
+                    st.session_state["fw_run"] = _fw_run + 1
+                    st.session_state["fw_last_submit"] = {"terminated": _terminated, "reason": _term_reason}
+                    st.session_state["fw_just_submitted"] = True
+                    st.rerun()
 
-    # ---- 2. Responses ----
-    st.subheader(T("2. Responses", "၂။ Responses"))
-    _resp_header, _resp_rows = read_responses()
-    if not _resp_rows:
-        st.caption(T("No responses yet — submit the form above and they appear here live.", "Response မရှိသေးဘူး — အပေါ်က form တင်လိုက်ရင် ဒီမှာ တိုက်ရိုက် ပေါ်မယ်။"))
-    else:
-        _resp_term = sum(1 for _r in _resp_rows if str(_r.get("terminated")) == "1")
-        st.write(T(f"Responses: {len(_resp_rows)} (screened out: {_resp_term})", f"Responses: {len(_resp_rows)} ခု (screening ပြီးသွားတာ: {_resp_term} ခု)"))
-        st.dataframe(pd.DataFrame(_resp_rows), use_container_width=True)
-        st.download_button(T("Download responses.csv", "responses.csv ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / FW_RESPONSES_FILE).read_bytes(), file_name=FW_RESPONSES_FILE, key="fw_resp_download")
+        # ---- 2. Responses ----
+        st.subheader(T("2. Responses", "၂။ Responses"))
+        _resp_header, _resp_rows = read_responses()
+        if not _resp_rows:
+            st.caption(T("No responses yet — submit the form above and they appear here live.", "Response မရှိသေးဘူး — အပေါ်က form တင်လိုက်ရင် ဒီမှာ တိုက်ရိုက် ပေါ်မယ်။"))
+        else:
+            _resp_term = sum(1 for _r in _resp_rows if str(_r.get("terminated")) == "1")
+            st.write(T(f"Responses: {len(_resp_rows)} (screened out: {_resp_term})", f"Responses: {len(_resp_rows)} ခု (screening ပြီးသွားတာ: {_resp_term} ခု)"))
+            st.dataframe(pd.DataFrame(_resp_rows), use_container_width=True)
+            st.download_button(T("Download responses.csv", "responses.csv ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / FW_RESPONSES_FILE).read_bytes(), file_name=FW_RESPONSES_FILE, key="fw_resp_download")
 
-    # ---- 3. Interview management ----
-    st.subheader(T("3. Interview management", "၃။ Interview စီမံခန့်ခွဲခြင်း"))
-    if not _fw_plan:
-        st.warning(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first. A recruitment list can still be imported below; its sheets become separate groups until they are linked to a plan.",
-                    "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။ Recruitment list ကိုတော့ အောက်မှာ import လုပ်လို့ရတယ်; plan နဲ့ မချိတ်ရသေးတဲ့ sheet တွေက သပ်သပ် group အနေနဲ့ ပေါ်မယ်။"))
-    _fw_all_keys = [_fw_session_key(s) for s in _fw_plan]
-    _fw_bucket_keys = [k for k in (_fw.get("participants") or {}).keys() if k not in _fw_all_keys]
-    _fw_sel_opts = _fw_all_keys + _fw_bucket_keys
-    if _fw_sel_opts:
-        _fw_sel = st.selectbox(T("Session", "Session"), _fw_sel_opts,
-                               format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), T(f"{k} (not in fieldwork plan)", f"{k} (Fieldwork Plan ထဲမှာ မရှိဘူး)")),
-                               key="fw_im_session")
-        _fw_sel_sess = next((s for s in _fw_plan if _fw_session_key(s) == _fw_sel), None)
-        _fw_sel_parts = (_fw.get("participants") or {}).get(_fw_sel, [])
-        if _fw_sel_sess is not None:
-            st.caption(T(f"Seats: {_fw_sel_sess['seats']} · Recruited: {_fw_sel_sess['recruited']} · Confirmed (plan): {_fw_sel_sess['confirmed']} · Moderator: {_fw_sel_sess['moderator'] or '—'} · Venue: {_fw_sel_sess['venue'] or '—'}",
-                       f"Seats: {_fw_sel_sess['seats']} · Recruited: {_fw_sel_sess['recruited']} · Confirmed (plan): {_fw_sel_sess['confirmed']} · Moderator: {_fw_sel_sess['moderator'] or '—'} · Venue: {_fw_sel_sess['venue'] or '—'}"))
-            _fw_conf_key = "fw_im_confirmed_" + re.sub(r"[^\w]+", "_", _fw_sel)
-            _fw_new_conf = st.number_input(T("Confirmed (plan) — how many confirmed to attend", "Confirmed (plan) — လာမယ်လို့ အတည်ပြုသူ အရေအတွက်"), value=int(_fw_sel_sess["confirmed"]), min_value=0, step=1, key=_fw_conf_key)
-            if st.button(T("Save confirmed count", "Confirmed အရေအတွက် သိမ်းမယ်"), key="fw_im_conf_save"):
-                _d = load_design()
-                for _s in (_d.get("fieldwork_plan") or []):
-                    if isinstance(_s, dict) and _fw_session_key(_s) == _fw_sel:
-                        _s["confirmed"] = int(_fw_new_conf)
-                save_design(_d)
-                _flash(T("Confirmed count saved.", "Confirmed အရေအတွက် သိမ်းပြီးပြီ။"))
-                st.rerun()
-            _fw_conf_parts = sum(1 for _p in _fw_sel_parts if isinstance(_p, dict) and _p.get("confirmed"))
-            st.caption(T(f"Participants in this session: {len(_fw_sel_parts)} (confirmed: {_fw_conf_parts}) — over-recruitment shows when Recruited is above Seats.",
-                       f"ဒီ session မှာ participants: {len(_fw_sel_parts)} ယောက် (confirmed: {_fw_conf_parts} ယောက်) — Recruited က Seats ထက် များနေရင် ပိုခေါ်ထားတာ။"))
-        _im_rows = []
-        for _p in _fw_sel_parts:
-            if not isinstance(_p, dict):
-                continue
-            _im_rows.append({FW_PARTICIPANT_LABELS[f]: str(_p.get(f, "") or "") for f in FW_PARTICIPANT_FIELDS if f != "confirmed"})
-            _im_rows[-1]["Confirmed"] = bool(_p.get("confirmed"))
-        _im_df = pd.DataFrame(_im_rows, columns=[FW_PARTICIPANT_LABELS[f] for f in FW_PARTICIPANT_FIELDS])
-        _im_key = "fw_im_editor_" + re.sub(r"[^\w]+", "_", _fw_sel)
-        _im_edited = st.data_editor(_im_df, num_rows="dynamic", use_container_width=True, key=_im_key,
-                                     column_config={"Confirmed": st.column_config.CheckboxColumn(T("Confirmed", "Confirmed"))})
-        if st.button(T("Save participants", "Participants သိမ်းမယ်"), key="fw_im_save", type="primary"):
-            _new_parts = []
-            for _i, _r in enumerate(_im_edited.to_dict("records")):
-                _old = _fw_sel_parts[_i] if _i < len(_fw_sel_parts) and isinstance(_fw_sel_parts[_i], dict) else {}
-                _nm = str(_r.get("Name") or "").strip()
-                _ph = str(_r.get("Phone") or "").strip()
-                if not _nm and not _ph and not str(_r.get("Age band") or "").strip():
-                    continue
-                _np = {"screener": _old.get("screener") or {}}
-                for _f in FW_PARTICIPANT_FIELDS:
-                    if _f == "confirmed":
-                        _np["confirmed"] = bool(_r.get("Confirmed"))
-                    else:
-                        _np[_f] = str(_r.get(FW_PARTICIPANT_LABELS[_f]) or "").strip()
-                _new_parts.append(_np)
-            _fw.setdefault("participants", {})[_fw_sel] = _new_parts
-            save_fieldwork(_fw)
-            _flash(T("Participants saved.", "Participants သိမ်းပြီးပြီ။"))
-            st.rerun()
-        with st.expander(T("Screener answers (from import)", "Screener အဖြေများ (import ကနေ)")):
-            _any_scr = False
+    with _fw_manage_tab:
+        # ---- 3. Interview management ----
+        st.subheader(T("3. Interview management", "၃။ Interview စီမံခန့်ခွဲခြင်း"))
+        if not _fw_plan:
+            st.warning(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first. A recruitment list can still be imported below; its sheets become separate groups until they are linked to a plan.",
+                        "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။ Recruitment list ကိုတော့ အောက်မှာ import လုပ်လို့ရတယ်; plan နဲ့ မချိတ်ရသေးတဲ့ sheet တွေက သပ်သပ် group အနေနဲ့ ပေါ်မယ်။"))
+        _fw_all_keys = [_fw_session_key(s) for s in _fw_plan]
+        _fw_bucket_keys = [k for k in (_fw.get("participants") or {}).keys() if k not in _fw_all_keys]
+        _fw_sel_opts = _fw_all_keys + _fw_bucket_keys
+        if _fw_sel_opts:
+            _fw_sel = st.selectbox(T("Session", "Session"), _fw_sel_opts,
+                                   format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), T(f"{k} (not in fieldwork plan)", f"{k} (Fieldwork Plan ထဲမှာ မရှိဘူး)")),
+                                   key="fw_im_session")
+            _fw_sel_sess = next((s for s in _fw_plan if _fw_session_key(s) == _fw_sel), None)
+            _fw_sel_parts = (_fw.get("participants") or {}).get(_fw_sel, [])
+            if _fw_sel_sess is not None:
+                st.caption(T(f"Seats: {_fw_sel_sess['seats']} · Recruited: {_fw_sel_sess['recruited']} · Confirmed (plan): {_fw_sel_sess['confirmed']} · Moderator: {_fw_sel_sess['moderator'] or '—'} · Venue: {_fw_sel_sess['venue'] or '—'}",
+                           f"Seats: {_fw_sel_sess['seats']} · Recruited: {_fw_sel_sess['recruited']} · Confirmed (plan): {_fw_sel_sess['confirmed']} · Moderator: {_fw_sel_sess['moderator'] or '—'} · Venue: {_fw_sel_sess['venue'] or '—'}"))
+                _fw_conf_key = "fw_im_confirmed_" + re.sub(r"[^\w]+", "_", _fw_sel)
+                _fw_new_conf = st.number_input(T("Confirmed (plan) — how many confirmed to attend", "Confirmed (plan) — လာမယ်လို့ အတည်ပြုသူ အရေအတွက်"), value=int(_fw_sel_sess["confirmed"]), min_value=0, step=1, key=_fw_conf_key)
+                if st.button(T("Save confirmed count", "Confirmed အရေအတွက် သိမ်းမယ်"), key="fw_im_conf_save"):
+                    _d = load_design()
+                    for _s in (_d.get("fieldwork_plan") or []):
+                        if isinstance(_s, dict) and _fw_session_key(_s) == _fw_sel:
+                            _s["confirmed"] = int(_fw_new_conf)
+                    save_design(_d)
+                    _flash(T("Confirmed count saved.", "Confirmed အရေအတွက် သိမ်းပြီးပြီ။"))
+                    st.rerun()
+                _fw_conf_parts = sum(1 for _p in _fw_sel_parts if isinstance(_p, dict) and _p.get("confirmed"))
+                st.caption(T(f"Participants in this session: {len(_fw_sel_parts)} (confirmed: {_fw_conf_parts}) — over-recruitment shows when Recruited is above Seats.",
+                           f"ဒီ session မှာ participants: {len(_fw_sel_parts)} ယောက် (confirmed: {_fw_conf_parts} ယောက်) — Recruited က Seats ထက် များနေရင် ပိုခေါ်ထားတာ။"))
+            _im_rows = []
             for _p in _fw_sel_parts:
-                if isinstance(_p, dict) and _p.get("screener"):
-                    _any_scr = True
-                    st.write(f"- {_p.get('name') or _p.get('phone') or '?'}: " + "; ".join(f"{k}={v}" for k, v in _p["screener"].items()))
-            if not _any_scr:
-                st.caption(T("No screener answers stored for this session.", "ဒီ session အတွက် screener အဖြေ မရှိသေးဘူး။"))
-    st.markdown("**" + T("Import recruitment list (.xlsx)", "Recruitment list (.xlsx) import လုပ်မယ်") + "**")
-    st.caption(T("One sheet per group. Columns: name, gender, age band, marital, education, occupation / job title, income band, phone, township — plus screener answers. Only rows in the file are imported; a row needs a name or a phone.",
-                "တစ်ဖွဲ့ကို sheet တစ်ခု။ ကော်လံ: name, gender, age band, marital, education, occupation / job title, income band, phone, township — ပြီးတော့ screener အဖြေတွေ။ File ထဲမှာ ရှိတဲ့ row ပဲ import လုပ်တယ်; row တစ်ခုမှာ name ဒါမှမဟုတ် phone ပါရမယ်။"))
-    _fw_up = st.file_uploader(T("Upload a recruitment-list XLSX", "Recruitment-list XLSX တင်ပါ"), type=["xlsx"], key="fw_import")
-    if _fw_up is not None and st.button(T("Import", "Import လုပ်မယ်"), key="fw_import_go"):
-        _groups, _stats = import_recruitment_xlsx(_fw_up.getvalue())
-        if _stats.get("error"):
-            st.error(T(f"Could not read the file: {_stats['error']}", f"File ဖတ်မရဘူး: {_stats['error']}"))
-        elif not _groups:
-            st.warning(T("Nothing imported — no participant rows found in the file.", "ဘာမှ import မရဘူး — file ထဲမှာ participant row မတွေ့ဘူး။"))
-        else:
-            _plan_by_group = {}
-            for _s in _fw_plan:
-                _plan_by_group[_s["group"].strip().lower()] = _fw_session_key(_s)
-            _added = 0
-            _unlinked = []
-            for _sheet, _parts in _groups.items():
-                _key = _plan_by_group.get(_sheet.strip().lower())
-                if _key is None:
-                    for _g, _k in _plan_by_group.items():
-                        if _g and (_g in _sheet.strip().lower() or _sheet.strip().lower() in _g):
-                            _key = _k
-                            break
-                if _key is None:
-                    _key = f"sheet|{_sheet}"
-                    _unlinked.append(_sheet)
-                _existing = (_fw.get("participants") or {}).get(_key, [])
-                _seen = {(str(_p.get("name", "")).lower(), str(_p.get("phone", ""))) for _p in _existing if isinstance(_p, dict)}
-                for _p in _parts:
-                    _pk = (str(_p.get("name", "")).lower(), str(_p.get("phone", "")))
-                    if _pk in _seen:
+                if not isinstance(_p, dict):
+                    continue
+                _im_rows.append({FW_PARTICIPANT_LABELS[f]: str(_p.get(f, "") or "") for f in FW_PARTICIPANT_FIELDS if f != "confirmed"})
+                _im_rows[-1]["Confirmed"] = bool(_p.get("confirmed"))
+            _im_df = pd.DataFrame(_im_rows, columns=[FW_PARTICIPANT_LABELS[f] for f in FW_PARTICIPANT_FIELDS])
+            _im_key = "fw_im_editor_" + re.sub(r"[^\w]+", "_", _fw_sel)
+            _im_edited = st.data_editor(_im_df, num_rows="dynamic", use_container_width=True, key=_im_key,
+                                         column_config={"Confirmed": st.column_config.CheckboxColumn(T("Confirmed", "Confirmed"))})
+            if st.button(T("Save participants", "Participants သိမ်းမယ်"), key="fw_im_save", type="primary"):
+                _new_parts = []
+                for _i, _r in enumerate(_im_edited.to_dict("records")):
+                    _old = _fw_sel_parts[_i] if _i < len(_fw_sel_parts) and isinstance(_fw_sel_parts[_i], dict) else {}
+                    _nm = str(_r.get("Name") or "").strip()
+                    _ph = str(_r.get("Phone") or "").strip()
+                    if not _nm and not _ph and not str(_r.get("Age band") or "").strip():
                         continue
-                    _seen.add(_pk)
-                    _existing.append(_p)
-                    _added += 1
-                _fw.setdefault("participants", {})[_key] = _existing
-            save_fieldwork(_fw)
-            # v3.29: the success AND the unlinked-sheets note below are both
-            # wiped by the rerun — queue them together as one flash message.
-            _imp_msg = T(f"Imported {_added} participants from {len(_groups)} sheet(s) ({_stats['skipped']} rows skipped).", f"Sheet {len(_groups)} ခုကနေ participants {_added} ယောက် import ပြီးပြီ (row {_stats['skipped']} ခု ကျော်သွားတယ်)။")
-            if _unlinked:
-                _imp_msg += " " + T(f"Sheets not matching any planned group (kept as separate groups): {', '.join(_unlinked)}", f"Plan နဲ့ မကိုက်တဲ့ sheet တွေ (သပ်သပ် group အနေနဲ့ သိမ်းထားတယ်): {', '.join(_unlinked)}")
-            _flash(_imp_msg)
-            st.rerun()
+                    _np = {"screener": _old.get("screener") or {}}
+                    for _f in FW_PARTICIPANT_FIELDS:
+                        if _f == "confirmed":
+                            _np["confirmed"] = bool(_r.get("Confirmed"))
+                        else:
+                            _np[_f] = str(_r.get(FW_PARTICIPANT_LABELS[_f]) or "").strip()
+                    _new_parts.append(_np)
+                _fw.setdefault("participants", {})[_fw_sel] = _new_parts
+                save_fieldwork(_fw)
+                _flash(T("Participants saved.", "Participants သိမ်းပြီးပြီ။"))
+                st.rerun()
+            with st.expander(T("Screener answers (from import)", "Screener အဖြေများ (import ကနေ)")):
+                _any_scr = False
+                for _p in _fw_sel_parts:
+                    if isinstance(_p, dict) and _p.get("screener"):
+                        _any_scr = True
+                        st.write(f"- {_p.get('name') or _p.get('phone') or '?'}: " + "; ".join(f"{k}={v}" for k, v in _p["screener"].items()))
+                if not _any_scr:
+                    st.caption(T("No screener answers stored for this session.", "ဒီ session အတွက် screener အဖြေ မရှိသေးဘူး။"))
+        st.markdown("**" + T("Import recruitment list (.xlsx)", "Recruitment list (.xlsx) import လုပ်မယ်") + "**")
+        st.caption(T("One sheet per group. Columns: name, gender, age band, marital, education, occupation / job title, income band, phone, township — plus screener answers. Only rows in the file are imported; a row needs a name or a phone.",
+                    "တစ်ဖွဲ့ကို sheet တစ်ခု။ ကော်လံ: name, gender, age band, marital, education, occupation / job title, income band, phone, township — ပြီးတော့ screener အဖြေတွေ။ File ထဲမှာ ရှိတဲ့ row ပဲ import လုပ်တယ်; row တစ်ခုမှာ name ဒါမှမဟုတ် phone ပါရမယ်။"))
+        _fw_up = st.file_uploader(T("Upload a recruitment-list XLSX", "Recruitment-list XLSX တင်ပါ"), type=["xlsx"], key="fw_import")
+        if _fw_up is not None and st.button(T("Import", "Import လုပ်မယ်"), key="fw_import_go"):
+            _groups, _stats = import_recruitment_xlsx(_fw_up.getvalue())
+            if _stats.get("error"):
+                st.error(T(f"Could not read the file: {_stats['error']}", f"File ဖတ်မရဘူး: {_stats['error']}"))
+            elif not _groups:
+                st.warning(T("Nothing imported — no participant rows found in the file.", "ဘာမှ import မရဘူး — file ထဲမှာ participant row မတွေ့ဘူး။"))
+            else:
+                _plan_by_group = {}
+                for _s in _fw_plan:
+                    _plan_by_group[_s["group"].strip().lower()] = _fw_session_key(_s)
+                _added = 0
+                _unlinked = []
+                for _sheet, _parts in _groups.items():
+                    _key = _plan_by_group.get(_sheet.strip().lower())
+                    if _key is None:
+                        for _g, _k in _plan_by_group.items():
+                            if _g and (_g in _sheet.strip().lower() or _sheet.strip().lower() in _g):
+                                _key = _k
+                                break
+                    if _key is None:
+                        _key = f"sheet|{_sheet}"
+                        _unlinked.append(_sheet)
+                    _existing = (_fw.get("participants") or {}).get(_key, [])
+                    _seen = {(str(_p.get("name", "")).lower(), str(_p.get("phone", ""))) for _p in _existing if isinstance(_p, dict)}
+                    for _p in _parts:
+                        _pk = (str(_p.get("name", "")).lower(), str(_p.get("phone", "")))
+                        if _pk in _seen:
+                            continue
+                        _seen.add(_pk)
+                        _existing.append(_p)
+                        _added += 1
+                    _fw.setdefault("participants", {})[_key] = _existing
+                save_fieldwork(_fw)
+                # v3.29: the success AND the unlinked-sheets note below are both
+                # wiped by the rerun — queue them together as one flash message.
+                _imp_msg = T(f"Imported {_added} participants from {len(_groups)} sheet(s) ({_stats['skipped']} rows skipped).", f"Sheet {len(_groups)} ခုကနေ participants {_added} ယောက် import ပြီးပြီ (row {_stats['skipped']} ခု ကျော်သွားတယ်)။")
+                if _unlinked:
+                    _imp_msg += " " + T(f"Sheets not matching any planned group (kept as separate groups): {', '.join(_unlinked)}", f"Plan နဲ့ မကိုက်တဲ့ sheet တွေ (သပ်သပ် group အနေနဲ့ သိမ်းထားတယ်): {', '.join(_unlinked)}")
+                _flash(_imp_msg)
+                st.rerun()
 
-    # ---- 4. Seating plan ----
-    st.subheader(T("4. Seating plan", "၄။ Seating plan"))
-    if not _fw_plan:
-        st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
-    else:
-        _sp_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
-                               format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
-                               key="fw_sp_session")
-        _sp_sess = next((s for s in _fw_plan if _fw_session_key(s) == _sp_sel), None)
-        _sp_parts = (_fw.get("participants") or {}).get(_sp_sel, [])
-        _sp_conf = [p for p in _sp_parts if isinstance(p, dict) and p.get("confirmed")]
-        st.caption(T(f"Confirmed participants: {len(_sp_conf)} of {len(_sp_parts)} — seats 1–6, spares 7–8. Empty seats stay blank.",
-                    f"Confirmed participants: {len(_sp_parts)} ယောက်ထဲက {len(_sp_conf)} ယောက် — ထိုင်ခုံ ၁–၆, spare ၇–၈။ လွတ်နေတဲ့ ခုံက ဗလာပဲ ထားမယ်။"))
-        _sp_name = f"seating_plan_session{_sp_sess['session']}.docx"
-        if st.button(T("Export seating plan (.docx)", "Seating plan (.docx) ထုတ်မယ်"), key="fw_sp_export"):
-            _sp_out = NOTES_DIR / _sp_name
-            seating_plan_to_docx(f"{current_project()} — FGD Seating Plan", _sp_sess, _sp_parts, _sp_out)
-            store_upload_existing("notes", _sp_name)
-            st.success(T("Seating plan exported.", "Seating plan ထုတ်ပြီးပြီ။"))
-        if (NOTES_DIR / _sp_name).exists():
-            st.download_button(T("Download seating plan (.docx)", "Seating plan (.docx) ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / _sp_name).read_bytes(), file_name=_sp_name, key="fw_sp_download")
-
-    # ---- 5. Survey data ----
-    st.subheader(T("5. Survey data", "၅။ Survey ဒေတာ"))
-    _sv_up = st.file_uploader(T("Upload a survey file (CSV / XLSX)", "Survey file တင်ပါ (CSV / XLSX)"), type=["csv", "xlsx"], key="fw_survey_upload")
-    if _sv_up is not None and st.button(T("Save survey file", "Survey file သိမ်းမယ်"), key="fw_survey_save"):
-        try:
-            _sv_df = pd.read_csv(_sv_up) if _sv_up.name.lower().endswith(".csv") else pd.read_excel(_sv_up)
-            _sv_safe = re.sub(r"[^\w\-.]+", "_", _sv_up.name).strip("_") or "survey.xlsx"
-            store_write_bytes("notes", _sv_safe, _sv_up.getvalue())
-            _fw["survey_files"] = [e for e in (_fw.get("survey_files") or []) if e.get("name") != _sv_safe]
-            _fw["survey_files"].append({"name": _sv_safe, "rows": int(len(_sv_df)), "columns": int(len(_sv_df.columns)),
-                                        "uploaded": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
-            save_fieldwork(_fw)
-            _flash(T(f"Survey file saved: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns).", f"Survey file သိမ်းပြီးပြီ: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns)။"))
-            st.rerun()
-        except Exception as _e:
-            st.error(T(f"Could not read the file: {_e}", f"File ဖတ်မရဘူး: {_e}"))
-    if _fw.get("survey_files"):
-        st.dataframe(pd.DataFrame(_fw["survey_files"]), use_container_width=True)
-        for _sf in _fw["survey_files"]:
-            _sf_path = NOTES_DIR / str(_sf.get("name", ""))
-            if _sf_path.exists():
-                st.download_button(T(f"Download {_sf.get('name')}", f"{_sf.get('name')} ဒေါင်းလုပ်ဆွဲမယ်"), data=_sf_path.read_bytes(), file_name=str(_sf.get("name")), key=f"fw_sv_dl_{_sf.get('name')}")
-    else:
-        st.caption(T("No survey files saved yet.", "Survey file မရှိသေးဘူး။"))
-    if st.button(T("Open Quantitative Analysis", "Quantitative Analysis ဖွင့်မယ်"), key="fw_goto_quant"):
-        st.session_state["page"] = "Quantitative Analysis"
-        st.rerun()
-    st.caption(T("Analysis itself runs on the Quantitative Analysis page — this section only stores the files and their counts.",
-                "ခွဲခြမ်းစိတ်ဖြာမှုက Quantitative Analysis page မှာ လုပ်တယ် — ဒီနေရာက file တွေ သိမ်းပြီး အရေအတွက် ပြပေးရုံပဲ။"))
-
-    # ---- 6. Field notes ----
-    st.subheader(T("6. Field notes", "၆။ ကွင်းဆင်းမှတ်စု"))
-    _fn_sess_opts = [""] + [_fw_session_key(s) for s in _fw_plan]
-    _fn_sess = st.selectbox(T("Session", "Session"), _fn_sess_opts,
-                            format_func=lambda k: T("(whole project)", "(project တစ်ခုလုံး)") if not k else next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
-                            key="fw_fn_session")
-    _fn_text = st.text_area(T("Note", "မှတ်စု"), key="fw_fn_text", height=120)
-    if st.button(T("Save note", "မှတ်စု သိမ်းမယ်"), key="fw_fn_save", type="primary"):
-        if not _fn_text.strip():
-            st.warning(T("Nothing to save — the note is empty.", "သိမ်းစရာ မရှိဘူး — မှတ်စု ဗလာဖြစ်နေတယ်။"))
+        # ---- 4. Seating plan ----
+        st.subheader(T("4. Seating plan", "၄။ Seating plan"))
+        if not _fw_plan:
+            st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
         else:
-            _fw.setdefault("notes", []).append({"session": _fn_sess, "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "text": _fn_text.strip()})
-            save_fieldwork(_fw)
-            st.session_state.pop("fw_fn_text", None)
-            _flash(T("Note saved.", "မှတ်စု သိမ်းပြီးပြီ။"))
-            st.rerun()
-    _fn_list = [n for n in reversed(_fw.get("notes", [])) if not _fn_sess or n.get("session") == _fn_sess]
-    if _fn_list:
-        for _n in _fn_list:
-            _fn_when = str(_n.get("timestamp", ""))
-            _fn_sess_label = next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == _n.get("session", "")), "") if _n.get("session") else ""
-            st.write(f"- {_fn_when}" + (f" · {_fn_sess_label}" if _fn_sess_label else "") + f" — {str(_n.get('text', ''))}")
-    else:
-        st.caption(T("No notes yet.", "မှတ်စု မရှိသေးဘူး။"))
+            _sp_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
+                                   format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
+                                   key="fw_sp_session")
+            _sp_sess = next((s for s in _fw_plan if _fw_session_key(s) == _sp_sel), None)
+            _sp_parts = (_fw.get("participants") or {}).get(_sp_sel, [])
+            _sp_conf = [p for p in _sp_parts if isinstance(p, dict) and p.get("confirmed")]
+            st.caption(T(f"Confirmed participants: {len(_sp_conf)} of {len(_sp_parts)} — seats 1–6, spares 7–8. Empty seats stay blank.",
+                        f"Confirmed participants: {len(_sp_parts)} ယောက်ထဲက {len(_sp_conf)} ယောက် — ထိုင်ခုံ ၁–၆, spare ၇–၈။ လွတ်နေတဲ့ ခုံက ဗလာပဲ ထားမယ်။"))
+            _sp_name = f"seating_plan_session{_sp_sess['session']}.docx"
+            if st.button(T("Export seating plan (.docx)", "Seating plan (.docx) ထုတ်မယ်"), key="fw_sp_export"):
+                _sp_out = NOTES_DIR / _sp_name
+                seating_plan_to_docx(f"{current_project()} — FGD Seating Plan", _sp_sess, _sp_parts, _sp_out)
+                store_upload_existing("notes", _sp_name)
+                st.success(T("Seating plan exported.", "Seating plan ထုတ်ပြီးပြီ။"))
+            if (NOTES_DIR / _sp_name).exists():
+                st.download_button(T("Download seating plan (.docx)", "Seating plan (.docx) ဒေါင်းလုပ်ဆွဲမယ်"), data=(NOTES_DIR / _sp_name).read_bytes(), file_name=_sp_name, key="fw_sp_download")
 
-    # ---- 7. F2F discussion ----
-    st.subheader(T("7. F2F discussion", "၇။ F2F discussion"))
-    if not _fw_plan:
-        st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
-    else:
-        _f2f_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
-                                format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
-                                key="fw_f2f_session")
-        _f2f_sess = next((s for s in _fw_plan if _fw_session_key(s) == _f2f_sel), None)
-        _f2f_parts = (_fw.get("participants") or {}).get(_f2f_sel, [])
-        _f2f_conf = sum(1 for _p in _f2f_parts if isinstance(_p, dict) and _p.get("confirmed"))
-        st.write(T(f"Participants: {len(_f2f_parts)} (confirmed: {_f2f_conf}) · Moderator: {_f2f_sess['moderator'] or '—'} · Venue: {_f2f_sess['venue'] or '—'}",
-                   f"Participants: {len(_f2f_parts)} ယောက် (confirmed: {_f2f_conf} ယောက်) · Moderator: {_f2f_sess['moderator'] or '—'} · Venue: {_f2f_sess['venue'] or '—'}"))
-        if _f2f_parts:
-            st.dataframe(pd.DataFrame([{FW_PARTICIPANT_LABELS[f]: str(_p.get(f, "") or "") for f in FW_PARTICIPANT_FIELDS if f != "confirmed"} for _p in _f2f_parts if isinstance(_p, dict)]), use_container_width=True)
-        _dg_path = NOTES_DIR / "discussion_guide.txt"
-        with st.expander(T("Discussion Guide", "Discussion Guide")):
-            if _dg_path.exists():
-                st.text(_dg_path.read_text(encoding="utf-8"))
-            else:
-                st.caption(T("No Discussion Guide saved yet — draft one on the Research Design page.", "Discussion Guide မသိမ်းရသေးဘူး — Research Design page မှာ ရေးပါ။"))
-        with st.expander(T("Session notes", "Session မှတ်စုများ")):
-            _f2f_notes = [n for n in (_fw.get("notes") or []) if n.get("session") == _f2f_sel]
-            if _f2f_notes:
-                for _n in _f2f_notes:
-                    st.write(f"- {str(_n.get('timestamp', ''))} — {str(_n.get('text', ''))}")
-            else:
-                st.caption(T("No notes for this session yet.", "ဒီ session အတွက် မှတ်စု မရှိသေးဘူး။"))
-        if st.button(T("Open Transcripts", "Transcripts ဖွင့်မယ်"), key="fw_goto_transcripts"):
-            st.session_state["page"] = "Transcripts"
-            st.rerun()
-
-    # ---- 8. Tracking ----
-    st.subheader(T("8. Tracking", "၈။ Tracking"))
-    if not _fw_plan:
-        st.caption(T("No fieldwork plan yet — tracking appears once sessions exist.", "Fieldwork Plan မရှိသေးဘူး — session ရှိလာရင် tracking ဒီမှာ ပေါ်မယ်။"))
-    else:
-        _resp_by_sess = {}
-        for _r in _resp_rows:
-            _resp_by_sess[str(_r.get("session", ""))] = _resp_by_sess.get(str(_r.get("session", "")), 0) + 1
-        _trk_rows = []
-        for _s in _fw_plan:
-            _k = _fw_session_key(_s)
-            _parts = (_fw.get("participants") or {}).get(_k, [])
-            _trk_rows.append({"Session": _s["session"], "Group": _s["group"], "Date": _s["date"],
-                             "Seats": _s["seats"], "Recruited": _s["recruited"],
-                             "Confirmed (plan)": _s["confirmed"],
-                             "Confirmed participants": sum(1 for _p in _parts if isinstance(_p, dict) and _p.get("confirmed")),
-                             "Responses": _resp_by_sess.get(_k, 0),
-                             "Status": (_fw.get("session_status") or {}).get(_k, "Not started")})
-        st.dataframe(pd.DataFrame(_trk_rows), use_container_width=True)
-        _trk_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
-                                format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
-                                key="fw_trk_session")
-        _trk_cur = (_fw.get("session_status") or {}).get(_trk_sel, "Not started")
-        _trk_new = st.selectbox(T("Status", "Status"), FW_SESSION_STATUSES,
-                                index=FW_SESSION_STATUSES.index(_trk_cur) if _trk_cur in FW_SESSION_STATUSES else 0,
-                                key="fw_trk_status")
-        if st.button(T("Save status", "Status သိမ်းမယ်"), key="fw_trk_save"):
-            _fw.setdefault("session_status", {})[_trk_sel] = _trk_new
-            save_fieldwork(_fw)
-            _flash(T("Status saved.", "Status သိမ်းပြီးပြီ။"))
-            st.rerun()
-        st.caption(T(f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}",
-                    f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}"))
-
-    # ---- 9. Record (existing chunk recorder — unchanged) ----
-    st.subheader(T("9. Record", "၉။ အသံသွင်းခြင်း"))
-    st.caption(T("Record one chunk at a time with the browser mic → auto-transcribe. 15 minutes per chunk. 1 chunk = 1 request (a 2h FGD ≈ 8 chunks).", "Browser mic နဲ့ chunk တစ်ခုချင်း record လုပ် → auto-transcribe. 15 မိနစ် တစ်ပိုင်း. 1 chunk = 1 request (2h FGD ≈ 8 chunks)."))
-    st.info(T("If the browser asks for the mic, press Allow. If many people talk at once, speaker separation gets less accurate — check anything marked [unclear].", "Browser က mic ခွင့်တောင်းရင် Allow နှိပ်ပါ. လူအများ တစ်ပြိုင်နက် ပြောရင် speaker ခွဲတာ တိကျမှု လျော့နိုင်တယ် — [unclear] လို့ မှတ်ထားတာကို ပြန်စစ်ပါ."))
-
-    session_name = st.text_input(T("Session name", "Session နာမည်"), value="fgd_01", key="fgd_session")
-    session_name = re.sub(r"[^\w\-]+", "_", session_name.strip()) or "fgd_01"
-
-    def session_chunk_files():
-        files = []
-        for f in AUDIO_DIR.glob(f"{session_name}(*).wav"):
-            m = re.search(r"\((\d+)\)\.wav$", f.name)
-            if m:
-                files.append((int(m.group(1)), f))
-        return sorted(files)
-
-    chunks = session_chunk_files()
-    if chunks:
-        st.write(f"Chunks: {len(chunks)}")
-        for n, f in chunks:
-            txt = OUTPUT_DIR / (f.stem + ".txt")
-            status = "✅ transcribed" if txt.exists() else "⏳ pending"
-            st.write(f"- Chunk {n}: {f.name} — {status}")
-    else:
-        st.info(T("No chunks yet — record one below.", "Chunk မရှိသေးဘူး — အောက်မှာ record လုပ်ပါ။"))
-
-    audio_data = st.audio_input(T("🎙️ Record a chunk (about 15 min)", "🎙️ Record a chunk (15 မိနစ် လောက်)"))
-    if audio_data is not None:
-        audio_bytes = audio_data.read()
-        audio_hash = hashlib.sha256(audio_bytes).hexdigest()
-        record_key = (current_project(), session_name, audio_hash)
-        if st.session_state.get("last_recorded_key") != record_key:
-            next_n = (chunks[-1][0] + 1) if chunks else 1
-            chunk_path = AUDIO_DIR / f"{session_name}({next_n}).wav"
-            store_write_bytes("audio", chunk_path.name, audio_bytes)
-            st.session_state["last_recorded_key"] = record_key
-            st.session_state["last_chunk"] = (current_project(), session_name, chunk_path.name)
-            # v3.29: both messages below are wiped by the rerun — collect
-            # them and flash once (the error case flashes as an error).
-            _rec_msgs = [f"Saved: {chunk_path.name}"]
-            txt_path = OUTPUT_DIR / (chunk_path.stem + ".txt")
-            with st.spinner(T(f"Transcribing chunk {next_n}... (long audio can take a few minutes)", f"Chunk {next_n} ကို transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)")):
-                text, model = transcribe_audio(chunk_path)
-            if text:
-                store_write_text("transcripts", txt_path.name, text)
-                _rec_msgs.append(f"Done — model: {model}")
-                _flash(" ".join(_rec_msgs))
-            else:
-                _flash(T(f"Failed: {model} — retry with Transcribe pending below.", f"Failed: {model} — အောက်က Transcribe pending နဲ့ ပြန်လုပ်လို့ရတယ်။"), kind="error")
-            st.rerun()
+    with _fw_collect_tab:
+        # ---- 5. Survey data ----
+        st.subheader(T("5. Survey data", "၅။ Survey ဒေတာ"))
+        _sv_up = st.file_uploader(T("Upload a survey file (CSV / XLSX)", "Survey file တင်ပါ (CSV / XLSX)"), type=["csv", "xlsx"], key="fw_survey_upload")
+        if _sv_up is not None and st.button(T("Save survey file", "Survey file သိမ်းမယ်"), key="fw_survey_save"):
+            try:
+                _sv_df = pd.read_csv(_sv_up) if _sv_up.name.lower().endswith(".csv") else pd.read_excel(_sv_up)
+                _sv_safe = re.sub(r"[^\w\-.]+", "_", _sv_up.name).strip("_") or "survey.xlsx"
+                store_write_bytes("notes", _sv_safe, _sv_up.getvalue())
+                _fw["survey_files"] = [e for e in (_fw.get("survey_files") or []) if e.get("name") != _sv_safe]
+                _fw["survey_files"].append({"name": _sv_safe, "rows": int(len(_sv_df)), "columns": int(len(_sv_df.columns)),
+                                            "uploaded": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+                save_fieldwork(_fw)
+                _flash(T(f"Survey file saved: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns).", f"Survey file သိမ်းပြီးပြီ: {_sv_safe} ({len(_sv_df)} rows, {len(_sv_df.columns)} columns)။"))
+                st.rerun()
+            except Exception as _e:
+                st.error(T(f"Could not read the file: {_e}", f"File ဖတ်မရဘူး: {_e}"))
+        if _fw.get("survey_files"):
+            st.dataframe(pd.DataFrame(_fw["survey_files"]), use_container_width=True)
+            for _sf in _fw["survey_files"]:
+                _sf_path = NOTES_DIR / str(_sf.get("name", ""))
+                if _sf_path.exists():
+                    st.download_button(T(f"Download {_sf.get('name')}", f"{_sf.get('name')} ဒေါင်းလုပ်ဆွဲမယ်"), data=_sf_path.read_bytes(), file_name=str(_sf.get("name")), key=f"fw_sv_dl_{_sf.get('name')}")
         else:
-            st.caption(T(f"This chunk is already saved: {st.session_state.get('last_chunk')}", f"ဒီ chunk က သိမ်းပြီးသား: {st.session_state.get('last_chunk')}"))
-            last_info = st.session_state.get("last_chunk", ())
-            last_name = last_info[2] if len(last_info) == 3 and last_info[:2] == (current_project(), session_name) else ""
-            txt_path = OUTPUT_DIR / (Path(last_name).stem + ".txt") if last_name else None
-            if last_name and txt_path.exists():
-                with st.expander(T("View transcript", "Transcript ကြည့်ပါ")):
-                    st.text(txt_path.read_text(encoding="utf-8"))
+            st.caption(T("No survey files saved yet.", "Survey file မရှိသေးဘူး။"))
+        if st.button(T("Open Quantitative Analysis", "Quantitative Analysis ဖွင့်မယ်"), key="fw_goto_quant"):
+            st.session_state["page"] = "Quantitative Analysis"
+            st.rerun()
+        st.caption(T("Analysis itself runs on the Quantitative Analysis page — this section only stores the files and their counts.",
+                    "ခွဲခြမ်းစိတ်ဖြာမှုက Quantitative Analysis page မှာ လုပ်တယ် — ဒီနေရာက file တွေ သိမ်းပြီး အရေအတွက် ပြပေးရုံပဲ။"))
 
-    pending_chunks = [(n, f) for n, f in session_chunk_files() if not (OUTPUT_DIR / (f.stem + ".txt")).exists()]
-    if pending_chunks and st.button(T("Transcribe pending chunks", "Transcribe pending chunks")):
-        for n, f in pending_chunks:
-            with st.spinner(f"Transcribing chunk {n}..."):
-                text, model = transcribe_audio(f)
-            if text:
-                store_write_text("transcripts", f.stem + ".txt", text)
-                st.success(f"Done — chunk {n} ({model})")
+    with _fw_session_tab:
+        # ---- 6. Field notes ----
+        st.subheader(T("6. Field notes", "၆။ ကွင်းဆင်းမှတ်စု"))
+        _fn_sess_opts = [""] + [_fw_session_key(s) for s in _fw_plan]
+        _fn_sess = st.selectbox(T("Session", "Session"), _fn_sess_opts,
+                                format_func=lambda k: T("(whole project)", "(project တစ်ခုလုံး)") if not k else next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
+                                key="fw_fn_session")
+        _fn_text = st.text_area(T("Note", "မှတ်စု"), key="fw_fn_text", height=120)
+        if st.button(T("Save note", "မှတ်စု သိမ်းမယ်"), key="fw_fn_save", type="primary"):
+            if not _fn_text.strip():
+                st.warning(T("Nothing to save — the note is empty.", "သိမ်းစရာ မရှိဘူး — မှတ်စု ဗလာဖြစ်နေတယ်။"))
             else:
-                st.error(f"Failed — chunk {n}: {model}")
-                if "429" in model:
-                    st.warning(T("429 — quota is full, try again later.", "429 — quota ပြည့်နေတယ်, နောက်မှ ပြန်လုပ်။"))
-                    break
+                _fw.setdefault("notes", []).append({"session": _fn_sess, "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "text": _fn_text.strip()})
+                save_fieldwork(_fw)
+                st.session_state.pop("fw_fn_text", None)
+                _flash(T("Note saved.", "မှတ်စု သိမ်းပြီးပြီ။"))
+                st.rerun()
+        _fn_list = [n for n in reversed(_fw.get("notes", [])) if not _fn_sess or n.get("session") == _fn_sess]
+        if _fn_list:
+            for _n in _fn_list:
+                _fn_when = str(_n.get("timestamp", ""))
+                _fn_sess_label = next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == _n.get("session", "")), "") if _n.get("session") else ""
+                st.write(f"- {_fn_when}" + (f" · {_fn_sess_label}" if _fn_sess_label else "") + f" — {str(_n.get('text', ''))}")
+        else:
+            st.caption(T("No notes yet.", "မှတ်စု မရှိသေးဘူး။"))
+
+        # ---- 7. F2F discussion ----
+        st.subheader(T("7. F2F discussion", "၇။ F2F discussion"))
+        if not _fw_plan:
+            st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
+        else:
+            _f2f_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
+                                    format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
+                                    key="fw_f2f_session")
+            _f2f_sess = next((s for s in _fw_plan if _fw_session_key(s) == _f2f_sel), None)
+            _f2f_parts = (_fw.get("participants") or {}).get(_f2f_sel, [])
+            _f2f_conf = sum(1 for _p in _f2f_parts if isinstance(_p, dict) and _p.get("confirmed"))
+            st.write(T(f"Participants: {len(_f2f_parts)} (confirmed: {_f2f_conf}) · Moderator: {_f2f_sess['moderator'] or '—'} · Venue: {_f2f_sess['venue'] or '—'}",
+                       f"Participants: {len(_f2f_parts)} ယောက် (confirmed: {_f2f_conf} ယောက်) · Moderator: {_f2f_sess['moderator'] or '—'} · Venue: {_f2f_sess['venue'] or '—'}"))
+            if _f2f_parts:
+                st.dataframe(pd.DataFrame([{FW_PARTICIPANT_LABELS[f]: str(_p.get(f, "") or "") for f in FW_PARTICIPANT_FIELDS if f != "confirmed"} for _p in _f2f_parts if isinstance(_p, dict)]), use_container_width=True)
+            _dg_path = NOTES_DIR / "discussion_guide.txt"
+            with st.expander(T("Discussion Guide", "Discussion Guide")):
+                if _dg_path.exists():
+                    st.text(_dg_path.read_text(encoding="utf-8"))
+                else:
+                    st.caption(T("No Discussion Guide saved yet — draft one on the Research Design page.", "Discussion Guide မသိမ်းရသေးဘူး — Research Design page မှာ ရေးပါ။"))
+            with st.expander(T("Session notes", "Session မှတ်စုများ")):
+                _f2f_notes = [n for n in (_fw.get("notes") or []) if n.get("session") == _f2f_sel]
+                if _f2f_notes:
+                    for _n in _f2f_notes:
+                        st.write(f"- {str(_n.get('timestamp', ''))} — {str(_n.get('text', ''))}")
+                else:
+                    st.caption(T("No notes for this session yet.", "ဒီ session အတွက် မှတ်စု မရှိသေးဘူး။"))
+            if st.button(T("Open Transcripts", "Transcripts ဖွင့်မယ်"), key="fw_goto_transcripts"):
+                st.session_state["page"] = "Transcripts"
+                st.rerun()
+
+    with _fw_progress_tab:
+        # ---- 8. Tracking ----
+        st.subheader(T("8. Tracking", "၈။ Tracking"))
+        if not _fw_plan:
+            st.caption(T("No fieldwork plan yet — tracking appears once sessions exist.", "Fieldwork Plan မရှိသေးဘူး — session ရှိလာရင် tracking ဒီမှာ ပေါ်မယ်။"))
+        else:
+            _resp_by_sess = {}
+            for _r in _resp_rows:
+                _resp_by_sess[str(_r.get("session", ""))] = _resp_by_sess.get(str(_r.get("session", "")), 0) + 1
+            _trk_rows = []
+            for _s in _fw_plan:
+                _k = _fw_session_key(_s)
+                _parts = (_fw.get("participants") or {}).get(_k, [])
+                _trk_rows.append({"Session": _s["session"], "Group": _s["group"], "Date": _s["date"],
+                                 "Seats": _s["seats"], "Recruited": _s["recruited"],
+                                 "Confirmed (plan)": _s["confirmed"],
+                                 "Confirmed participants": sum(1 for _p in _parts if isinstance(_p, dict) and _p.get("confirmed")),
+                                 "Responses": _resp_by_sess.get(_k, 0),
+                                 "Status": (_fw.get("session_status") or {}).get(_k, "Not started")})
+            st.dataframe(pd.DataFrame(_trk_rows), use_container_width=True)
+            _trk_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
+                                    format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
+                                    key="fw_trk_session")
+            _trk_cur = (_fw.get("session_status") or {}).get(_trk_sel, "Not started")
+            _trk_new = st.selectbox(T("Status", "Status"), FW_SESSION_STATUSES,
+                                    index=FW_SESSION_STATUSES.index(_trk_cur) if _trk_cur in FW_SESSION_STATUSES else 0,
+                                    key="fw_trk_status")
+            if st.button(T("Save status", "Status သိမ်းမယ်"), key="fw_trk_save"):
+                _fw.setdefault("session_status", {})[_trk_sel] = _trk_new
+                save_fieldwork(_fw)
+                _flash(T("Status saved.", "Status သိမ်းပြီးပြီ။"))
+                st.rerun()
+            st.caption(T(f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}",
+                        f"Responses: {_fw_counts['responses']} · Participants: {_fw_counts['participants']} · Notes: {_fw_counts['notes']} · Survey files: {_fw_counts['survey_files']}"))
+
+    with _fw_session_tab:
+        # ---- 9. Record (existing chunk recorder — unchanged) ----
+        st.subheader(T("9. Record", "၉။ အသံသွင်းခြင်း"))
+        st.caption(T("Record one chunk at a time with the browser mic → auto-transcribe. 15 minutes per chunk. 1 chunk = 1 request (a 2h FGD ≈ 8 chunks).", "Browser mic နဲ့ chunk တစ်ခုချင်း record လုပ် → auto-transcribe. 15 မိနစ် တစ်ပိုင်း. 1 chunk = 1 request (2h FGD ≈ 8 chunks)."))
+        st.info(T("If the browser asks for the mic, press Allow. If many people talk at once, speaker separation gets less accurate — check anything marked [unclear].", "Browser က mic ခွင့်တောင်းရင် Allow နှိပ်ပါ. လူအများ တစ်ပြိုင်နက် ပြောရင် speaker ခွဲတာ တိကျမှု လျော့နိုင်တယ် — [unclear] လို့ မှတ်ထားတာကို ပြန်စစ်ပါ."))
+
+        session_name = st.text_input(T("Session name", "Session နာမည်"), value="fgd_01", key="fgd_session")
+        session_name = re.sub(r"[^\w\-]+", "_", session_name.strip()) or "fgd_01"
+
+        def session_chunk_files():
+            files = []
+            for f in AUDIO_DIR.glob(f"{session_name}(*).wav"):
+                m = re.search(r"\((\d+)\)\.wav$", f.name)
+                if m:
+                    files.append((int(m.group(1)), f))
+            return sorted(files)
+
+        chunks = session_chunk_files()
+        if chunks:
+            st.write(f"Chunks: {len(chunks)}")
+            for n, f in chunks:
+                txt = OUTPUT_DIR / (f.stem + ".txt")
+                status = "✅ transcribed" if txt.exists() else "⏳ pending"
+                st.write(f"- Chunk {n}: {f.name} — {status}")
+        else:
+            st.info(T("No chunks yet — record one below.", "Chunk မရှိသေးဘူး — အောက်မှာ record လုပ်ပါ။"))
+
+        audio_data = st.audio_input(T("🎙️ Record a chunk (about 15 min)", "🎙️ Record a chunk (15 မိနစ် လောက်)"))
+        if audio_data is not None:
+            audio_bytes = audio_data.read()
+            audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+            record_key = (current_project(), session_name, audio_hash)
+            if st.session_state.get("last_recorded_key") != record_key:
+                next_n = (chunks[-1][0] + 1) if chunks else 1
+                chunk_path = AUDIO_DIR / f"{session_name}({next_n}).wav"
+                store_write_bytes("audio", chunk_path.name, audio_bytes)
+                st.session_state["last_recorded_key"] = record_key
+                st.session_state["last_chunk"] = (current_project(), session_name, chunk_path.name)
+                # v3.29: both messages below are wiped by the rerun — collect
+                # them and flash once (the error case flashes as an error).
+                _rec_msgs = [f"Saved: {chunk_path.name}"]
+                txt_path = OUTPUT_DIR / (chunk_path.stem + ".txt")
+                with st.spinner(T(f"Transcribing chunk {next_n}... (long audio can take a few minutes)", f"Chunk {next_n} ကို transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)")):
+                    text, model = transcribe_audio(chunk_path)
+                if text:
+                    store_write_text("transcripts", txt_path.name, text)
+                    _rec_msgs.append(f"Done — model: {model}")
+                    _flash(" ".join(_rec_msgs))
+                else:
+                    _flash(T(f"Failed: {model} — retry with Transcribe pending below.", f"Failed: {model} — အောက်က Transcribe pending နဲ့ ပြန်လုပ်လို့ရတယ်။"), kind="error")
+                st.rerun()
+            else:
+                st.caption(T(f"This chunk is already saved: {st.session_state.get('last_chunk')}", f"ဒီ chunk က သိမ်းပြီးသား: {st.session_state.get('last_chunk')}"))
+                last_info = st.session_state.get("last_chunk", ())
+                last_name = last_info[2] if len(last_info) == 3 and last_info[:2] == (current_project(), session_name) else ""
+                txt_path = OUTPUT_DIR / (Path(last_name).stem + ".txt") if last_name else None
+                if last_name and txt_path.exists():
+                    with st.expander(T("View transcript", "Transcript ကြည့်ပါ")):
+                        st.text(txt_path.read_text(encoding="utf-8"))
+
+        pending_chunks = [(n, f) for n, f in session_chunk_files() if not (OUTPUT_DIR / (f.stem + ".txt")).exists()]
+        if pending_chunks and st.button(T("Transcribe pending chunks", "Transcribe pending chunks")):
+            for n, f in pending_chunks:
+                with st.spinner(f"Transcribing chunk {n}..."):
+                    text, model = transcribe_audio(f)
+                if text:
+                    store_write_text("transcripts", f.stem + ".txt", text)
+                    st.success(f"Done — chunk {n} ({model})")
+                else:
+                    st.error(f"Failed — chunk {n}: {model}")
+                    if "429" in model:
+                        st.warning(T("429 — quota is full, try again later.", "429 — quota ပြည့်နေတယ်, နောက်မှ ပြန်လုပ်။"))
+                        break
 
 elif page == "Upload & Split":
     st.title(T("✂️ Upload & Split", "✂️ Upload နဲ့ ခွဲခြင်း"))
