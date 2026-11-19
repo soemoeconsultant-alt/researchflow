@@ -352,6 +352,36 @@ def save_brief(data):
     return store_write_text("notes", "brief.json", json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _quotation_versions():
+    """Versioned, user-entered quotation records for the current project."""
+    out = []
+    for path in NOTES_DIR.glob("quotation_v*.json"):
+        try:
+            version = int(path.stem.rsplit("v", 1)[1])
+            out.append((version, path))
+        except (ValueError, IndexError):
+            continue
+    return sorted(out)
+
+
+def load_quotation():
+    versions = _quotation_versions()
+    if not versions:
+        return {"currency": "", "items": []}
+    try:
+        data = json.loads(versions[-1][1].read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"currency": "", "items": []}
+    except Exception:
+        return {"currency": "", "items": []}
+
+
+def save_quotation(data):
+    versions = _quotation_versions()
+    version = (versions[-1][0] + 1) if versions else 1
+    filename = f"quotation_v{version:02d}.json"
+    return store_write_text("notes", filename, json.dumps(data, ensure_ascii=False, indent=2))
+
+
 # --- Research Design (v3.25, Stage 2): one design.json per project, in
 # notes/ (Drive notes folder + local, same path as brief.json). The design is
 # the feed-forward contract for later stages: the Market Analysis planner
@@ -391,7 +421,7 @@ def save_brief(data):
 #     (user type, behaviour, non-rejector rules from the brief).
 #   recruitment_criteria: text — extra recruitment notes.
 #   rationale: text — why this method was chosen, in the user's own words.
-#     The proposal is drafted FROM the design (v3.28, Reports page).
+#     The proposal is drafted from the agreed brief and design (Stage 1).
 #   dg_language: "English" | "Myanmar" (moderator-script language)
 #   dg_text: the Discussion Guide draft (markup, see DG_DRAFT_TEMPLATE)
 #   dg_file: "discussion_guide.txt" in notes/ (same text, as a file)
@@ -5266,7 +5296,7 @@ def report_template_coverage_quant(analysis_text, brief, design, insights=None, 
     _interp = _quant_interpretation_text()
     _hints = {
         "Actionable Insights": "Save a quant interpretation, or add a Key Findings section in the analysis.",
-        "Project Timeline": "Add timeline dates in the Client Brief, or session dates in the Research Design fieldwork plan.",
+        "Project Timeline": "Add timeline dates in the Client Brief, or session dates in the Stage 1 fieldwork plan.",
         "Program Overview": "Add background / scope in the Client Brief.",
         "Executive Summary": "Create a topline on the Reports page, or add a Key Findings section.",
         "Question Analysis": "Upload survey data and save a quant summary on the Quantitative Analysis page.",
@@ -7552,7 +7582,7 @@ STAGES = [
     ("5 · Analysis & Reports", "Market Analysis"),
 ]
 PAGE_STAGE = {
-    "Client Brief": 1,
+    "Client Brief": 1, "Proposal & Quotation": 1,
     "Research Design": 2,
     "Fieldworks": 3,
     "Upload & Transcribe": 4, "Batch Processing": 4, "Upload & Split": 4,
@@ -7681,6 +7711,7 @@ with _tc2:
 
 _PAGE_ICONS = {
     "Dashboard": ":material/home:", "Client Brief": ":material/description:",
+    "Proposal & Quotation": ":material/request_quote:",
     "Research Design": ":material/design_services:",
     "Upload & Transcribe": ":material/database:", "Batch Processing": ":material/layers:",
     "Upload & Split": ":material/content_cut:",
@@ -7693,7 +7724,7 @@ _PAGE_ICONS = {
     "Prompt Library": ":material/library_books:",
 }
 _PAGE_ORDER = [
-    "Dashboard", "Client Brief", "Research Design",
+    "Dashboard", "Client Brief", "Proposal & Quotation", "Research Design",
     "Fieldworks",
     "Upload & Transcribe", "Batch Processing", "Upload & Split",
     "Transcripts", "Data Cleansing",
@@ -7703,6 +7734,7 @@ _PAGE_ORDER = [
 
 _PAGE_MM = {
     "Dashboard": "ပင်မစာမျက်နှာ", "Client Brief": "Client Brief",
+    "Proposal & Quotation": "Proposal နဲ့ Quotation",
     "Research Design": "သုတေသန ဒီဇိုင်း",
     "Upload & Transcribe": "Upload နဲ့ Transcript လုပ်ခြင်း", "Batch Processing": "Batch လုပ်ဆောင်ခြင်း",
     "Upload & Split": "Upload နဲ့ ခွဲခြင်း", "Fieldworks": "ကွင်းဆင်းလုပ်ငန်း",
@@ -7740,6 +7772,12 @@ _STAGE_HOME = {1: "Client Brief", 2: "Research Design", 3: "Fieldworks",
 # stage -> [(section EN, section MM, [(page id, step EN, step MM), ...]), ...]
 # A stage that is not listed here has one page and no section bar.
 _STAGE_SECTIONS = {
+    1: [
+        ("Project setup", "Project ပြင်ဆင်ခြင်း", [
+            ("Client Brief", "Client Brief", "Client Brief"),
+            ("Proposal & Quotation", "Proposal & Quotation", "Proposal နဲ့ Quotation"),
+        ]),
+    ],
     4: [
         ("Data Preparation", "ဒေတာ ပြင်ဆင်ခြင်း", [
             ("Upload & Transcribe", "Upload & Transcribe", "Upload နဲ့ Transcript"),
@@ -7914,6 +7952,7 @@ def stage_status():
     rep_n = len(list(REPORTS_DIR.glob("*.pptx"))) + len(list(REPORTS_DIR.glob("*.docx")))
     pptx_n = len(list(REPORTS_DIR.glob("*.pptx")))
     proposal_n = 1 if (NOTES_DIR / "proposal.docx").exists() else 0
+    quotation_n = len(_quotation_versions())
     quant_n = len(list(ANALYSIS_DIR.glob("quant_*.txt")))
     multi_n = len(list(ANALYSIS_DIR.glob("multi_*_analysis.txt")))
     note_n = len([f for f in NOTES_DIR.glob("*")
@@ -7922,26 +7961,19 @@ def stage_status():
     brief = load_brief()
     design = load_design()
     # v3.46: workflow gate (display only) — Research Design (Stage 2) and
-    # Fieldworks (Stage 3) must not show as started until the client
-    # approval recorded on the Brief is "Approved". Read-only: no data is
+    # Fieldworks (Stage 3) must not show as started until client approval
+    # recorded in the Stage 1 Proposal & Quotation step is "Approved". Read-only: no data is
     # written here; the Stage 2/3 sub-items below are forced to "todo"
     # (Not started) until then, even if design/fieldwork files exist.
     _approved = brief.get("approval") == "Approved"
     _d_methods = design.get("methods") or []
     _d_q = design.get("questionnaire") or {}
-    _d_qs = _d_q.get("questions") if isinstance(_d_q, dict) else []
+    _d_qs = (_d_q.get("questions") or []) if isinstance(_d_q, dict) else (_d_q if isinstance(_d_q, list) else [])
     _d2_items = [
-        _stage_item("Approach (Qual / Quant / Mixed)", "Approach (Qual / Quant / Mixed)",
-                    "done" if design.get("approach") in DESIGN_APPROACHES else "todo"),
-        _stage_item("IDI / FGD / survey", "IDI / FGD / survey",
-                    "done" if _d_methods else "todo"),
-        _stage_item("Sampling", "Sampling",
-                    "done" if (design.get("sample_size") or 0) > 0 or (design.get("sessions_count") or 0) > 0
-                    or design.get("personas") or design.get("quotas") else "todo"),
-        _stage_item("Screener / questionnaire / DG", "Screener / questionnaire / DG",
-                    "done" if design.get("dg_text") or _d_qs else "todo"),
-        _stage_item("Fieldwork plan", "ကွင်းဆင်းအစီအစဉ်",
-                    "done" if design.get("fieldwork_plan") else "todo"),
+        _stage_item("Screener", "Screener",
+                    "done" if _d_qs else "todo"),
+        _stage_item("Discussion Guide", "Discussion Guide",
+                    "done" if design.get("dg_text") or _d_methods == ["Survey"] else "todo"),
     ]
     if not _approved:
         _d2_items = [(_e, _m, "todo") for _e, _m, _s in _d2_items]
@@ -7974,10 +8006,12 @@ def stage_status():
              _stage_item("Scope", "Scope", "done" if brief.get("scope") else "todo"),
              _stage_item("Timeline", "အချိန်ဇယား", "done" if brief.get("timeline_start") and brief.get("timeline_end") else "todo"),
              _stage_item("Deliverables", "ထုတ်ပေးမည့်အရာများ", "done" if brief.get("deliverables") else "todo"),
+              _stage_item("Proposal draft", "Proposal draft", "done" if proposal_n else "todo"),
+              _stage_item("Quotation", "Quotation", "done" if quotation_n else "todo"),
              _stage_item("Approval", "အတည်ပြုချက်", "done" if brief.get("approval") == "Approved" else "todo"),
          ]),
         (_sl("2 · Research Design"),
-         T("Design methodology, sampling & instruments", "နည်းလမ်း၊ sampling နဲ့ tool တွေ ဒီဇိုင်းဆွဲခြင်း"),
+         T("Build and review research instruments", "နည်းလမ်း၊ sampling နဲ့ tool တွေ ဒီဇိုင်းဆွဲခြင်း"),
          all(_s == "done" for _e, _m, _s in _d2_items),
          _d2_items),
         (_sl("3 · Fieldworks"),
@@ -8006,7 +8040,6 @@ def stage_status():
              _stage_item("Quant analysis", "Quant ခွဲခြမ်းစိတ်ဖြာမှု", "done" if quant_n > 0 else "todo"),
              _stage_item("Insights (Qual + Quant)", "Insights (Qual + Quant)", "done" if _ins_saved_n > 0 else "todo"),
              _stage_item("Report (PPTX / DOCX)", "Report (PPTX / DOCX)", "done" if rep_n > 0 else "todo"),
-             _stage_item("Proposal (draft)", "Proposal (မူကြမ်း)", "done" if proposal_n > 0 else "todo"),
              _stage_item("Presentation (PPTX export)", "တင်ပြမှု (PPTX export)", "done" if pptx_n > 0 else "todo"),
          ]),
     ]
@@ -8159,9 +8192,17 @@ if page == "Dashboard":
             st.rerun()
     with _ha2:
         with st.expander(T("How the workflow works", "Workflow အလုပ်လုပ်ပုံ")):
-            st.write(T(
-                "Brief → proposal and quotation → client approval → screener → discussion guide → fieldwork → data quality check → analysis → client deliverables.",
-                "Brief → Proposal နဲ့ Quotation → Client အတည်ပြုချက် → Screener → Discussion Guide → Fieldwork → Data အရည်အသွေးစစ်ခြင်း → Analysis → Client ကိုပေးမယ့်ဖိုင်များ။",
+            st.markdown(T(
+                "**1 · Client Brief** — capture the request → prepare proposal and quotation → record approval  \n"
+                "**2 · Research Design** — build and save the Screener → draft and review the Discussion Guide  \n"
+                "**3 · Fieldworks** — brief the team and collect interviews, surveys and field notes  \n"
+                "**4 · Data Cleansing** — upload, transcribe, merge and quality-check the data  \n"
+                "**5 · Analysis & Reports** — analyze findings → prepare client reports and presentations",
+                "**၁ · Client Brief** — လိုအပ်ချက်မှတ်တမ်းတင် → Proposal/Quotation ပြင်ဆင် → အတည်ပြုချက်မှတ်  \n"
+                "**၂ · Research Design** — Screener ရေးပြီးသိမ်း → Discussion Guide ရေးပြီးစစ်  \n"
+                "**၃ · Fieldworks** — အဖွဲ့ကိုရှင်းပြပြီး interview, survey နဲ့ field note စု  \n"
+                "**၄ · Data Cleansing** — upload, transcript, merge နဲ့ data quality စစ်  \n"
+                "**၅ · Analysis & Reports** — ရလဒ်ခွဲခြမ်း → client report နဲ့ presentation ပြင်ဆင်",
             ))
 
     _projects = st.session_state.get("project_list", ["Default"])
@@ -8340,15 +8381,12 @@ elif page == "New Project":
         st.rerun()
 
 elif page == "Client Brief":
-    # Stage 1: the brief form. Fields follow the 5-stage table exactly —
-    # Client info, project info, objectives, target audience, scope, timeline,
-    # deliverables, approval (Draft → Approved) + Discussion Guide (moved here
-    # from the Market Analysis planner). Saved per project as brief.json
-    # (Drive notes folder + local). The old placeholder text is gone.
+    # Stage 1 / Step 1: client intake and brief only. Approval is recorded
+    # after proposal and quotation on the next Stage 1 step.
     st.title(T("📋 Client Brief", "📋 Client Brief"))
     _brief = load_brief()
     _appr = _brief.get("approval", "Draft")
-    st.caption(T(f"Approval: {_appr}", f"အတည်ပြုချက်: {_appr}"))
+    st.caption(T("Capture the client's request and research brief.", "Client လိုအပ်ချက်နဲ့ သုတေသန brief ကို မှတ်တမ်းတင်ပါ။"))
     with st.form("brief_form"):
         st.subheader(T("Client info", "Client info"))
         _bc1, _bc2 = st.columns(2)
@@ -8374,10 +8412,8 @@ elif page == "Client Brief":
         _end = _bt2.text_input(T("End date (YYYY-MM-DD, type as text)", "ပြီးမည့်ရက် (YYYY-MM-DD, စာရိုက်ထည့်ပါ)"), value=_brief.get("timeline_end", ""), key="brief_end")
         st.subheader(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"))
         _delivs = st.multiselect(T("Deliverables", "ထုတ်ပေးမည့်အရာများ"), BRIEF_DELIVERABLES, default=[d for d in _brief.get("deliverables", []) if d in BRIEF_DELIVERABLES], key="brief_deliverables")
-        st.subheader(T("Discussion Guide", "Discussion Guide"))
-        _dg = st.text_area(T("Discussion Guide (sections / questions)", "Discussion Guide (အပိုင်း / မေးခွန်းများ)"), value=_brief.get("discussion_guide", ""), height=120, key="brief_dg")
-        st.subheader(T("Approval", "အတည်ပြုချက်"))
-        _approval = st.selectbox(T("Approval status", "အတည်ပြုမှု အခြေအနေ"), BRIEF_APPROVALS, index=BRIEF_APPROVALS.index(_appr) if _appr in BRIEF_APPROVALS else 0, key="brief_approval")
+        st.subheader(T("Client-provided guide or reference notes", "Client ပေးထားတဲ့ Guide သို့မဟုတ် ကိုးကားမှတ်စု"))
+        _dg = st.text_area(T("Reference material only — the moderator DG is drafted in Research Design", "ကိုးကားရန်သာ — Moderator DG ကို Research Design အဆင့်မှာ ရေးမယ်"), value=_brief.get("discussion_guide", ""), height=120, key="brief_dg")
         if st.form_submit_button(T("💾 Save brief", "💾 Brief သိမ်းမယ်"), type="primary"):
             _data = {
                 "client_name": _client_name.strip(), "client_contact": _client_contact.strip(),
@@ -8386,53 +8422,25 @@ elif page == "Client Brief":
                 "target_audience": _audience.strip(), "scope": _scope.strip(),
                 "timeline_start": _start.strip(), "timeline_end": _end.strip(),
                 "deliverables": list(_delivs), "discussion_guide": _dg.strip(),
-                "approval": _approval,
+                "approval": _appr,
             }
             save_brief(_data)
             _flash(T("Brief saved.", "Brief သိမ်းပြီးပြီ။"))
             st.rerun()
 
-elif page == "Research Design":
-    # Stage 2 builder (v3.25): method, sampling, questionnaire/screener +
-    # Discussion Guide (AI draft), fieldwork plan — all saved per project as
-    # design.json in notes/ (Drive + local). The page starts EMPTY for a new
-    # project; the only prefill is from the project's OWN saved Brief.
-    st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
+elif page == "Proposal & Quotation":
+    # Stage 1 / Step 2: agree the research approach, sample and fieldwork plan,
+    # prepare proposal/quotation, then record the client's approval.
+    st.title(T("🧾 Proposal & Quotation", "🧾 Proposal နဲ့ Quotation"))
     _brief = load_brief()
     _design = load_design()
+    _quote = load_quotation()
     _has_brief = bool(_brief)
-    # v3.46: workflow gate (display only) — Research Design has not started
-    # until the client approval recorded on the Brief is "Approved".
-    # Nothing is blocked or locked; this only says the state plainly.
-    if _brief.get("approval") != "Approved":
-        st.warning(
-            T("Client approval is pending — Research Design has not started yet. Record the client approval on the Client Brief first.",
-              "Client အတည်ပြုချက် မရသေးဘူး — Research Design မစရသေးဘူး။ အရင် Client Brief မှာ client အတည်ပြုချက် မှတ်ပါ။")
-        )
-    else:
-        st.caption(T("Client approval recorded — Approved.", "Client အတည်ပြုချက် မှတ်ပြီးပြီ — Approved။"))
     if not _has_brief:
-        st.warning(
-            T("No Client Brief saved yet — fill in the Client Brief first so the AI drafts have something to work from. Method and sampling below can still be set.",
-              "Client Brief မသိမ်းရသေးဘူး — အရင် Client Brief ဖြည့်ပါ၊ AI draft တွေက Brief ကနေ ရေးမှာ။ အောက်က Method နဲ့ Sampling ကိုတော့ အခု သတ်မှတ်လို့ရတယ်။")
-        )
-    # Saved-design summary (what is set, what is still empty).
-    _sum_items = [
-        ("Method", "Method", bool(_design.get("approach")) or bool(_design.get("methods"))),
-        ("Sampling", "Sampling", bool(_design.get("sample_size") or _design.get("sessions_count") or _design.get("personas") or _design.get("quotas") or _design.get("screening_criteria"))),
-        ("Questionnaire", "Questionnaire", bool((_design.get("questionnaire") or {}).get("questions") if isinstance(_design.get("questionnaire"), dict) else _design.get("questionnaire"))),
-        ("Discussion Guide", "Discussion Guide", bool((_design.get("dg_text") or "").strip())),
-        ("Fieldwork Plan", "Fieldwork Plan", bool(_design.get("fieldwork_plan"))),
-    ]
-    st.caption(" · ".join(("✅ " if _done else "○ ") + T(_en, _mm) for _en, _mm, _done in _sum_items))
-    # v3.46: Method, Sampling and Fieldwork Plan are already agreed at the
-    # Proposal / Quotation stage — the design work on this page is Screener
-    # + Discussion Guide.
-    st.caption(T("Design work here: Screener + Discussion Guide.", "ဒီအဆင့်မှာ လုပ်ရမှာ: Screener + Discussion Guide။"))
+        st.warning(T("Save the Client Brief first. Proposal details use that brief as their source.",
+                     "Proposal အချက်အလက်တွေ Brief ကို အခြေခံတာကြောင့် Client Brief ကို အရင်သိမ်းပါ။"))
 
-    # ---- 1. Method ----
-    st.subheader(T("1. Method", "၁။ Method"))
-    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
+    st.subheader(T("Agreed research approach", "သဘောတူမယ့် သုတေသနနည်းလမ်း"))
     _approach_idx = DESIGN_APPROACHES.index(_design.get("approach")) if _design.get("approach") in DESIGN_APPROACHES else None
     _approach = st.radio(T("Research approach", "သုတေသန approach"), DESIGN_APPROACHES, index=_approach_idx, key="design_approach")
     _methods = st.multiselect(T("Method", "Method"), DESIGN_METHODS, default=[m for m in _design.get("methods", []) if m in DESIGN_METHODS], key="design_methods")
@@ -8442,40 +8450,36 @@ elif page == "Research Design":
         st.warning(T("Quantitative with IDI / FGD is unusual — interviews and groups are usually Qualitative or Mixed.", "Quantitative နဲ့ IDI / FGD တွဲတာ မများဘူး — IDI / FGD က Qualitative ဒါမှမဟုတ် Mixed မှာ ပိုများတယ်။"))
     if _approach and _approach != "Mixed" and len(_methods) > 1:
         st.info(T("More than one method — consider Mixed.", "Method တစ်ခုထက်ပိုရင် Mixed စဉ်းစားကြည့်ပါ။"))
-    _rationale = st.text_area(T("Why this method? (rationale)", "ဘာလို့ ဒီ method ရွေးတာလဲ။"), value=_design.get("rationale", ""), height=80, key="design_rationale")
+    _rationale = st.text_area(T("Why this method?", "ဘာလို့ ဒီ method ရွေးတာလဲ။"), value=_design.get("rationale", ""), height=80, key="design_rationale")
     _goal_default = _design.get("goal", "") or _brief.get("objectives", "")
     _goal = st.text_area(T("Research goal", "သုတေသန ရည်ရွယ်ချက်"), value=_goal_default, height=80, key="design_goal")
     _target_default = _design.get("target", "") or _brief.get("target_audience", "")
     _target = st.text_area(T("Target", "Target"), value=_target_default, height=80, key="design_target")
-    if st.button(T("Save method", "Method သိမ်းမယ်"), key="design_save_method", type="primary"):
+    if st.button(T("Save proposal basis", "Proposal အခြေခံအချက်အလက် သိမ်းမယ်"), key="design_save_method", type="primary"):
         _design.update({"approach": _approach or "", "methods": list(_methods),
                         "rationale": _rationale.strip(), "goal": _goal.strip(),
                         "target": _target.strip(), "target_audience": _brief.get("target_audience", "")})
         save_design(_design)
-        _flash(T("Method saved.", "Method သိမ်းပြီးပြီ။"))
+        _flash(T("Proposal basis saved.", "Proposal အခြေခံအချက်အလက် သိမ်းပြီးပြီ။"))
         st.rerun()
 
-    # ---- 2. Sampling ----
-    st.subheader(T("2. Sampling", "၂။ Sampling"))
-    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
+    st.divider()
+    st.subheader(T("Agreed sample and fieldwork plan", "သဘောတူမယ့် Sample နဲ့ Fieldwork Plan"))
     if _has_brief:
         st.text_input(T("Target audience (from the brief)", "Target audience (Brief ကနေ)"), value=_brief.get("target_audience", ""), disabled=True, key="design_audience_ro")
     _sc1, _sc2, _sc3 = st.columns(3)
-    _sample_size = _sc1.number_input(T("Sample size (total respondents)", "Sample size (ဖြေဆိုသူ စုစုပေါင်း)"), value=_ed_int(_design.get("sample_size"), 0), min_value=0, step=1, key="design_sample_size")
-    _sessions = _sc2.number_input(T("Sessions (groups / interviews)", "Sessions (အဖွဲ့ / အင်တာဗျူး အရေအတွက်)"), value=_ed_int(_design.get("sessions_count"), 0), min_value=0, step=1, key="design_sessions")
-    _pps = _sc3.number_input(T("Participants per session", "တစ်ဖွဲ့မှာ လူအရေအတွက်"), value=_ed_int(_design.get("participants_per_session"), 0), min_value=0, step=1, key="design_pps")
+    _sample_size = _sc1.number_input(T("Sample size (total respondents)", "ဖြေဆိုသူ စုစုပေါင်း"), value=_ed_int(_design.get("sample_size"), 0), min_value=0, step=1, key="design_sample_size")
+    _sessions = _sc2.number_input(T("Sessions (groups / interviews)", "Session အရေအတွက်"), value=_ed_int(_design.get("sessions_count"), 0), min_value=0, step=1, key="design_sessions")
+    _pps = _sc3.number_input(T("Participants per session", "တစ် session မှာ ပါဝင်သူ"), value=_ed_int(_design.get("participants_per_session"), 0), min_value=0, step=1, key="design_pps")
     st.caption(T("0 means unset — empty is empty, never guessed.", "0 ဆိုတာ မသတ်မှတ်ရသေးဘူး — မရှိရင် မရှိဘူး၊ ခန့်မှန်းမထည့်ဘူး။"))
-    st.caption(T("Personas (from the brief's respondent criteria)", "Personas (Brief ရဲ့ respondent criteria ကနေ)"))
     _personas = _design.get("personas") or []
     _p_df = pd.DataFrame([{"Name": _ed_str(p.get("name")), "Description": _ed_str(p.get("description")), "Value framing": _ed_str(p.get("value_framing"))} for p in _personas if isinstance(p, dict)], columns=["Name", "Description", "Value framing"])
     _p_edited = st.data_editor(_p_df, num_rows="dynamic", use_container_width=True, key="design_personas")
-    st.caption(T("Quotas (channel / segment splits)", "Quotas (channel / segment ခွဲဝေမှု)"))
     _quotas = _design.get("quotas") or []
     _qt_df = pd.DataFrame([{"Segment": _ed_str(q.get("segment")), "Share": _ed_str(q.get("share")), "Notes": _ed_str(q.get("notes"))} for q in _quotas if isinstance(q, dict)], columns=["Segment", "Share", "Notes"])
     _qt_edited = st.data_editor(_qt_df, num_rows="dynamic", use_container_width=True, key="design_quotas")
-    _screening = st.text_area(T("Screening criteria — who qualifies, who is screened out", "Screening criteria — ဘယ်သူ ပါမလဲ၊ ဘယ်သူ မပါဘူး"), value=_design.get("screening_criteria", ""), height=80, key="design_screening")
-    _recruitment = st.text_area(T("Recruitment criteria / notes", "Recruitment criteria / မှတ်ချက်"), value=_design.get("recruitment_criteria", ""), height=80, key="design_recruitment")
-    # Current editor values (used by the Save button below and by the AI drafts).
+    _screening = st.text_area(T("Respondent eligibility / screening criteria", "ဖြေဆိုသူ ရွေးချယ်ရေး စံနှုန်း"), value=_design.get("screening_criteria", ""), height=80, key="design_screening")
+    _recruitment = st.text_area(T("Recruitment criteria / notes", "Recruitment စံနှုန်း / မှတ်စု"), value=_design.get("recruitment_criteria", ""), height=80, key="design_recruitment")
     _new_personas = []
     for _r in _p_edited.to_dict("records"):
         _nm = _ed_str(_r.get("Name"))
@@ -8486,25 +8490,142 @@ elif page == "Research Design":
         _sg = _ed_str(_r.get("Segment"))
         if _sg or _ed_str(_r.get("Share")) or _ed_str(_r.get("Notes")):
             _new_quotas.append({"segment": _sg, "share": _ed_str(_r.get("Share")), "notes": _ed_str(_r.get("Notes"))})
-    if st.button(T("Save sampling", "Sampling သိမ်းမယ်"), key="design_save_sampling", type="primary"):
+    if st.button(T("Save sample", "Sample သိမ်းမယ်"), key="design_save_sampling", type="primary"):
         _design.update({"sample_size": int(_sample_size), "sessions_count": int(_sessions),
                         "participants_per_session": int(_pps), "personas": _new_personas,
                         "quotas": _new_quotas, "screening_criteria": _screening.strip(),
                         "recruitment_criteria": _recruitment.strip(),
                         "target_audience": _brief.get("target_audience", "")})
         save_design(_design)
-        _flash(T("Sampling saved.", "Sampling သိမ်းပြီးပြီ။"))
+        _flash(T("Sample saved.", "Sample သိမ်းပြီးပြီ။"))
         st.rerun()
-    # Design as the AI drafts see it: saved values + what is on screen now.
+
+    _fw = _design.get("fieldwork_plan") or []
+    _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
+    _fw_rows = []
+    for _i, _r in enumerate(_fw):
+        if isinstance(_r, dict):
+            _fw_rows.append({"Session": _ed_int(_r.get("session"), _i + 1), "Group": _ed_str(_r.get("group")),
+                             "Method": _ed_str(_r.get("method")), "Date": _ed_str(_r.get("date")),
+                             "Time": _ed_str(_r.get("time")), "Seats": _ed_int(_r.get("seats"), 0),
+                             "Recruited": _ed_int(_r.get("recruited"), 0), "Confirmed": _ed_int(_r.get("confirmed"), 0),
+                             "Moderator": _ed_str(_r.get("moderator")), "Moderator seat": _ed_str(_r.get("moderator_seat")),
+                             "Venue": _ed_str(_r.get("venue"))})
+    _fw_edited = st.data_editor(pd.DataFrame(_fw_rows, columns=_fw_cols), num_rows="dynamic", use_container_width=True, key="fw_editor", column_config={
+        "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
+    })
+    st.caption(T("Dates are plain text (YYYY-MM-DD). Seats = respondents per session; Recruited covers no-shows.", "ရက်စွဲကို စာသားဖြင့်ထည့်ပါ (YYYY-MM-DD)။ Seats က session တစ်ခုစီအတွက် respondent အရေအတွက်၊ Recruited က မလာသူအစား ခေါ်ထားသူများပါ။"))
+    if _fw:
+        _plan_check_design = dict(_design)
+        _plan_check_design.update({"approach": _approach or "", "methods": list(_methods)})
+        _show_self_check_results(_fieldwork_self_check(_plan_check_design, _brief), "Fieldwork Plan checks", "Fieldwork Plan စစ်ဆေးမှု")
+    if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
+        _new_fw = []
+        for _i, _r in enumerate(_fw_edited.to_dict("records")):
+            _grp, _mth, _mod = _ed_str(_r.get("Group")), _ed_str(_r.get("Method")), _ed_str(_r.get("Moderator"))
+            if not _grp and not _mth and not _mod and not _ed_str(_r.get("Date")) and not _ed_str(_r.get("Venue")):
+                continue
+            _seat = _ed_str(_r.get("Moderator seat")) or ("Seat 1" if _mod else "")
+            _new_fw.append({"session": _ed_int(_r.get("Session"), _i + 1), "group": _grp, "method": _mth,
+                            "date": _ed_str(_r.get("Date")), "time": _ed_str(_r.get("Time")),
+                            "seats": _ed_int(_r.get("Seats"), 0), "recruited": _ed_int(_r.get("Recruited"), 0),
+                            "confirmed": _ed_int(_r.get("Confirmed"), 0), "moderator": _mod,
+                            "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
+        _design["fieldwork_plan"] = _new_fw
+        save_design(_design)
+        _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
+        st.rerun()
+
     _draft_design = dict(_design)
     _draft_design.update({"approach": _approach or "", "methods": list(_methods),
-                          "rationale": _rationale.strip(), "goal": _goal.strip(),
-                          "target": _target.strip(), "personas": _new_personas,
-                          "quotas": _new_quotas, "screening_criteria": _screening.strip(),
-                          "recruitment_criteria": _recruitment.strip()})
+                          "rationale": _rationale.strip(), "goal": _goal.strip(), "target": _target.strip(),
+                          "personas": _new_personas, "quotas": _new_quotas,
+                          "screening_criteria": _screening.strip(), "recruitment_criteria": _recruitment.strip()})
+
+    st.divider()
+    st.subheader(T("Proposal draft", "Proposal မူကြမ်း"))
+    st.caption(T("Check the proposal before sharing it. AI never fills in costs.", "Client ကိုမပို့ခင် Proposal ကိုစစ်ပါ။ AI က ကုန်ကျစရိတ် မဖြည့်ပါ။"))
+    _pblocks, _pmissing = proposal_build(_brief, _draft_design)
+    if _pmissing:
+        st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင်သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
+    else:
+        if st.button(T("Generate proposal (DOCX)", "Proposal (DOCX) ထုတ်မယ်"), key="proposal_generate", type="primary"):
+            _design["rationale"] = _rationale.strip()
+            save_design(_design)
+            _pblocks, _ = proposal_build(_brief, _design)
+            _prop_bytes = proposal_to_docx(_pblocks)
+            _prop_path = store_write_bytes("notes", "proposal.docx", _prop_bytes)
+            st.success(T(f"Proposal draft saved: {_prop_path.name} (costs left blank).", f"Proposal မူကြမ်း သိမ်းပြီးပြီ: {_prop_path.name} (ကုန်ကျစရိတ် ဗလာထားတယ်)။"))
+            st.download_button("Download proposal (DOCX)", data=_prop_bytes, file_name=_prop_path.name,
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        elif (NOTES_DIR / "proposal.docx").exists():
+            st.download_button(T("Download saved proposal", "သိမ်းထားတဲ့ Proposal ဒေါင်းလုပ်ဆွဲမယ်"),
+                               data=(NOTES_DIR / "proposal.docx").read_bytes(), file_name="proposal.docx",
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    st.divider()
+    st.subheader(T("Quotation — enter costs manually", "Quotation — ကုန်ကျစရိတ်ကို ကိုယ်တိုင်ဖြည့်ပါ"))
+    st.caption(T("These values are user-entered only. No AI-generated prices or automatic estimates.",
+                 "ဒီတန်ဖိုးတွေကို ကိုယ်တိုင်ဖြည့်ရမယ်။ AI က ဈေးနှုန်းမထုတ်ပေး၊ ခန့်မှန်းတွက်ချက်မှုလည်း မလုပ်ပါ။"))
+    _quote_currency = st.text_input(T("Currency", "ငွေကြေးအမျိုးအစား"), value=_quote.get("currency", ""), key="quote_currency")
+    _quote_items = _quote.get("items") if isinstance(_quote.get("items"), list) else []
+    _quote_df = pd.DataFrame([{"Cost item": _ed_str(row.get("item")), "Amount (manual)": _ed_str(row.get("amount"))}
+                              for row in _quote_items if isinstance(row, dict)], columns=["Cost item", "Amount (manual)"])
+    _quote_edited = st.data_editor(_quote_df, num_rows="dynamic", use_container_width=True, key="quote_items_editor")
+    if st.button(T("Save quotation", "Quotation သိမ်းမယ်"), key="quote_save", type="primary"):
+        _items = [{"item": _ed_str(row.get("Cost item")), "amount": _ed_str(row.get("Amount (manual)"))}
+                  for row in _quote_edited.to_dict("records")
+                  if _ed_str(row.get("Cost item")) or _ed_str(row.get("Amount (manual)"))]
+        _saved_quote = save_quotation({"currency": _quote_currency.strip(), "items": _items})
+        _flash(T(f"Quotation saved as {_saved_quote.name}.", f"Quotation ကို {_saved_quote.name} အဖြစ် သိမ်းပြီးပြီ။"))
+        st.rerun()
+
+    st.divider()
+    st.subheader(T("Client approval", "Client အတည်ပြုချက်"))
+    _appr = _brief.get("approval", "Draft")
+    _approval = st.selectbox(T("Approval status", "အတည်ပြုမှု အခြေအနေ"), BRIEF_APPROVALS,
+                             index=BRIEF_APPROVALS.index(_appr) if _appr in BRIEF_APPROVALS else 0,
+                             key="brief_approval")
+    if st.button(T("Save client approval", "Client အတည်ပြုချက် သိမ်းမယ်"), key="proposal_save_approval"):
+        _brief["approval"] = _approval
+        save_brief(_brief)
+        _flash(T("Client approval status saved.", "Client အတည်ပြုချက် အခြေအနေ သိမ်းပြီးပြီ။"))
+        st.rerun()
+
+elif page == "Research Design":
+    # Stage 2: build and review the Screener first, then the Discussion Guide.
+    # Method, sampling and fieldwork plan are agreed in Stage 1.
+    st.title(T("📐 Research Design", "📐 သုတေသန ဒီဇိုင်း"))
+    _brief = load_brief()
+    _design = load_design()
+    _has_brief = bool(_brief)
+    # v3.46: workflow gate (display only) — Research Design has not started
+    # until the client approval recorded on the Brief is "Approved".
+    # Nothing is blocked or locked; this only says the state plainly.
+    if _brief.get("approval") != "Approved":
+        st.warning(
+            T("Client approval is pending — Research Design has not started yet. Record the client approval in Proposal & Quotation first.",
+              "Client အတည်ပြုချက် မရသေးဘူး — Research Design မစရသေးဘူး။ အရင် Proposal & Quotation အဆင့်မှာ client အတည်ပြုချက် မှတ်ပါ။")
+        )
+    else:
+        st.caption(T("Client approval recorded — Approved.", "Client အတည်ပြုချက် မှတ်ပြီးပြီ — Approved။"))
+    _q_saved_summary = _design.get("questionnaire") or {}
+    if isinstance(_q_saved_summary, list):
+        _q_saved_summary = {"questions": _q_saved_summary}
+    _saved_screener_ready = bool((_q_saved_summary.get("questions") or []) if isinstance(_q_saved_summary, dict) else False)
+    _summary_items = [
+        ("Screener", "Screener", _saved_screener_ready),
+        ("Discussion Guide", "Discussion Guide", bool((_design.get("dg_text") or "").strip()) or list(_design.get("methods") or []) == ["Survey"]),
+    ]
+    st.caption(" · ".join(("✅ " if _done else "○ ") + T(_en, _mm) for _en, _mm, _done in _summary_items))
+    st.caption(T("Create and review the Screener first. Draft the Discussion Guide after it.",
+                 "Screener ကို အရင်ရေးပြီး စစ်ပါ။ ပြီးမှ Discussion Guide ကို ရေးပါ။"))
+    _methods = list(_design.get("methods") or [])
+    _draft_design = dict(_design)
+    _draft_design["approach"] = _design.get("approach") or ""
 
     # ---- 3. Questionnaire / Screener ----
-    st.subheader(T("3. Questionnaire / Screener", "၃။ Questionnaire / Screener"))
+    st.subheader(T("1. Screener", "၁။ Screener"))
     _q_lang = st.selectbox(T("Questionnaire language", "Questionnaire ဘာသာစကား"), DESIGN_Q_LANGUAGES, index=DESIGN_Q_LANGUAGES.index(_design.get("questionnaire_language", "Myanmar")) if _design.get("questionnaire_language") in DESIGN_Q_LANGUAGES else 0, key="q_lang")
     _q_saved = _design.get("questionnaire") or {}
     if isinstance(_q_saved, list):
@@ -8734,7 +8855,7 @@ elif page == "Research Design":
                 st.rerun()
 
     # ---- 4. Discussion Guide ----
-    st.subheader(T("4. Discussion Guide", "၄။ Discussion Guide"))
+    st.subheader(T("2. Discussion Guide", "၂။ Discussion Guide"))
     _dg_lang = st.selectbox(T("Discussion Guide language", "Discussion Guide ဘာသာစကား"), DESIGN_DG_LANGUAGES, index=DESIGN_DG_LANGUAGES.index(_design.get("dg_language", "English")) if _design.get("dg_language") in DESIGN_DG_LANGUAGES else 0, key="dg_lang")
     _survey_only = list(_methods) == ["Survey"]
     if _survey_only:
@@ -8763,7 +8884,10 @@ elif page == "Research Design":
         else:
             st.error(T(f"AI draft failed: {_model_used}", f"AI draft မရဘူး: {_model_used}"))
 
-    if st.button(T("✨ AI Draft Discussion Guide", "✨ AI နဲ့ Discussion Guide ရေးခိုင်းမယ်"), key="dg_draft", type="primary", disabled=(not _has_brief) or _survey_only):
+    _has_saved_screener = _saved_screener_ready
+    if not _has_saved_screener:
+        st.info(T("Save the Screener first. The Discussion Guide comes next.", "Discussion Guide မရေးခင် Screener ကို အရင်သိမ်းပါ။"))
+    if st.button(T("✨ AI Draft Discussion Guide", "✨ AI နဲ့ Discussion Guide ရေးခိုင်းမယ်"), key="dg_draft", type="primary", disabled=(not _has_brief) or _survey_only or not _has_saved_screener):
         _has_saved_dg = bool((_design.get("dg_text") or "").strip())
         if _has_saved_dg and not st.session_state.get("dg_confirm_overwrite"):
             st.session_state["dg_confirm_overwrite"] = True
@@ -8880,377 +9004,6 @@ elif page == "Research Design":
         else:
             st.caption(T("Empty — no Discussion Guide yet.", "ဗလာဖြစ်နေတယ် — Discussion Guide မရှိသေးဘူး။"))
 
-    # ---- 5. Fieldwork Plan ----
-    st.subheader(T("5. Fieldwork Plan", "၅။ Fieldwork Plan"))
-    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
-    _fw = _design.get("fieldwork_plan") or []
-    _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
-    _fw_rows = []
-    for _i, _r in enumerate(_fw):
-        if not isinstance(_r, dict):
-            continue
-        _fw_rows.append({"Session": _ed_int(_r.get("session"), _i + 1), "Group": _ed_str(_r.get("group")),
-                         "Method": _ed_str(_r.get("method")), "Date": _ed_str(_r.get("date")),
-                         "Time": _ed_str(_r.get("time")), "Seats": _ed_int(_r.get("seats"), 0),
-                         "Recruited": _ed_int(_r.get("recruited"), 0), "Confirmed": _ed_int(_r.get("confirmed"), 0),
-                         "Moderator": _ed_str(_r.get("moderator")), "Moderator seat": _ed_str(_r.get("moderator_seat")),
-                         "Venue": _ed_str(_r.get("venue"))})
-    _fw_df = pd.DataFrame(_fw_rows, columns=_fw_cols)
-    _fw_edited = st.data_editor(_fw_df, num_rows="dynamic", use_container_width=True, key="fw_editor", column_config={
-        "Method": st.column_config.SelectboxColumn(T("Method", "Method"), options=["", "IDI", "FGD", "Survey"]),
-    })
-    st.caption(T("Dates are plain text (YYYY-MM-DD) — an unset date never invents today's date. Seats = respondents in the session; Recruited = over-recruited count for no-shows; the moderator sits at Seat 1.", "ရက်စွဲက စာသားပဲ (YYYY-MM-DD) — မသတ်မှတ်ရင် ဒီနေ့ရက် အလိုအလျောက် မထည့်ဘူး။ Seats = အဖွဲ့ထဲမှာ ထိုင်မယ့်သူ၊ Recruited = မလာသူ အတွက် ပိုခေါ်ထားတာ၊ moderator က Seat 1 မှာ ထိုင်တယ်။"))
-    # v3.31 (P8): self-check on the saved plan — warnings only, never
-    # blocks saving; recomputed on every render, never stored.
-    if _fw:
-        _show_self_check_results(_fieldwork_self_check(_draft_design, _brief),
-                                 "Fieldwork Plan checks", "Fieldwork Plan စစ်ဆေးမှု")
-    if st.button(T("Save fieldwork plan", "Fieldwork Plan သိမ်းမယ်"), key="fw_save", type="primary"):
-        _new_fw = []
-        for _i, _r in enumerate(_fw_edited.to_dict("records")):
-            _grp = _ed_str(_r.get("Group"))
-            _mth = _ed_str(_r.get("Method"))
-            _mod = _ed_str(_r.get("Moderator"))
-            if not _grp and not _mth and not _mod and not _ed_str(_r.get("Date")) and not _ed_str(_r.get("Venue")):
-                continue
-            _seat = _ed_str(_r.get("Moderator seat"))
-            if _mod and not _seat:
-                _seat = "Seat 1"
-            _new_fw.append({"session": _ed_int(_r.get("Session"), _i + 1), "group": _grp, "method": _mth,
-                            "date": _ed_str(_r.get("Date")), "time": _ed_str(_r.get("Time")),
-                            "seats": _ed_int(_r.get("Seats"), 0), "recruited": _ed_int(_r.get("Recruited"), 0),
-                            "confirmed": _ed_int(_r.get("Confirmed"), 0), "moderator": _mod,
-                            "moderator_seat": _seat, "venue": _ed_str(_r.get("Venue"))})
-        _design["fieldwork_plan"] = _new_fw
-        save_design(_design)
-        _flash(T("Fieldwork plan saved.", "Fieldwork plan သိမ်းပြီးပြီ။"))
-        st.rerun()
-
-    # v3.32 (P13): "Design checks" summary — one verdict per instrument,
-    # recomputed fresh from the current text on every render, never
-    # stored. Warnings only; saving is never blocked.
-    _sum_minutes = 120 if "FGD" in _draft_design.get("methods", []) else 60
-    _show_design_checks_summary(_dg_text_now, {"questions": _qs}, _draft_design, _brief, _sum_minutes)
-
-elif page == "Data Cleansing":
-    # Stage 4 (v3.27): Data Preparation status from real counts + real
-    # Quality Control below (checks, per-file status, correction with
-    # audit trail). Originals are never overwritten.
-    st.title(T("🧹 Data Cleansing", "🧹 ဒေတာ သန့်စင်ခြင်း"))
-
-    st.subheader(T("Data Preparation", "ဒေတာ ပြင်ဆင်ခြင်း"))
-    _pa, _pt, _pm, _pc, _pp = _data_prep_counts()
-    for _lbl, _ok in [
-        (T("Upload", "Upload"), _pa > 0),
-        (T("Batch", "Batch"), _pa > 0 and _pp == 0),
-        (T("Split", "ခွဲခြင်း"), _pc > 0),
-        (T("Transcribe", "Transcript လုပ်ခြင်း"), _pt > 0),
-        (T("Merge", "ပေါင်းခြင်း"), _pm > 0),
-    ]:
-        st.write(("✅ " if _ok else "○ ") + _lbl)
-
-    st.divider()
-    st.subheader(T("Quality Control", "အရည်အသွေး စစ်ဆေးခြင်း"))
-    _qc_fulls, _qc_pending = get_full_transcripts()
-    if _qc_pending:
-        st.warning(T("Not merged yet: " + ", ".join(f"{k} ({n} chunks)" for k, n in _qc_pending) + " — merge on the Transcripts page.",
-                     "Merge မလုပ်ရသေးဘူး: " + ", ".join(f"{k} ({n} chunks)" for k, n in _qc_pending) + " — Transcripts page မှာ Merge လုပ်ပါ။"))
-    if st.button(T("Run QC checks", "QC စစ်မယ်"), key="qc_run"):
-        _qc = qc_run_all()
-        st.success(T(f"QC checks done — {len(_qc.get('files', {}))} transcript(s) checked.",
-                     f"QC စစ်ပြီးပြီ — transcript {len(_qc.get('files', {}))} ခု စစ်ပြီးပြီ။"))
-    _qc = load_qc()
-    _qc_files = _qc.get("files", {})
-    if not _qc_files:
-        st.info(T("No transcripts checked yet — transcribe first, then press Run QC checks.",
-                  "Transcript မစစ်ရသေးဘူး — အရင် transcribe လုပ်ပြီး Run QC checks နှိပ်ပါ။"))
-    else:
-        _qc_s = _qc_summary()
-        st.caption(T(f"Checked: {_qc_s[0]} of {_qc_s[3]} | Corrected: {_qc_s[1]} | Needs correction: {_qc_s[2]} | Audit entries: {_qc_s[4]}",
-                     f"စစ်ပြီး: {_qc_s[0]} / {_qc_s[3]} | ပြင်ပြီး: {_qc_s[1]} | ပြင်ရန်လို: {_qc_s[2]} | Audit: {_qc_s[4]}"))
-        _qc_names = sorted(_qc_files)
-        for _qi, _qname in enumerate(_qc_names):
-            _entry = _qc_files[_qname] if isinstance(_qc_files[_qname], dict) else {}
-            _issues = _entry.get("issues", []) if isinstance(_entry.get("issues"), list) else []
-            _issue_txt = "; ".join(str(i.get("detail", "")) for i in _issues) if _issues else T("No issues found", "ပြဿနာ မတွေ့ဘူး")
-            st.write(f"**{_qname}** — {_issue_txt}")
-            _cur_status = _entry.get("status", "Unchecked")
-            _new_status = st.selectbox(T("Status", "အခြေအနေ"), QC_STATUSES,
-                                       index=QC_STATUSES.index(_cur_status) if _cur_status in QC_STATUSES else 0,
-                                       key=f"qc_status_{_qi}")
-            if st.button(T("Save status", "အခြေအနေ သိမ်းမယ်"), key=f"qc_save_status_{_qi}"):
-                _qc2 = load_qc()
-                _e2 = _qc2.setdefault("files", {}).setdefault(_qname, {"status": "Unchecked", "checked_at": "", "issues": []})
-                _e2["status"] = _new_status
-                save_qc(_qc2)
-                st.success(T(f"Status saved: {_qname} → {_new_status}", f"သိမ်းပြီး: {_qname} → {_new_status}"))
-            with st.expander(T(f"Correct {_qname}", f"{_qname} ကို ပြင်မယ်")):
-                _orig_path = None
-                for _d in (OUTPUT_DIR, MERGED_DIR):
-                    if (_d / _qname).exists():
-                        _orig_path = _d / _qname
-                        break
-                if _orig_path is None:
-                    st.warning(T("Original file not found.", "မူရင်း file မတွေ့ဘူး။"))
-                else:
-                    _orig_text = _orig_path.read_text(encoding="utf-8", errors="replace")
-                    _corr_text = st.text_area(T("Corrected text (the original is never overwritten — a _corrected copy is saved)",
-                                                "ပြင်ထားတဲ့ စာသား (မူရင်းကို ဘယ်တော့မှ မရေးဘူး — _corrected copy သိမ်းမယ်)"),
-                                              value=_orig_text, height=300, key=f"qc_correct_{_qi}")
-                    _corr_note = st.text_input(T("What did you change? (note for the audit trail)",
-                                                 "ဘာပြင်လိုက်လဲ? (audit trail အတွက် မှတ်ချက်)"), key=f"qc_note_{_qi}")
-                    if st.button(T("Save correction", "ပြင်ဆင်ချက် သိမ်းမယ်"), key=f"qc_save_corr_{_qi}"):
-                        _out, _msg = qc_save_correction(_qname, _corr_text, _corr_note)
-                        if _out is None:
-                            st.warning(_msg)
-                        else:
-                            st.success(_msg)
-        with st.expander(T("Audit trail", "Audit trail")):
-            _audit = qc_load_audit()
-            if not _audit:
-                st.info(T("No corrections logged yet.", "ပြင်ဆင်ချက် မှတ်တမ်း မရှိသေးပါ။"))
-            else:
-                for _a in reversed(_audit[-10:]):
-                    st.write(f"- {_a.get('timestamp', '')} — {_a.get('file', '')} → {_a.get('corrected_file', '')}")
-                    if _a.get("before") or _a.get("after"):
-                        st.caption(f"Before: {_a.get('before', '')}")
-                        st.caption(f"After: {_a.get('after', '')}")
-                    if _a.get("note"):
-                        st.caption(f"Note: {_a.get('note', '')}")
-
-    # v3.33 (P12): orphan reconciliation — LIST-ONLY. Local files whose
-    # Drive counterpart no longer exists (trashed/deleted in Drive) are
-    # listed as "on this server only". Nothing is deleted automatically:
-    # each file needs its own two-step confirm, and only the local copy
-    # is removed — Drive is never touched.
-    st.divider()
-    st.subheader(T("Storage check — files only on this server", "သိုလှောင်မှု စစ်ဆေးခြင်း — ဒီ server မှာပဲ ရှိတဲ့ file များ"))
-    st.caption(T("Lists local files that no longer exist in Google Drive (for example files deleted or trashed there). This is only a check — nothing is deleted unless you confirm that file, and only the local copy is removed.",
-                "Google Drive မှာ မရှိတော့တဲ့ local file တွေ (Drive မှာ ဖျက်လိုက်လို့) ကို စာရင်းပြတယ်။ စစ်ဆေးရုံပဲ — file တစ်ခုချင်းစီ အတည်ပြုမှ ဖျက်တယ်၊ local copy ပဲ ဖျက်တယ်။"))
-    if st.button(T("Check for files only on this server", "ဒီ server မှာပဲ ရှိတဲ့ file တွေ စစ်မယ်"), key="orphan_scan_btn"):
-        if not drive_available():
-            st.info(T("Drive is not connected — the check needs Google Drive.", "Drive မချိတ်ထားဘူး — ဒီစစ်ဆေးမှုက Google Drive လိုတယ်။"))
-            st.session_state.pop(_ORPHAN_SCAN_KEY, None)
-        else:
-            with st.spinner(T("Comparing local files with Google Drive…", "Local file တွေကို Google Drive နဲ့ နှိုင်းယှဉ်နေပါတယ်…")):
-                _orphans = _find_orphan_files()
-            st.session_state[_ORPHAN_SCAN_KEY] = {"project": current_project(), "items": _orphans or []}
-            st.session_state.pop(_ORPHAN_ARMED_KEY, None)
-            st.rerun()
-    _scan = st.session_state.get(_ORPHAN_SCAN_KEY)
-    if _scan is not None and _scan.get("project") != current_project():
-        # A scan belongs to the project it ran on; never show another
-        # project's list after a switch.
-        _scan = None
-        st.session_state.pop(_ORPHAN_SCAN_KEY, None)
-    if _scan is not None:
-        _items = _scan.get("items") or []
-        if not _items:
-            st.success(T("No files only on this server — every local file has a Drive copy.",
-                         "ဒီ server မှာပဲ ရှိတဲ့ file မရှိဘူး — local file တိုင်းမှာ Drive copy ရှိတယ်။"))
-        else:
-            st.warning(T(f"{len(_items)} file(s) only on this server — they no longer exist in Google Drive.",
-                         f"ဒီ server မှာပဲ ရှိတဲ့ file {len(_items)} ခု — Google Drive မှာ မရှိတော့ဘူး။"))
-            _armed = st.session_state.get(_ORPHAN_ARMED_KEY) or set()
-            for _oi, _o in enumerate(_items):
-                _okey = (_o["dir_key"], _o["name"])
-                _size_kb = _o["size"] / 1024
-                st.write(f"**{_o['name']}** — {_o['project']} · {_o['dir_key']} · {_o['type']} · {_size_kb:.1f} KB · {_o['modified']}")
-                if _okey in _armed:
-                    _oc1, _oc2 = st.columns(2)
-                    if _oc1.button(T("Confirm delete (local copy only)", "ဖျက်မယ် (local copy ပဲ)"), key=f"orphan_confirm_{_oi}", type="primary"):
-                        if _delete_orphan_file(_o["dir_key"], _o["name"]):
-                            st.session_state[_ORPHAN_SCAN_KEY] = {"project": current_project(),
-                                                                  "items": [x for x in _items if (x["dir_key"], x["name"]) != _okey]}
-                            _armed.discard(_okey)
-                            st.session_state[_ORPHAN_ARMED_KEY] = _armed
-                            _flash(T(f"Deleted local copy: {_o['name']}", f"Local copy ဖျက်ပြီးပြီ: {_o['name']}"))
-                        else:
-                            st.warning(T(f"Could not delete: {_o['name']}", f"ဖျက်မရဘူး: {_o['name']}"))
-                        st.rerun()
-                    if _oc2.button(T("Cancel", "မဖျက်ဘူး"), key=f"orphan_cancel_{_oi}"):
-                        _armed.discard(_okey)
-                        st.session_state[_ORPHAN_ARMED_KEY] = _armed
-                        st.rerun()
-                else:
-                    if st.button(T("Delete", "ဖျက်မယ်"), key=f"orphan_del_{_oi}"):
-                        _armed.add(_okey)
-                        st.session_state[_ORPHAN_ARMED_KEY] = _armed
-                        st.rerun()
-
-elif page == "Insights":
-    # Stage 5 (v3.27): build insight cards from SAVED outputs — Qual
-    # analysis files + Quant summaries. Nothing is invented: a missing
-    # input is shown as missing, with a link to the page that makes it.
-    st.title(T("💡 Insights", "💡 Insights"))
-    _ins_qual = _ins_qual_findings()
-    _ins_quant = _ins_quant_numbers()
-    _ins_design = load_design()
-    _ins_personas = [p.get("name") for p in (_ins_design.get("personas") or []) if isinstance(p, dict) and p.get("name")]
-    _ins_sections = _ins_dg_sections()
-    st.write(("✅ " if _ins_qual else "○ ") + T(f"Qualitative findings saved: {len(_ins_qual)}", f"သိမ်းထားတဲ့ Qualitative finding: {len(_ins_qual)}"))
-    st.write(("✅ " if _ins_quant else "○ ") + T(f"Quantitative numbers saved: {len(_ins_quant)}", f"သိမ်းထားတဲ့ Quantitative နံပါတ်: {len(_ins_quant)}"))
-    if not _ins_qual and not _ins_quant:
-        st.info(T("No analysis saved yet — analyze on the Market Analysis page (Qual) and save a quant summary on the Quantitative Analysis page first.",
-                  "Analysis မသိမ်းရသေးဘူး — အရင် Market Analysis မှာ Qual analyse လုပ်ပြီး Quantitative Analysis မှာ quant summary သိမ်းပါ။"))
-        if st.button(T("Open Market Analysis", "Market Analysis ဖွင့်မယ်"), key="ins_goto_ma"):
-            st.session_state["page"] = "Market Analysis"
-        if st.button(T("Open Quantitative Analysis", "Quantitative Analysis ဖွင့်မယ်"), key="ins_goto_quant"):
-            st.session_state["page"] = "Quantitative Analysis"
-    else:
-        st.subheader(T("Build an insight", "Insight တစ်ခု ဆောက်မယ်"))
-        _q_labels = [f"{q['section']} — {q['statement'][:90]}" for q in _ins_qual]
-        _qi = 0
-        if _q_labels:
-            _qi = st.selectbox(T("Pick a Qual finding", "Qual finding ရွေးပါ"), range(len(_q_labels)),
-                               format_func=lambda i: _q_labels[i], key="ins_pick_qual")
-        _picked = _ins_qual[_qi] if _ins_qual else None
-        if _picked:
-            st.caption(T("Qual evidence:", "Qual evidence:"))
-            for _qq in _picked.get("quotes", []):
-                st.write(f"> \"{_qq.get('quote', '')}\" — Speaker {_qq.get('speaker', '')}, {_qq.get('source', '')}")
-            if not _picked.get("quotes"):
-                st.caption(T("This finding has no verbatim quote attached.", "ဒီ finding မှာ verbatim quote မပါဘူး။"))
-        _qnum_labels = [f"{n['label']}: {n['value']} ({n['source']})" for n in _ins_quant]
-        _picked_nums = []
-        if _qnum_labels:
-            _sel_nums = st.multiselect(T("Attach Quant numbers (optional)", "Quant နံပါတ်တွေ တွဲမယ် (မတွဲလည်းရတယ်)"), range(len(_qnum_labels)),
-                                       format_func=lambda i: _qnum_labels[i], key="ins_pick_quant")
-            _picked_nums = [_ins_quant[i] for i in _sel_nums]
-        _sec_opts = _ins_sections if _ins_sections else [T("General", "အထွေထွေ")]
-        _sec = st.selectbox(T("DG section it answers", "ဘယ် DG section ကို ဖြေတာလဲ"), _sec_opts, key="ins_section")
-        _per_opts = _ins_personas if _ins_personas else [T("All", "အားလုံး")]
-        _per = st.selectbox(T("Persona", "Persona"), _per_opts, key="ins_persona")
-        _stmt_default = _picked["statement"] if _picked else ""
-        _stmt = st.text_area(T("Insight statement (edit freely)", "Insight စာသား (စိတ်ကြိုက် ပြင်လို့ရတယ်)"),
-                             value=_stmt_default, height=120, key=f"ins_statement_{_qi}")
-        if st.button(T("Save insight", "Insight သိမ်းမယ်"), key="ins_save"):
-            if not _stmt.strip():
-                st.warning(T("Write the insight statement first.", "Insight စာသား အရင် ရေးပါ။"))
-            else:
-                _data = load_insights()
-                _now = datetime.datetime.now(ZoneInfo("Asia/Rangoon"))
-                _data.setdefault("insights", []).append({
-                    "id": _now.strftime("%Y%m%d%H%M%S%f"),
-                    "statement": _stmt.strip(),
-                    "qual_evidence": _picked.get("quotes", []) if _picked else [],
-                    "qual_source": _picked.get("analysis_file", "") if _picked else "",
-                    "quant_evidence": _picked_nums,
-                    "section": _sec, "persona": _per,
-                    "created": _now.strftime("%Y-%m-%d %H:%M"),
-                })
-                save_insights(_data)
-                st.success(T("Insight saved.", "Insight သိမ်းပြီးပြီ။"))
-    _saved_ins = load_insights().get("insights", [])
-    if _saved_ins:
-        st.divider()
-        st.subheader(T("Saved insights", "သိမ်းထားတဲ့ insight များ"))
-        for _ins in _saved_ins:
-            st.markdown(f"**{_ins.get('statement', '')}**")
-            st.caption(T(f"Section: {_ins.get('section', '')} | Persona: {_ins.get('persona', '')} | {_ins.get('created', '')}",
-                         f"Section: {_ins.get('section', '')} | Persona: {_ins.get('persona', '')} | {_ins.get('created', '')}"))
-            for _qq in _ins.get("qual_evidence", []):
-                st.write(f"> \"{_qq.get('quote', '')}\" — Speaker {_qq.get('speaker', '')}, {_qq.get('source', '')}")
-            for _qn in _ins.get("quant_evidence", []):
-                st.write(f"- {_qn.get('label', '')}: {_qn.get('value', '')} ({_qn.get('source', '')})")
-            if st.button(T("Delete insight", "Insight ဖျက်မယ်"), key=f"ins_del_{_ins.get('id', '')}"):
-                _data = load_insights()
-                _data["insights"] = [x for x in _data.get("insights", []) if x.get("id") != _ins.get("id")]
-                save_insights(_data)
-                st.rerun()
-
-elif page == "Presentation":
-    # Stage 5 shell page: presentation is part of Stage 5 — the PPTX comes
-    # from the report on the Reports page.
-    st.title(T("🎤 Presentation", "🎤 တင်ပြမှု"))
-    st.info(
-        T("Presentation is part of Stage 5 — export the PPTX from the report "
-          "on the Reports page.",
-          "Presentation က Stage 5 ထဲမှာ ပါတယ် — Reports စာမျက်နှာမှာ report ကနေ "
-          "PPTX ထုတ်လို့ရတယ်။")
-    )
-
-elif page == "Upload & Transcribe":
-    st.title(T("🎙️ Upload & Transcribe", "🎙️ Upload နဲ့ Transcript လုပ်ခြင်း"))
-
-    uploaded = st.file_uploader(T("Upload an audio file (mp3 / wav / m4a)", "Audio file တင်ပါ (mp3 / wav / m4a)"), type=["mp3", "wav", "m4a"], key="dc_audio_upload")
-    audio_path = None
-    if uploaded is not None:
-        safe_name = Path(uploaded.name).name
-        if safe_name != uploaded.name or safe_name in {"", ".", ".."}:
-            st.error(T("Invalid file name.", "ဖိုင်အမည် မမှန်ပါ။"))
-            st.stop()
-        audio_path = _safe_storage_path("audio", safe_name)
-        _uhash = hashlib.sha256(uploaded.getbuffer()).hexdigest()
-        upload_key = (current_project(), safe_name, _uhash)
-        if st.session_state.get("last_audio_upload") != upload_key:
-            store_write_bytes("audio", safe_name, uploaded.getbuffer())
-            st.session_state["last_audio_upload"] = upload_key
-        st.caption(T(f"Saved: {uploaded.name}", f"သိမ်းပြီး: {uploaded.name}"))
-    else:
-        existing = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
-        if existing:
-            audio_names = [f.name for f in existing]
-            audio_selected = st.selectbox(T("Choose an existing audio file", "ရှိပြီးသား audio ရွေးပါ"), audio_names, key="dc_audio_existing")
-            audio_path = AUDIO_DIR / audio_selected
-        else:
-            st.info(T("No audio file yet — upload one first.", "Audio file မရှိသေးပါ — အရင် upload လုပ်ပါ။"))
-
-    if audio_path is not None and st.button("Transcribe"):
-        with st.spinner(T("Transcribing... (long audio can take a few minutes)", "Transcribing... (audio ကြာရင် မိနစ်အနည်းငယ် ကြာနိုင်တယ်)")):
-            text, model = transcribe_audio(audio_path)
-        if text:
-            out_file = store_write_text("transcripts", audio_path.stem + ".txt", text)
-            st.success(f"Done — model: {model}")
-            st.caption(T(f"Saved: {out_file.name} — you can reopen it on the Transcripts page.", f"Saved: {out_file.name} — Transcripts page မှာ ပြန်ဖွင့်လို့ရတယ်။"))
-        else:
-            st.error(f"Failed: {model}")
-
-elif page == "Batch Processing":
-    st.title(T("📁 Batch Processing", "📁 Batch လုပ်ဆောင်ခြင်း"))
-
-    audio_files = sorted(AUDIO_DIR.glob("*.mp3")) + sorted(AUDIO_DIR.glob("*.wav")) + sorted(AUDIO_DIR.glob("*.m4a"))
-    if not audio_files:
-        st.info(T("No audio file yet — upload one on the Upload & Transcribe page.", "Audio file မရှိသေးပါ — Upload & Transcribe page မှာ upload လုပ်ပါ။"))
-    else:
-        pending = []
-        done = []
-        for f in audio_files:
-            if (OUTPUT_DIR / (f.stem + ".txt")).exists():
-                done.append(f.name)
-            else:
-                pending.append(f.name)
-        st.write(T(f"Total: {len(audio_files)} | Done: {len(done)} | Remaining: {len(pending)}", f"စုစုပေါင်း: {len(audio_files)} | ပြီးပြီ: {len(done)} | ကျန်သေးတယ်: {len(pending)}"))
-        if pending:
-            st.write(T("Remaining files:", "ကျန်တဲ့ file တွေ:"))
-            for name in pending:
-                st.write(f"- {name}")
-        if pending and st.button(T("Transcribe next 5", "နောက် 5 ခု transcribe လုပ်မယ်")):
-            progress = st.progress(0)
-            batch = pending[:5]
-            for i, name in enumerate(batch):
-                audio_path = AUDIO_DIR / name
-                with st.spinner(f"Transcribing {name}... ({i+1}/{len(batch)})"):
-                    text, model = transcribe_audio(audio_path)
-                if text:
-                    store_write_text("transcripts", audio_path.stem + ".txt", text)
-                    st.success(f"Done — {name} ({model})")
-                else:
-                    st.error(f"Failed — {name}: {model}")
-                    if "429" in model:
-                        st.warning(T("429 — quota is full, batch stopped. Try again later.", "429 — quota ပြည့်နေတယ်, batch ရပ်လိုက်ပြီ။ နောက်မှ ပြန်လုပ်။"))
-                        break
-                progress.progress((i + 1) / len(batch))
-                if i < len(batch) - 1:
-                    time.sleep(60)
-            st.info(T("Batch done — to do the next 5, wait 15 minutes, then press the button again.", "Batch ပြီးပြီ — နောက် 5 ခု လုပ်ချင်ရင် 15 မိနစ် နားပြီးမှ ခလုတ် ပြန်နှိပ်ပါ။"))
-        elif not pending:
-            # v3.21: a done batch used to leave a near-empty page — show the
-            # processed files instead.
-            st.success(T("All audio transcribed.", "Audio အားလုံး transcript ပြီးပြီ။"))
-            st.write(T("Transcribed files:", "Transcript ပြီးတဲ့ file တွေ:"))
-            for name in done:
-                st.write(f"- {name} ✅")
 
 elif page == "Fieldworks":
     # Stage 3 builder (v3.26): respondent form from design["questionnaire"],
@@ -9260,12 +9013,11 @@ elif page == "Fieldworks":
     # The form runs here behind the login gate; a public link-only route for
     # respondents needs an auth exception and is NOT built in v3.26.
     st.title(T("🎙️ Fieldworks", "🎙️ ကွင်းဆင်းလုပ်ငန်း"))
-    # v3.46: workflow gate (display only) — Fieldwork follows client
-    # approval, same as Research Design. Nothing is blocked or locked.
+    # Workflow status reminder only; this does not block fieldwork actions.
     if load_brief().get("approval") != "Approved":
         st.warning(
-            T("Client approval is pending — Fieldwork has not started yet. Record the client approval on the Client Brief first.",
-              "Client အတည်ပြုချက် မရသေးဘူး — Fieldwork မစရသေးဘူး။ အရင် Client Brief မှာ client အတည်ပြုချက် မှတ်ပါ။")
+            T("Client approval is pending — Fieldwork has not started yet. Record the client approval in Proposal & Quotation first.",
+              "Client အတည်ပြုချက် မရသေးဘူး — Fieldwork မစရသေးဘူး။ အရင် Proposal & Quotation အဆင့်မှာ client အတည်ပြုချက် မှတ်ပါ။")
         )
     else:
         st.caption(T("Client approval recorded — Approved.", "Client အတည်ပြုချက် မှတ်ပြီးပြီ — Approved။"))
@@ -9471,8 +9223,8 @@ elif page == "Fieldworks":
     # ---- 3. Interview management ----
     st.subheader(T("3. Interview management", "၃။ Interview စီမံခန့်ခွဲခြင်း"))
     if not _fw_plan:
-        st.warning(T("No fieldwork plan yet — add sessions on the Research Design page first. A recruitment list can still be imported below; its sheets become separate groups until they are linked to a plan.",
-                    "Fieldwork Plan မရှိသေးဘူး — အရင် Research Design page မှာ session တွေ ထည့်ပါ။ Recruitment list ကိုတော့ အောက်မှာ import လုပ်လို့ရတယ်; plan နဲ့ မချိတ်ရသေးတဲ့ sheet တွေက သပ်သပ် group အနေနဲ့ ပေါ်မယ်။"))
+        st.warning(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first. A recruitment list can still be imported below; its sheets become separate groups until they are linked to a plan.",
+                    "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။ Recruitment list ကိုတော့ အောက်မှာ import လုပ်လို့ရတယ်; plan နဲ့ မချိတ်ရသေးတဲ့ sheet တွေက သပ်သပ် group အနေနဲ့ ပေါ်မယ်။"))
     _fw_all_keys = [_fw_session_key(s) for s in _fw_plan]
     _fw_bucket_keys = [k for k in (_fw.get("participants") or {}).keys() if k not in _fw_all_keys]
     _fw_sel_opts = _fw_all_keys + _fw_bucket_keys
@@ -9583,7 +9335,7 @@ elif page == "Fieldworks":
     # ---- 4. Seating plan ----
     st.subheader(T("4. Seating plan", "၄။ Seating plan"))
     if not _fw_plan:
-        st.caption(T("No fieldwork plan yet — add sessions on the Research Design page first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Research Design page မှာ session တွေ ထည့်ပါ။"))
+        st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
     else:
         _sp_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
                                format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
@@ -9660,7 +9412,7 @@ elif page == "Fieldworks":
     # ---- 7. F2F discussion ----
     st.subheader(T("7. F2F discussion", "၇။ F2F discussion"))
     if not _fw_plan:
-        st.caption(T("No fieldwork plan yet — add sessions on the Research Design page first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Research Design page မှာ session တွေ ထည့်ပါ။"))
+        st.caption(T("No fieldwork plan yet — add sessions on the Proposal & Quotation step first.", "Fieldwork Plan မရှိသေးဘူး — အရင် Proposal & Quotation အဆင့်မှာ session တွေ ထည့်ပါ။"))
     else:
         _f2f_sel = st.selectbox(T("Session", "Session"), [_fw_session_key(s) for s in _fw_plan],
                                 format_func=lambda k: next((_fw_session_label(s) for s in _fw_plan if _fw_session_key(s) == k), k),
@@ -10184,8 +9936,7 @@ elif page == "Quantitative Analysis":
 
 elif page == "Reports":
     st.title(T("📑 Reports", "📑 Report များ"))
-    # v3.28: page-level brief + design — the export wiring above and the
-    # Proposal (draft) below both use them.
+    # Reports use the saved brief and research design as export context.
     _pbrief = load_brief()
     _pdesign = load_design()
 
@@ -10488,37 +10239,6 @@ elif page == "Reports":
                 st.caption(T("Sections with no source data are left out of the export — add them in Google Docs/PowerPoint.", "Source data မရှိတဲ့ အပိုင်းတွေ export မှာ မပါဘူး — Google Docs/PowerPoint မှာ ဖြည့်ပါ။"))
             st.caption(T("The template covers structure only. Strategic synthesis, archetype framing, images and layout still need your manual refinement.", "ပုံစံက structure ပဲ ပါတယ်။ Strategic synthesis, archetype framing, ပုံ နဲ့ layout က ကိုယ်တိုင် ပြင်ရဦးမယ်။"))
 
-    # v3.28: Proposal (draft) — needs brief + design only, no analysis.
-    st.divider()
-    st.subheader(T("Proposal (draft)", "Proposal (မူကြမ်း)"))
-    st.caption(T("Draft only — check and edit before sending. Costs are always blank.", "မူကြမ်းပဲ — ပို့ခင် စစ်ပြီး ပြင်ပါ။ Costs က အမြဲ ဗလာပဲ။"))
-    # v3.46: proposal format varies by project — DOCX or PPTX.
-    st.caption(T("Proposal format: DOCX or PPTX, depending on the project.", "Proposal format က project အလိုက် DOCX သို့မဟုတ် PPTX ဖြစ်နိုင်တယ်။"))
-    _pblocks, _pmissing = proposal_build(_pbrief, _pdesign)
-    if _pmissing:
-        st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင် သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
-        _pc1, _pc2 = st.columns(2)
-        if _pc1.button(T("Go to Client Brief", "Client Brief သွားမယ်"), key="prop_go_brief"):
-            st.session_state["page"] = "Client Brief"
-            st.rerun()
-        if _pc2.button(T("Go to Research Design", "Research Design သွားမယ်"), key="prop_go_design"):
-            st.session_state["page"] = "Research Design"
-            st.rerun()
-    else:
-        _rat = st.text_area(T("Rationale — why this method", "Rationale — ဘာကြောင့် ဒီ method လဲ"), value=_pdesign.get("rationale", ""), height=100, key="proposal_rationale")
-        if st.button(T("Generate proposal (DOCX)", "Proposal (DOCX) ထုတ်မယ်"), key="proposal_generate"):
-            _pdesign["rationale"] = _rat.strip()
-            save_design(_pdesign)
-            _pblocks, _ = proposal_build(_pbrief, _pdesign)
-            _prop_bytes = proposal_to_docx(_pblocks)
-            _prop_path = store_write_bytes("notes", "proposal.docx", _prop_bytes)
-            st.success(T(f"Done — {_prop_path.name} (draft, costs blank)", f"ပြီးပြီ — {_prop_path.name} (မူကြမ်း, costs ဗလာ)"))
-            st.download_button(
-                "Download proposal (DOCX)",
-                data=_prop_bytes,
-                file_name=_prop_path.name,
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
 
 elif page == "Report Editor":
     st.title("✏️ Report Editor")
