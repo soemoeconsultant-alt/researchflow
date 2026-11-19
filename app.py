@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.53"
+APP_VERSION = "3.54"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -2298,13 +2298,30 @@ def store_upload_existing(dir_key, name):
             st.warning(f"Drive upload မအောင်မြင်ဘူး: {name} — {str(e)[:200]} (local မှာ သိမ်းပြီးပြီ။ Queue ထဲထည့်ထားတယ်၊ internet ပြန်ရရင် အလိုအလျောက် ပြန်တင်မယ်။)")
 
 def next_version_number(stem):
-    existing = sorted(ANALYSIS_DIR.glob(f"{stem}_v*_analysis.txt"), key=lambda f: f.name)
+    _version_match = re.match(r"^(.*)_v\d+$", str(stem))
+    if _version_match and (ANALYSIS_DIR / f"{_version_match.group(1)}_analysis.txt").exists():
+        stem = _version_match.group(1)
+    existing = sorted((f for f in ANALYSIS_DIR.glob("*_analysis.txt")
+                       if re.fullmatch(re.escape(str(stem)) + r"_v\d+_analysis\.txt", f.name)),
+                      key=lambda f: f.name)
     nums = []
     for f in existing:
         m = re.search(r"_v(\d+)_analysis\.txt$", f.name)
         if m:
             nums.append(int(m.group(1)))
     return (max(nums) + 1) if nums else 1
+
+
+def next_analysis_output_name(source_name):
+    """Keep the first analysis at its familiar name, then save reruns as
+    sibling versions so a new AI result never replaces an earlier analysis."""
+    _source_stem = source_name[:-4] if str(source_name).endswith(".txt") else str(source_name)
+    _base_name = f"{_source_stem}_analysis.txt"
+    _has_versions = any(re.fullmatch(re.escape(_source_stem) + r"_v\d+_analysis\.txt", f.name)
+                        for f in ANALYSIS_DIR.glob("*_analysis.txt"))
+    if not (ANALYSIS_DIR / _base_name).exists() and not _has_versions:
+        return _base_name
+    return f"{_source_stem}_v{next_version_number(_source_stem)}_analysis.txt"
 
 
 # --- Google Docs (Report Editor) ---
@@ -9991,7 +10008,7 @@ elif page == "Market Analysis":
                     result, model = ask_gemini(prompt)
                 if result:
                     st.success(f"Done — model: {model}")
-                    analysis_file = store_write_text("analysis", selected.replace(".txt", "_analysis.txt"), result)
+                    analysis_file = store_write_text("analysis", next_analysis_output_name(selected), result)
                     st.session_state["last_analysis"] = analysis_file.name
                     st.caption(T(f"Saved: {analysis_file.name} — reopen it under Saved analyses below.", f"Saved: {analysis_file.name} — အောက်က Saved analyses မှာ ပြန်ဖွင့်လို့ရတယ်။"))
                 else:
@@ -10018,7 +10035,7 @@ elif page == "Market Analysis":
                 if result:
                     st.success(f"Done — model: {model}")
                     short_ids = short_ids_for(selected_multi)
-                    analysis_file = store_write_text("analysis", f"multi_{'-'.join(short_ids)}_analysis.txt", result)
+                    analysis_file = store_write_text("analysis", next_analysis_output_name(f"multi_{'-'.join(short_ids)}"), result)
                     st.session_state["last_analysis"] = analysis_file.name
                     st.caption(T(f"Saved: {analysis_file.name} — reopen it under Saved analyses below.", f"Saved: {analysis_file.name} — အောက်က Saved analyses မှာ ပြန်ဖွင့်လို့ရတယ်။"))
                 else:
