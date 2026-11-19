@@ -35,7 +35,7 @@ st.set_page_config(
 
 # App version — shown in the sidebar and written into backup manifests, so the
 # running version can always be verified from the code itself (v3.15 had none).
-APP_VERSION = "3.45"
+APP_VERSION = "3.46"
 
 # --- v3.18 language switch (EN / MM) ---
 # T("English", "မြန်မာ") returns the text for the language chosen in the sidebar.
@@ -7882,6 +7882,12 @@ def stage_status():
     any_files = audio_n + tr_n + an_n + rep_n > 0
     brief = load_brief()
     design = load_design()
+    # v3.46: workflow gate (display only) — Research Design (Stage 2) and
+    # Fieldworks (Stage 3) must not show as started until the client
+    # approval recorded on the Brief is "Approved". Read-only: no data is
+    # written here; the Stage 2/3 sub-items below are forced to "todo"
+    # (Not started) until then, even if design/fieldwork files exist.
+    _approved = brief.get("approval") == "Approved"
     _d_methods = design.get("methods") or []
     _d_q = design.get("questionnaire") or {}
     _d_qs = _d_q.get("questions") if isinstance(_d_q, dict) else []
@@ -7898,11 +7904,25 @@ def stage_status():
         _stage_item("Fieldwork plan", "ကွင်းဆင်းအစီအစဉ်",
                     "done" if design.get("fieldwork_plan") else "todo"),
     ]
+    if not _approved:
+        _d2_items = [(_e, _m, "todo") for _e, _m, _s in _d2_items]
     _fw_counts = fieldwork_counts(design, load_fieldwork())
     _fw_q = design.get("questionnaire") or {}
     _fw_qs = _fw_q.get("questions") if isinstance(_fw_q, dict) else []
     _qc_checked, _qc_corrected, _qc_needs, _qc_total, _qc_audited = _qc_summary()
     _ins_saved_n = len(load_insights().get("insights", []))
+    _fw_items = [
+        _stage_item("Form", "Form", "done" if _fw_qs else "todo"),
+        _stage_item("F2F discussion", "F2F discussion", "done" if audio_n > 0 else "todo"),
+        _stage_item("Submit data", "ဒေတာ တင်ခြင်း", "done" if _fw_counts["responses"] > 0 else "todo"),
+        _stage_item("Record", "အသံသွင်းခြင်း", "done" if audio_n > 0 else "todo"),
+        _stage_item("Interview management", "Interview စီမံခန့်ခွဲခြင်း", "done" if _fw_counts["participants"] > 0 else "todo"),
+        _stage_item("Survey data", "Survey ဒေတာ", "done" if quant_n > 0 or _fw_counts["survey_files"] > 0 else "todo"),
+        _stage_item("Field notes", "ကွင်းဆင်းမှတ်စု", "done" if _fw_counts["notes"] > 0 else "todo"),
+        _stage_item("Tracking", "ခြေရာခံခြင်း", "done" if _fw_counts["sessions_confirmed"] > 0 or _fw_counts["responses"] > 0 else "todo"),
+    ]
+    if not _approved:
+        _fw_items = [(_e, _m, "todo") for _e, _m, _s in _fw_items]
     return [
         (_sl("1 · Client Brief"),
          T("Define objectives & scope", "ရည်ရွယ်ချက်နဲ့ scope သတ်မှတ်ခြင်း"),
@@ -7923,17 +7943,8 @@ def stage_status():
          _d2_items),
         (_sl("3 · Fieldworks"),
          T("Collect data in the field", "ကွင်းဆင်းပြီး ဒေတာ ကောက်ယူခြင်း"),
-         _fw_counts["responses"] > 0 or _fw_counts["participants"] > 0 or audio_n > 0,
-         [
-             _stage_item("Form", "Form", "done" if _fw_qs else "todo"),
-             _stage_item("F2F discussion", "F2F discussion", "done" if audio_n > 0 else "todo"),
-             _stage_item("Submit data", "ဒေတာ တင်ခြင်း", "done" if _fw_counts["responses"] > 0 else "todo"),
-             _stage_item("Record", "အသံသွင်းခြင်း", "done" if audio_n > 0 else "todo"),
-             _stage_item("Interview management", "Interview စီမံခန့်ခွဲခြင်း", "done" if _fw_counts["participants"] > 0 else "todo"),
-             _stage_item("Survey data", "Survey ဒေတာ", "done" if quant_n > 0 or _fw_counts["survey_files"] > 0 else "todo"),
-             _stage_item("Field notes", "ကွင်းဆင်းမှတ်စု", "done" if _fw_counts["notes"] > 0 else "todo"),
-             _stage_item("Tracking", "ခြေရာခံခြင်း", "done" if _fw_counts["sessions_confirmed"] > 0 or _fw_counts["responses"] > 0 else "todo"),
-         ]),
+         (_fw_counts["responses"] > 0 or _fw_counts["participants"] > 0 or audio_n > 0) and _approved,
+         _fw_items),
         (_sl("4 · Data Cleansing"),
          T("Prepare data: upload, transcribe, merge + quality control", "ဒေတာ ပြင်ဆင်ခြင်း: upload, transcribe, merge + အရည်အသွေး စစ်ဆေးခြင်း"),
          tr_n > 0,
@@ -8421,6 +8432,16 @@ elif page == "Research Design":
     _brief = load_brief()
     _design = load_design()
     _has_brief = bool(_brief)
+    # v3.46: workflow gate (display only) — Research Design has not started
+    # until the client approval recorded on the Brief is "Approved".
+    # Nothing is blocked or locked; this only says the state plainly.
+    if _brief.get("approval") != "Approved":
+        st.warning(
+            T("Client approval is pending — Research Design has not started yet. Record the client approval on the Client Brief first.",
+              "Client အတည်ပြုချက် မရသေးဘူး — Research Design မစရသေးဘူး။ အရင် Client Brief မှာ client အတည်ပြုချက် မှတ်ပါ။")
+        )
+    else:
+        st.caption(T("Client approval recorded — Approved.", "Client အတည်ပြုချက် မှတ်ပြီးပြီ — Approved။"))
     if not _has_brief:
         st.warning(
             T("No Client Brief saved yet — fill in the Client Brief first so the AI drafts have something to work from. Method and sampling below can still be set.",
@@ -8435,9 +8456,14 @@ elif page == "Research Design":
         ("Fieldwork Plan", "Fieldwork Plan", bool(_design.get("fieldwork_plan"))),
     ]
     st.caption(" · ".join(("✅ " if _done else "○ ") + T(_en, _mm) for _en, _mm, _done in _sum_items))
+    # v3.46: Method, Sampling and Fieldwork Plan are already agreed at the
+    # Proposal / Quotation stage — the design work on this page is Screener
+    # + Discussion Guide.
+    st.caption(T("Design work here: Screener + Discussion Guide.", "ဒီအဆင့်မှာ လုပ်ရမှာ: Screener + Discussion Guide။"))
 
     # ---- 1. Method ----
     st.subheader(T("1. Method", "၁။ Method"))
+    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
     _approach_idx = DESIGN_APPROACHES.index(_design.get("approach")) if _design.get("approach") in DESIGN_APPROACHES else None
     _approach = st.radio(T("Research approach", "သုတေသန approach"), DESIGN_APPROACHES, index=_approach_idx, key="design_approach")
     _methods = st.multiselect(T("Method", "Method"), DESIGN_METHODS, default=[m for m in _design.get("methods", []) if m in DESIGN_METHODS], key="design_methods")
@@ -8462,6 +8488,7 @@ elif page == "Research Design":
 
     # ---- 2. Sampling ----
     st.subheader(T("2. Sampling", "၂။ Sampling"))
+    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
     if _has_brief:
         st.text_input(T("Target audience (from the brief)", "Target audience (Brief ကနေ)"), value=_brief.get("target_audience", ""), disabled=True, key="design_audience_ro")
     _sc1, _sc2, _sc3 = st.columns(3)
@@ -8886,6 +8913,7 @@ elif page == "Research Design":
 
     # ---- 5. Fieldwork Plan ----
     st.subheader(T("5. Fieldwork Plan", "၅။ Fieldwork Plan"))
+    st.caption(T("Already agreed at the Proposal / Quotation stage.", "Proposal / Quotation အဆင့်မှာ သဘောတူပြီးသား။"))
     _fw = _design.get("fieldwork_plan") or []
     _fw_cols = ["Session", "Group", "Method", "Date", "Time", "Seats", "Recruited", "Confirmed", "Moderator", "Moderator seat", "Venue"]
     _fw_rows = []
@@ -9263,6 +9291,15 @@ elif page == "Fieldworks":
     # The form runs here behind the login gate; a public link-only route for
     # respondents needs an auth exception and is NOT built in v3.26.
     st.title(T("🎙️ Fieldworks", "🎙️ ကွင်းဆင်းလုပ်ငန်း"))
+    # v3.46: workflow gate (display only) — Fieldwork follows client
+    # approval, same as Research Design. Nothing is blocked or locked.
+    if load_brief().get("approval") != "Approved":
+        st.warning(
+            T("Client approval is pending — Fieldwork has not started yet. Record the client approval on the Client Brief first.",
+              "Client အတည်ပြုချက် မရသေးဘူး — Fieldwork မစရသေးဘူး။ အရင် Client Brief မှာ client အတည်ပြုချက် မှတ်ပါ။")
+        )
+    else:
+        st.caption(T("Client approval recorded — Approved.", "Client အတည်ပြုချက် မှတ်ပြီးပြီ — Approved။"))
     _fw_design = load_design()
     _fw = load_fieldwork()
     _fw_counts = fieldwork_counts(_fw_design, _fw)
@@ -10486,6 +10523,8 @@ elif page == "Reports":
     st.divider()
     st.subheader(T("Proposal (draft)", "Proposal (မူကြမ်း)"))
     st.caption(T("Draft only — check and edit before sending. Costs are always blank.", "မူကြမ်းပဲ — ပို့ခင် စစ်ပြီး ပြင်ပါ။ Costs က အမြဲ ဗလာပဲ။"))
+    # v3.46: proposal format varies by project — DOCX or PPTX.
+    st.caption(T("Proposal format: DOCX or PPTX, depending on the project.", "Proposal format က project အလိုက် DOCX သို့မဟုတ် PPTX ဖြစ်နိုင်တယ်။"))
     _pblocks, _pmissing = proposal_build(_pbrief, _pdesign)
     if _pmissing:
         st.info(T("To draft a proposal, save first: " + " + ".join(_pmissing) + ".", "Proposal ရေးဖို့ အရင် သိမ်းပါ: " + " + ".join(_pmissing) + "။"))
